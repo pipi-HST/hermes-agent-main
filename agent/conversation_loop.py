@@ -32,6 +32,7 @@ from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.hermes_custom_envelope_adapter import direct_reply_from_latest_tool_result
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
@@ -3328,6 +3329,16 @@ def run_conversation(
                     agent._emit_status(
                         f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
                     )
+                    messages.append({"role": "assistant", "content": final_response})
+                    break
+
+                _direct_tool_reply = direct_reply_from_latest_tool_result(
+                    messages,
+                    platform=getattr(agent, "platform", None) or "",
+                )
+                if _direct_tool_reply is not None:
+                    final_response, _direct_tool_name = _direct_tool_reply
+                    _turn_exit_reason = f"direct_tool_reply(tool={_direct_tool_name})"
                     messages.append({"role": "assistant", "content": final_response})
                     break
 
