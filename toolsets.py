@@ -490,7 +490,7 @@ TOOLSETS = {
         "description": "Personal AI Assistant - Supervisor mode, 8 routing tools",
         "tools": [
             "capture_content", "revise_capture_draft", "commit_capture_draft",
-            "web_extract", "refine_capture", "search_my_notes",
+            "show_capture_draft", "web_extract", "refine_capture", "search_my_notes",
             "log_decision", "wellness_check",
             "theme_scan", "graph_report", "synthesize_garden", "daily_review", "send_message",
         ],

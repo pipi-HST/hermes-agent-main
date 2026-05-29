@@ -50,5 +50,6 @@ def agent_result_envelope_content_for_model(result: Any) -> Optional[str]:
         f"{chat_preview}\n\n"
         "STRUCTURED_AGENT_RESULT_DO_NOT_REWRITE:\n"
         f"{json.dumps(structured, ensure_ascii=False)}\n\n"
-        "Use USER_VISIBLE_REPLY as the chat response. Preserve structured result fields exactly."
+        "Return USER_VISIBLE_REPLY as-is as the chat response; do not summarize or shorten it. "
+        "Preserve structured result fields exactly."
     )
