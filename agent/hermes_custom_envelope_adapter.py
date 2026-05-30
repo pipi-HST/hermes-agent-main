@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Optional
 
 WEIXIN_DIRECT_REPLY_LIMIT = 1500
+SOURCE_FOOTER_TOOL_NAMES = {"search_my_notes", "review_followup"}
 DIRECT_REPLY_TOOL_NAMES = {
     "capture_content",
     "revise_capture_draft",
     "show_capture_draft",
     "commit_capture_draft",
     "record_life_event",
+    "review_followup",
 }
 
 AGENT_RESULT_ENVELOPE_FIELDS = {
@@ -107,6 +110,105 @@ def direct_reply_from_latest_tool_result(
         if role == "user":
             break
     return None
+
+
+def ensure_source_footer_for_final_response(
+    final_response: str,
+    messages: list[dict],
+    *,
+    platform: str = "",
+) -> str:
+    """Append a compact source footer when a RAG turn lost citations."""
+    response = (final_response or "").strip()
+    if not response:
+        return final_response
+    if _has_source_footer_marker(response):
+        return final_response
+
+    source_map = _latest_source_map_from_current_turn(messages)
+    if not source_map:
+        return final_response
+
+    footer = _format_source_footer(source_map, response)
+    if not footer:
+        return final_response
+
+    updated = f"{response}\n\n{footer}"
+    if (platform or "").lower() == "weixin" and len(updated) > WEIXIN_DIRECT_REPLY_LIMIT:
+        return _clip_with_required_footer(response, footer, WEIXIN_DIRECT_REPLY_LIMIT)
+    return updated
+
+
+def _has_source_footer_marker(text: str) -> bool:
+    if any(marker in text for marker in ("参考来源", "📎 来源", "📎来源")):
+        return True
+    return bool(re.search(r"(^|\n)\s*(来源|参考)[:：]", text))
+
+
+def _latest_source_map_from_current_turn(messages: list[dict]) -> list[dict]:
+    if not isinstance(messages, list):
+        return []
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "tool":
+            tool_name = str(msg.get("name") or "")
+            if tool_name not in SOURCE_FOOTER_TOOL_NAMES:
+                continue
+            structured = _extract_structured_result(msg.get("content"))
+            source_map = structured.get("source_map") if structured else None
+            if isinstance(source_map, list) and source_map:
+                return [s for s in source_map if isinstance(s, dict)]
+            continue
+        if role == "user":
+            break
+    return []
+
+
+def _format_source_footer(source_map: list[dict], response: str = "") -> str:
+    refs: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    cited_indexes = _referenced_source_indexes(response, len(source_map))
+    if cited_indexes:
+        selected = [(idx, source_map[idx - 1]) for idx in cited_indexes]
+    else:
+        selected = [(idx, source) for idx, source in enumerate(source_map, 1)]
+
+    for idx, source in selected:
+        title = str(source.get("title") or source.get("path") or "").strip()
+        path = str(source.get("path") or "").strip()
+        if not title:
+            continue
+        key = (title, path)
+        if not cited_indexes and key in seen:
+            continue
+        seen.add(key)
+        refs.append(f"[{idx}] {title}")
+        if len(refs) >= 3:
+            break
+    if not refs:
+        return ""
+    return "参考来源：" + "；".join(refs)
+
+
+def _referenced_source_indexes(text: str, source_count: int) -> list[int]:
+    indexes: list[int] = []
+    for match in re.finditer(r"\[(\d{1,3})\]", text or ""):
+        idx = int(match.group(1))
+        if 1 <= idx <= source_count and idx not in indexes:
+            indexes.append(idx)
+    return indexes
+
+
+def _clip_with_required_footer(response: str, footer: str, limit: int) -> str:
+    separator = "\n\n"
+    footer_budget = len(separator) + len(footer)
+    body_limit = max(0, limit - footer_budget - 1)
+    body = response[:body_limit].rstrip()
+    if len(response) > body_limit:
+        body += "…"
+    return f"{body}{separator}{footer}" if body else footer[:limit]
 
 
 def agent_result_envelope_content_for_model(result: Any) -> Optional[str]:

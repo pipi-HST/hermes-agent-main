@@ -32,7 +32,10 @@ from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.hermes_custom_envelope_adapter import direct_reply_from_latest_tool_result
+from agent.hermes_custom_envelope_adapter import (
+    direct_reply_from_latest_tool_result,
+    ensure_source_footer_for_final_response,
+)
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
@@ -3924,6 +3927,16 @@ def run_conversation(
     # Gate: only applied when a real text response exists for this
     # turn and the user didn't interrupt.  Empty/interrupted turns
     # already have other surface text that shouldn't be augmented.
+    if final_response and not interrupted:
+        try:
+            final_response = ensure_source_footer_for_final_response(
+                final_response,
+                messages,
+                platform=getattr(agent, "platform", None) or "",
+            )
+        except Exception as _source_err:
+            logger.debug("source footer guard failed: %s", _source_err)
+
     if final_response and not interrupted:
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}

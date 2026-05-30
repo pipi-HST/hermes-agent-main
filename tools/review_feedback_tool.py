@@ -15,26 +15,26 @@ from tools.registry import registry
 REVIEW_FEEDBACK_SCHEMA = {
     "name": "review_feedback",
     "description": (
-        "记录用户对每日回顾讲解的偏好。用户回复有用、以后再讲、不用复习、讲深一点，"
-        "并给出复习项编号时调用。"
+        "记录用户对每日回顾讲解的偏好。只在用户明确回复有用、以后再讲、不用复习"
+        "这类偏好反馈时调用；未给 item_id 时默认作用于最近讲过的回顾项。"
+        "不要用于展开一下、举例、对比、这对我有什么启发、讲深一点等内容追问。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "item_id": {
                 "type": "string",
-                "description": "daily_review 返回的复习项编号。",
+                "description": "可选。daily_review 返回的复习项编号；不填则使用最近讲过的回顾项。",
             },
             "outcome": {
                 "type": "string",
-                "enum": ["useful", "revisit", "mute", "deeper"],
+                "enum": ["useful", "revisit", "mute"],
                 "description": (
-                    "用户反馈：有用=useful，以后再讲=revisit，不用复习=mute，"
-                    "讲深一点=deeper。"
+                    "用户偏好反馈：有用=useful，以后再讲=revisit，不用复习=mute。"
                 ),
             },
         },
-        "required": ["item_id", "outcome"],
+        "required": ["outcome"],
     },
 }
 

@@ -11,7 +11,12 @@ from tools.registry import registry
 
 REVIEW_SCHEMA = {
     "name": "daily_review",
-    "description": "触发每日知识复习，根据艾宾浩斯遗忘曲线推送需要回顾的内容。",
+    "description": (
+        "触发每日知识复习，根据艾宾浩斯遗忘曲线推送需要回顾的内容。"
+        "调用后如果用户追问“展开一下”“讲深一点”“举例”“这对我有什么启发”，"
+        "应调用 review_followup 沿刚刚讲过的回顾项继续讲。"
+        "只有用户明确要求“对比”“关联其他文章”“找相关材料”时，才调用 search_my_notes。"
+    ),
     "parameters": {
         "type": "object",
         "properties": {},
