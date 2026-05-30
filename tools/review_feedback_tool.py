@@ -15,7 +15,8 @@ from tools.registry import registry
 REVIEW_FEEDBACK_SCHEMA = {
     "name": "review_feedback",
     "description": (
-        "记录用户对复习问题的反馈。用户回复记得、忘了、跳过或掌握，并给出复习项编号时调用。"
+        "记录用户对每日回顾讲解的偏好。用户回复有用、以后再讲、不用复习、讲深一点，"
+        "并给出复习项编号时调用。"
     ),
     "parameters": {
         "type": "object",
@@ -26,8 +27,11 @@ REVIEW_FEEDBACK_SCHEMA = {
             },
             "outcome": {
                 "type": "string",
-                "enum": ["remembered", "forgotten", "skip", "mastered"],
-                "description": "用户反馈：记得=remembered，忘了=forgotten，跳过=skip，掌握=mastered。",
+                "enum": ["useful", "revisit", "mute", "deeper"],
+                "description": (
+                    "用户反馈：有用=useful，以后再讲=revisit，不用复习=mute，"
+                    "讲深一点=deeper。"
+                ),
             },
         },
         "required": ["item_id", "outcome"],

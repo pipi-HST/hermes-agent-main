@@ -15,7 +15,7 @@ def test_review_feedback_handler_records_outcome(monkeypatch):
             "status": "success",
             "agent": "review",
             "intent": "record_review_feedback",
-            "chat_preview": "已更新这条复习的进度。",
+            "chat_preview": "已更新这条回顾偏好。",
             "durable_artifacts": [],
             "source_map": [],
             "next_actions": [],
@@ -31,10 +31,10 @@ def test_review_feedback_handler_records_outcome(monkeypatch):
     )
 
     result = json.loads(
-        review_feedback_tool._handler({"item_id": "ri1", "outcome": "remembered"})
+        review_feedback_tool._handler({"item_id": "ri1", "outcome": "useful"})
     )
 
-    assert calls == [{"item_id": "ri1", "outcome": "remembered"}]
+    assert calls == [{"item_id": "ri1", "outcome": "useful"}]
     assert result["agent"] == "review"
     assert result["intent"] == "record_review_feedback"
     assert result["meta"]["updated"] is True
@@ -49,3 +49,10 @@ def test_review_feedback_registered_in_personal_assistant_toolset():
     assert entry is not None
     assert entry.toolset == "personal-assistant"
     assert "outcome" in entry.schema["parameters"]["required"]
+    assert entry.schema["parameters"]["properties"]["outcome"]["enum"] == [
+        "useful",
+        "revisit",
+        "mute",
+        "deeper",
+    ]
+    assert "有用" in entry.schema["description"]
