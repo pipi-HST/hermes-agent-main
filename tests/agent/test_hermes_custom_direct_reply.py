@@ -40,6 +40,19 @@ def test_direct_reply_extracts_capture_user_visible_reply_for_weixin():
     )
 
 
+def test_direct_reply_extracts_life_rejection_for_weixin():
+    content = _tool_content("这条我暂时不能作为生活记录保存。", agent="life")
+
+    assert (
+        direct_reply_from_tool_result_content(
+            "record_life_event",
+            content,
+            platform="weixin",
+        )
+        == "这条我暂时不能作为生活记录保存。"
+    )
+
+
 def test_direct_reply_is_disabled_outside_weixin():
     content = _tool_content("草稿第 1 页正文")
 
