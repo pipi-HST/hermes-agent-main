@@ -15,9 +15,10 @@ from tools.registry import registry
 SYNTHESIZE_GARDEN_SCHEMA = {
     "name": "synthesize_garden",
     "description": (
-        "将多条知识库内容合成为一张结构化知识卡片（Garden Card）。"
+        "从知识库材料中提炼一张可审阅的 Garden 观点草稿。"
+        "它不会直接写入最终 garden 卡片；用户确认“确认观点/存入花园”后，"
+        "再调用 commit_garden_draft。用户提出修改意见时调用 revise_garden_draft。"
         "可指定 capture_ids 直接合成，或传 question_id 从主题聚类问题触发。"
-        "合成后卡片存入知识花园，可在每日回顾中出现。"
     ),
     "parameters": {
         "type": "object",

@@ -13,6 +13,9 @@ DIRECT_REPLY_TOOL_NAMES = {
     "revise_capture_draft",
     "show_capture_draft",
     "commit_capture_draft",
+    "synthesize_garden",
+    "revise_garden_draft",
+    "commit_garden_draft",
     "record_life_event",
     "review_followup",
 }

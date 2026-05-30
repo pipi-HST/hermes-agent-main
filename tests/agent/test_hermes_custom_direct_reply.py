@@ -96,6 +96,24 @@ def test_direct_reply_extracts_life_rejection_for_weixin():
     )
 
 
+def test_direct_reply_extracts_garden_preview_for_weixin():
+    content = _tool_content("已生成 Garden 观点草稿。", agent="garden")
+
+    for tool_name in (
+        "synthesize_garden",
+        "revise_garden_draft",
+        "commit_garden_draft",
+    ):
+        assert (
+            direct_reply_from_tool_result_content(
+                tool_name,
+                content,
+                platform="weixin",
+            )
+            == "已生成 Garden 观点草稿。"
+        )
+
+
 def test_direct_reply_is_disabled_outside_weixin():
     content = _tool_content("草稿第 1 页正文")
 
