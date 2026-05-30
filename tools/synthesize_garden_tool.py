@@ -19,6 +19,8 @@ SYNTHESIZE_GARDEN_SCHEMA = {
         "它不会直接写入最终 garden 卡片；用户确认“确认观点/存入花园”后，"
         "再调用 commit_garden_draft。用户提出修改意见时调用 revise_garden_draft。"
         "可指定 capture_ids 直接合成，或传 question_id 从主题聚类问题触发。"
+        "如果工具返回失败，不要减少 capture_ids 后静默重试；应明确告诉用户合成失败，"
+        "并保留原始材料范围，等待用户确认是否缩小范围。"
     ),
     "parameters": {
         "type": "object",

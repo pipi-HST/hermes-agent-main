@@ -95,3 +95,12 @@ def test_garden_draft_tools_register_in_personal_assistant_toolset():
     assert commit_entry.toolset == "personal-assistant"
     assert commit_entry.schema["parameters"]["required"] == []
     assert "确认" in commit_entry.schema["description"]
+
+
+def test_synthesize_garden_schema_forbids_silent_capture_reduction():
+    import tools.synthesize_garden_tool as tool
+
+    description = tool.SYNTHESIZE_GARDEN_SCHEMA["description"]
+
+    assert "不要减少 capture_ids" in description
+    assert "明确告诉用户" in description
