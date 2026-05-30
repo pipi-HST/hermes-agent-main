@@ -17,8 +17,9 @@ SHOW_CAPTURE_DRAFT_SCHEMA = {
     "description": (
         "查看最近或指定的待确认捕获草稿正文。用户说“展开草稿”“查看草稿”"
         "“看全文”“继续看”时调用。不要在 capture_content 或 revise_capture_draft 成功后自动调用；"
-        "只有用户明确要求展开/看全文/继续看时才调用。只读草稿，不正式入库；"
-        "入库仍需要用户明确回复“存库”。"
+        "只有用户明确要求展开/看全文/继续看时才调用。只读未入库草稿，不正式入库；"
+        "入库仍需要用户明确回复“存库”。不要把 search_my_notes 返回的 capture_note/"
+        "capture_section id 当成 draft_id；已入库知识库内容应继续使用 search_my_notes 回答。"
     ),
     "parameters": {
         "type": "object",

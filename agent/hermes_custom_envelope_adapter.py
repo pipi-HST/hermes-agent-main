@@ -45,6 +45,20 @@ def _extract_user_visible_reply(content: Any) -> Optional[str]:
     return content[len(marker): content.index(structured_marker)].strip()
 
 
+def _extract_structured_result(content: Any) -> Optional[dict]:
+    if not isinstance(content, str):
+        return None
+    marker = "\n\nSTRUCTURED_AGENT_RESULT_DO_NOT_REWRITE:\n"
+    if marker not in content:
+        return None
+    structured_text = content.split(marker, 1)[1].split("\n\n", 1)[0].strip()
+    try:
+        structured = json.loads(structured_text)
+    except Exception:
+        return None
+    return structured if isinstance(structured, dict) else None
+
+
 def direct_reply_from_tool_result_content(
     tool_name: str,
     content: Any,
@@ -63,6 +77,9 @@ def direct_reply_from_tool_result_content(
         return None
     reply = _extract_user_visible_reply(content)
     if not reply:
+        return None
+    structured = _extract_structured_result(content)
+    if structured and structured.get("status") != "success":
         return None
     return _clip_reply(reply)
 
