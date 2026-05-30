@@ -104,3 +104,41 @@ def test_synthesize_garden_schema_forbids_silent_capture_reduction():
 
     assert "不要减少 capture_ids" in description
     assert "明确告诉用户" in description
+
+
+def test_synthesize_garden_tool_accepts_card_kind(monkeypatch):
+    import tools.synthesize_garden_tool as tool
+
+    captured = {}
+
+    def fake_synthesize(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "success",
+            "agent": "garden",
+            "intent": "synthesize_garden",
+            "chat_preview": "已生成 Garden 方法卡草稿。",
+            "durable_artifacts": [],
+            "source_map": [],
+            "next_actions": [],
+            "warnings": [],
+            "errors": [],
+            "meta": {"card_kind": "method"},
+        }
+
+    monkeypatch.setattr(tool, "do_synthesize", fake_synthesize)
+
+    result = json.loads(tool._handler({
+        "capture_ids": ["cap1"],
+        "card_kind": "method",
+    }))
+
+    assert result["meta"]["card_kind"] == "method"
+    assert captured["card_kind"] == "method"
+    assert tool.SYNTHESIZE_GARDEN_SCHEMA["parameters"]["properties"]["card_kind"]["enum"] == [
+        "viewpoint",
+        "fact",
+        "method",
+        "caution",
+        "question",
+    ]

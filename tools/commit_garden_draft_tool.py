@@ -15,7 +15,7 @@ from tools.registry import registry
 COMMIT_GARDEN_DRAFT_SCHEMA = {
     "name": "commit_garden_draft",
     "description": (
-        "在用户明确确认后，把 Garden 观点草稿写入知识花园。"
+        "在用户明确确认后，把 Garden 知识卡片草稿写入知识花园。"
         "会创建 garden_cards 记录并写入 Obsidian garden/*.md。"
         "只有用户说“确认观点/存入花园/可以入库”这类确认语义时才调用。"
     ),

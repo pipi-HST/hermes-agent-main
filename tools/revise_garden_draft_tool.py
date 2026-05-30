@@ -1,4 +1,4 @@
-"""Hermes tool: revise_garden_draft — 修改 Garden 观点草稿."""
+"""Hermes tool: revise_garden_draft — 修改 Garden 知识卡片草稿."""
 from __future__ import annotations
 
 import sys
@@ -15,7 +15,7 @@ from tools.registry import registry
 REVISE_GARDEN_DRAFT_SCHEMA = {
     "name": "revise_garden_draft",
     "description": (
-        "根据用户修改意见更新最近或指定的 Garden 观点草稿。"
+        "根据用户修改意见更新最近或指定的 Garden 知识卡片草稿。"
         "适用于用户对刚生成的 Garden 草稿说“不满意/改一下/补充/强调某点”。"
         "不要用它修改 Capture 草稿。"
     ),
