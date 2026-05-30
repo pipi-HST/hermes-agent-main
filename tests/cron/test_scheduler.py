@@ -1434,6 +1434,34 @@ class TestRunJobConfigEnvVarExpansion:
             "config.yaml ${VAR} was not expanded in the cron execution path."
         )
 
+    def test_model_name_in_config_yaml_is_used_when_default_is_absent(self, tmp_path):
+        """Cron should honor current config schema model.name, not only model.default."""
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  provider: deepseek\n"
+            "  name: deepseek-v4-flash\n"
+        )
+
+        job = {"id": "name-job", "name": "name test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["model"] == "deepseek-v4-flash"
+
     def test_fallback_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
         """${VAR} in config.yaml fallback_providers model: is expanded."""
         (tmp_path / "config.yaml").write_text(
