@@ -494,7 +494,7 @@ TOOLSETS = {
             "show_capture_draft", "refine_capture", "search_my_notes",
             "log_decision", "wellness_check",
             "theme_scan", "graph_report", "synthesize_garden", "daily_review",
-            "audit_library", "record_life_event", "life_tick", "send_message",
+            "review_feedback", "audit_library", "record_life_event", "life_tick", "send_message",
         ],
         "includes": [],
     },
