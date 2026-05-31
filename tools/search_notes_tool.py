@@ -14,7 +14,12 @@ from tools.registry import registry
 
 SEARCH_SCHEMA = {
     "name": "search_my_notes",
-    "description": "搜索个人知识库中之前保存的文章、笔记。返回结果包含 [编号] 引用格式，请在回答中保留这些引用标注。",
+    "description": (
+        "基于个人知识库回答问题或搜索之前保存的文章、笔记。"
+        "工具内部会用 Capture/section 作为详细证据，并参考相关 Garden 卡片和 Theme 页面理解上下文。"
+        "返回结果包含 [编号] 引用格式，请在回答中保留这些引用标注。"
+        "如果用户追问“刚刚查了什么/用了哪些材料/工具有没有跑通”，调用 agent_run_status。"
+    ),
     "parameters": {
         "type": "object",
         "properties": {

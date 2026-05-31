@@ -50,7 +50,7 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Personal knowledge management (hermes-custom)
     "capture_content", "refine_capture", "search_my_notes", "audit_library",
-    "record_life_event", "life_tick", "review_followup",
+    "agent_run_status", "record_life_event", "life_tick", "review_followup",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -495,7 +495,7 @@ TOOLSETS = {
             "log_decision", "wellness_check",
             "theme_scan", "graph_report", "synthesize_garden",
             "revise_garden_draft", "commit_garden_draft", "daily_review",
-            "review_feedback", "review_followup", "audit_library",
+            "review_feedback", "review_followup", "audit_library", "agent_run_status",
             "record_life_event", "life_tick", "send_message",
         ],
         "includes": [],
