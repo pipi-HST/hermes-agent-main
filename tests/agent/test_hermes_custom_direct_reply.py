@@ -104,6 +104,7 @@ def test_direct_reply_extracts_garden_preview_for_weixin():
         "revise_garden_draft",
         "commit_garden_draft",
         "continue_rag_answer",
+        "generate_canvas",
     ):
         assert (
             direct_reply_from_tool_result_content(

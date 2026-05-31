@@ -15,6 +15,7 @@ DIRECT_REPLY_TOOL_NAMES = {
     "commit_capture_draft",
     "search_my_notes",
     "continue_rag_answer",
+    "generate_canvas",
     "synthesize_garden",
     "revise_garden_draft",
     "commit_garden_draft",

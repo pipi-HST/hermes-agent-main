@@ -492,7 +492,7 @@ TOOLSETS = {
         "tools": [
             "capture_content", "revise_capture_draft", "commit_capture_draft",
             "show_capture_draft", "refine_capture", "search_my_notes",
-            "continue_rag_answer",
+            "continue_rag_answer", "generate_canvas",
             "log_decision", "wellness_check",
             "theme_scan", "theme_candidates", "graph_report", "synthesize_garden",
             "revise_garden_draft", "commit_garden_draft", "daily_review",
