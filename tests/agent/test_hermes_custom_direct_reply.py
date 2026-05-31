@@ -103,6 +103,7 @@ def test_direct_reply_extracts_garden_preview_for_weixin():
         "synthesize_garden",
         "revise_garden_draft",
         "commit_garden_draft",
+        "continue_rag_answer",
     ):
         assert (
             direct_reply_from_tool_result_content(
@@ -112,6 +113,22 @@ def test_direct_reply_extracts_garden_preview_for_weixin():
             )
             == "已生成 Garden 观点草稿。"
         )
+
+
+def test_direct_reply_extracts_rag_answer_for_weixin():
+    content = _rag_tool_content(
+        "RAG 回答\n\n📎 来源\n[1] AI文章",
+        [{"title": "AI文章", "path": "captures/ai.md"}],
+    )
+
+    assert (
+        direct_reply_from_tool_result_content(
+            "search_my_notes",
+            content,
+            platform="weixin",
+        )
+        == "RAG 回答\n\n📎 来源\n[1] AI文章"
+    )
 
 
 def test_direct_reply_is_disabled_outside_weixin():
@@ -185,7 +202,7 @@ def test_direct_reply_does_not_use_error_tool_result_as_final_reply():
     )
 
 
-def test_latest_direct_reply_skips_error_tool_result_after_search():
+def test_latest_direct_reply_falls_back_to_search_result_after_draft_error():
     messages = [
         {"role": "user", "content": "为什么说工具决定模型上限，详细展开讲讲"},
         {
@@ -210,7 +227,10 @@ def test_latest_direct_reply_skips_error_tool_result_after_search():
         },
     ]
 
-    assert direct_reply_from_latest_tool_result(messages, platform="weixin") is None
+    assert direct_reply_from_latest_tool_result(messages, platform="weixin") == (
+        "搜索答案",
+        "search_my_notes",
+    )
 
 
 def test_source_footer_added_when_rag_answer_drops_citations():
@@ -294,6 +314,38 @@ def test_source_footer_added_when_final_answer_has_citation_but_no_source_list()
     )
 
     assert reply == "这是自然展开 [1]。\n\n参考来源：[1] AI文章"
+
+
+def test_source_footer_keeps_all_cited_sources():
+    source_map = [
+        {"title": f"来源{i}", "path": f"captures/{i}.md"}
+        for i in range(1, 7)
+    ]
+    messages = [
+        {"role": "user", "content": "结合知识库回答"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call1", "function": {"name": "search_my_notes"}},
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "search_my_notes",
+            "content": _rag_tool_content("工具回答", source_map),
+            "tool_call_id": "call1",
+        },
+        {"role": "assistant", "content": "回答用了很多来源 [1][2][3][4][5][6]。"},
+    ]
+
+    reply = ensure_source_footer_for_final_response(
+        "回答用了很多来源 [1][2][3][4][5][6]。",
+        messages,
+        platform="weixin",
+    )
+
+    assert "[6] 来源6" in reply
 
 
 def test_source_footer_only_adds_sources_cited_by_final_answer():

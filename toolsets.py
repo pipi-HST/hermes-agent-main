@@ -492,8 +492,9 @@ TOOLSETS = {
         "tools": [
             "capture_content", "revise_capture_draft", "commit_capture_draft",
             "show_capture_draft", "refine_capture", "search_my_notes",
+            "continue_rag_answer",
             "log_decision", "wellness_check",
-            "theme_scan", "graph_report", "synthesize_garden",
+            "theme_scan", "theme_candidates", "graph_report", "synthesize_garden",
             "revise_garden_draft", "commit_garden_draft", "daily_review",
             "review_feedback", "review_followup", "audit_library", "agent_run_status",
             "record_life_event", "life_tick", "send_message",

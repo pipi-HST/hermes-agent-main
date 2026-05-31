@@ -21,6 +21,8 @@ SHOW_CAPTURE_DRAFT_SCHEMA = {
         "只有用户明确要求展开/看全文/继续看待确认草稿时才调用。"
         "不要用于 daily_review、Review 回顾项、已入库文章或知识库追问；"
         "用户在 Review 后说“展开一下”“讲深一点”“举例”时，应使用 review_followup。"
+        "用户在知识库回答后说“展开全文”“继续展开”“讲详细点”时，应继续使用 search_my_notes，"
+        "不要把它理解成查看草稿。"
         "只读未入库草稿，不正式入库；入库仍需要用户明确回复“存库”。"
         "不要把 search_my_notes 返回的 capture_note/capture_section id 当成 draft_id；"
         "已入库知识库内容应继续使用 search_my_notes 回答。"

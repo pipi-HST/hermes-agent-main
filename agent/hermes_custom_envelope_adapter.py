@@ -13,6 +13,8 @@ DIRECT_REPLY_TOOL_NAMES = {
     "revise_capture_draft",
     "show_capture_draft",
     "commit_capture_draft",
+    "search_my_notes",
+    "continue_rag_answer",
     "synthesize_garden",
     "revise_garden_draft",
     "commit_garden_draft",
@@ -187,8 +189,12 @@ def _format_source_footer(source_map: list[dict], response: str = "") -> str:
         if not cited_indexes and key in seen:
             continue
         seen.add(key)
-        refs.append(f"[{idx}] {title}")
-        if len(refs) >= 3:
+        section = str(source.get("section") or "").strip()
+        ref = f"[{idx}] {title}"
+        if section:
+            ref += f" / {section}"
+        refs.append(ref)
+        if len(refs) >= 8:
             break
     if not refs:
         return ""

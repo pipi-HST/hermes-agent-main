@@ -13,15 +13,16 @@ RECORD_LIFE_EVENT_SCHEMA = {
     "name": "record_life_event",
     "description": (
         "记录 Life Assistant 支持的生活节奏事件或提醒回复。"
-        "仅在消息明确属于生活/健康记录、带有「生活：」「健康：」前缀，"
-        "或正在回复 Life 提醒时调用；不要用于知识笔记、读书摘录、观点记录或手动状态查询。"
+        "仅在消息明确属于生活/健康记录、长期决定/长期决策复盘、带有「生活：」「健康：」前缀，"
+        "或正在回复 Life 提醒时调用；长期决定的内容、补充下次复盘时间、复盘回复都交给本工具解析；"
+        "不要用于知识笔记、读书摘录、观点记录或手动状态查询。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "message": {
                 "type": "string",
-                "description": "用户原始生活消息，例如「午饭吃了牛肉饭」「我睡了」「今天不练了」。",
+                "description": "用户原始生活消息，例如「午饭吃了牛肉饭」「我睡了」「今天不练了」「长期决定：未来三个月优先打磨 Life Assistant」。",
             },
             "received_at": {
                 "type": "string",

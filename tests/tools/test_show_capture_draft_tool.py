@@ -12,3 +12,12 @@ def test_show_capture_draft_schema_restricts_review_followups_to_rag():
     assert "Review" in description
     assert "展开一下" in description
     assert "search_my_notes" in description
+
+
+def test_show_capture_draft_schema_rejects_expand_full_text_after_rag_answer():
+    import tools.show_capture_draft_tool as show_capture_draft_tool
+
+    description = show_capture_draft_tool.SHOW_CAPTURE_DRAFT_SCHEMA["description"]
+
+    assert "展开全文" in description
+    assert "知识库回答" in description
