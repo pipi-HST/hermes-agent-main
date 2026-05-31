@@ -17,8 +17,8 @@ SYNTHESIZE_GARDEN_SCHEMA = {
     "description": (
         "从知识库材料中提炼一张可审阅的 Garden 知识卡片草稿。"
         "卡片可以是观点卡、事实卡、方法卡、注意卡或问题卡；"
-        "用户没指定类型时由 Garden Agent 判断。"
-        "它不会直接写入最终 garden 卡片；用户确认“确认观点/存入花园”后，"
+        "用户没指定类型时由 Garden Agent 判断，不要为了确定类型追问用户。"
+        "它不会直接写入最终 garden 卡片；用户确认“确认卡片/确认观点/存入花园”后，"
         "再调用 commit_garden_draft。用户提出修改意见时调用 revise_garden_draft。"
         "可指定 capture_ids 直接合成，或传 question_id 从主题聚类问题触发。"
         "如果工具返回失败，不要减少 capture_ids 后静默重试；应明确告诉用户合成失败，"
@@ -43,7 +43,7 @@ SYNTHESIZE_GARDEN_SCHEMA = {
             "card_kind": {
                 "type": "string",
                 "enum": ["viewpoint", "fact", "method", "caution", "question"],
-                "description": "可选，指定知识卡片类型；不填则由 Garden Agent 判断。",
+                "description": "可选系统提示，指定知识卡片类型；不填则由 Garden Agent 判断，不要要求用户先选择类型。",
             },
         },
         "required": [],

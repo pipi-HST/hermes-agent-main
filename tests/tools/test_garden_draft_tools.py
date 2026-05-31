@@ -24,7 +24,7 @@ def test_revise_garden_draft_tool_preserves_envelope(monkeypatch):
         "source_map": [],
         "next_actions": [
             {
-                "label": "确认观点入库",
+                "label": "确认卡片入库",
                 "intent": "commit_garden_draft",
                 "payload": {"draft_id": "draft1"},
                 "requires_confirmation": True,
@@ -142,3 +142,15 @@ def test_synthesize_garden_tool_accepts_card_kind(monkeypatch):
         "caution",
         "question",
     ]
+
+
+def test_synthesize_garden_tool_treats_card_kind_as_optional_agent_hint():
+    import tools.synthesize_garden_tool as tool
+
+    description = tool.SYNTHESIZE_GARDEN_SCHEMA["description"]
+    card_kind_description = (
+        tool.SYNTHESIZE_GARDEN_SCHEMA["parameters"]["properties"]["card_kind"]["description"]
+    )
+
+    assert "不要为了确定类型追问用户" in description
+    assert "系统提示" in card_kind_description
