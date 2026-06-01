@@ -41,7 +41,11 @@ THEME_SCAN_SCHEMA = {
                     "是否重扫已扫描过的 captures。默认 false；只有用户明确要求"
                     "重建/扫描全部/重新整理主题页时才设为 true。"
                 ),
-            }
+            },
+            "export_file": {
+                "type": "boolean",
+                "description": "只有用户明确要求发文件、导出完整扫描报告或附件时才设为 true；普通扫描保持 false。",
+            },
         },
         "required": [],
     },
@@ -50,7 +54,10 @@ THEME_SCAN_SCHEMA = {
 
 def _handler(args: dict, **kw) -> str:
     try:
-        result = run_theme_scan(rescan_all=bool(args.get("rescan_all")))
+        result = run_theme_scan(
+            rescan_all=bool(args.get("rescan_all")),
+            export_file=bool(args.get("export_file", False)),
+        )
         return envelope_json(result)
     except Exception as exc:
         return envelope_error_json(agent="theme", intent="run_theme_scan", exc=exc)

@@ -30,6 +30,10 @@ SEARCH_SCHEMA = {
                 "type": "string",
                 "description": "用户的自然语言问题或搜索关键词",
             },
+            "export_file": {
+                "type": "boolean",
+                "description": "只有用户明确要求发文件、导出、完整报告、完整引用报告时才设为 true；普通知识库问答必须保持 false。",
+            },
         },
         "required": ["query"],
     },
@@ -38,14 +42,24 @@ SEARCH_SCHEMA = {
 
 def _handler(args: dict, **kw) -> str:
     try:
-        result = do_search(args.get("query", ""))
+        if bool(args.get("export_file", False)):
+            result = do_search(args.get("query", ""), export_file=True)
+        else:
+            result = do_search(args.get("query", ""))
         result["meta"] = {
             **result.get("meta", {}),
             "handler_instruction": "最终回答使用 chat_preview，并保留所有引用标注和 source_map。",
         }
         return envelope_json(result)
     except Exception as exc:
-        return envelope_error_json(agent="rag", intent="search_knowledge_base", exc=exc)
+        return envelope_error_json(
+            agent="rag",
+            intent="search_knowledge_base",
+            exc=exc,
+            meta={
+                "handler_instruction": "最终回答使用 chat_preview，并保留所有引用标注和 source_map。",
+            },
+        )
 
 
 registry.register(

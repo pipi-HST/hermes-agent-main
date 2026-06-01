@@ -33,6 +33,10 @@ GENERATE_CANVAS_SCHEMA = {
             },
             "capture_ids": {"type": "array", "items": {"type": "string"}},
             "garden_card_ids": {"type": "array", "items": {"type": "string"}},
+            "export_file": {
+                "type": "boolean",
+                "description": "只有用户明确要求把 Canvas 文件作为附件发出时才设为 true；普通生成到 Obsidian 保持 false。",
+            },
         },
         "required": [],
     },
@@ -46,6 +50,7 @@ def _handler(args: dict, **kw) -> str:
             question_id=args.get("question_id", ""),
             capture_ids=args.get("capture_ids"),
             garden_card_ids=args.get("garden_card_ids"),
+            export_file=bool(args.get("export_file", False)),
         )
         return envelope_json(result)
     except Exception as exc:

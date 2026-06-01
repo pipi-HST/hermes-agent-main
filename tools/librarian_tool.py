@@ -27,7 +27,11 @@ LIBRARIAN_SCHEMA = {
                 "description": (
                     "是否执行安全机械修复。默认 false；只有用户明确确认执行修复时才传 true。"
                 ),
-            }
+            },
+            "export_file": {
+                "type": "boolean",
+                "description": "只有用户明确要求发文件、导出完整审计报告或附件时才设为 true；普通审计保持 false。",
+            },
         },
         "required": [],
     },
@@ -36,7 +40,10 @@ LIBRARIAN_SCHEMA = {
 
 def _handler(args: dict, **kw) -> str:
     try:
-        result = run_librarian_audit(apply=bool(args.get("apply", False)))
+        result = run_librarian_audit(
+            apply=bool(args.get("apply", False)),
+            export_file=bool(args.get("export_file", False)),
+        )
         return envelope_json(result)
     except Exception as exc:
         return envelope_error_json(agent="librarian", intent="audit_library", exc=exc)

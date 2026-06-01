@@ -34,3 +34,12 @@ def test_theme_scan_schema_routes_existing_candidate_followups_to_theme_candidat
     assert "有哪些内容" in description
     assert "theme_candidates" in description
     assert "不要用 search_my_notes" in description
+
+
+def test_theme_scan_schema_exposes_file_export_flag():
+    import tools.theme_scan_tool as theme_scan_tool
+
+    props = theme_scan_tool.THEME_SCAN_SCHEMA["parameters"]["properties"]
+
+    assert props["export_file"]["type"] == "boolean"
+    assert "明确要求发文件" in props["export_file"]["description"]

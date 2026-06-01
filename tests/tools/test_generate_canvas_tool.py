@@ -17,3 +17,4 @@ def test_generate_canvas_tool_registers_in_personal_assistant_toolset():
 
     assert entry is not None
     assert entry.toolset == "personal-assistant"
+    assert entry.schema["parameters"]["properties"]["export_file"]["type"] == "boolean"

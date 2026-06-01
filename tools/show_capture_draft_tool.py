@@ -38,6 +38,10 @@ SHOW_CAPTURE_DRAFT_SCHEMA = {
                 "type": "integer",
                 "description": "页码，从 1 开始；用户说“继续看”时查看下一页。",
             },
+            "as_file": {
+                "type": "boolean",
+                "description": "只有用户明确要求把 Capture 草稿全文发成文件/附件时才设为 true；普通展开草稿保持 false。",
+            },
         },
     },
 }
@@ -45,10 +49,17 @@ SHOW_CAPTURE_DRAFT_SCHEMA = {
 
 def _handler(args: dict, **kw) -> str:
     try:
-        result = show_capture_draft(
-            args.get("draft_id", ""),
-            args.get("page", 1),
-        )
+        if bool(args.get("as_file", False)):
+            result = show_capture_draft(
+                args.get("draft_id", ""),
+                args.get("page", 1),
+                as_file=True,
+            )
+        else:
+            result = show_capture_draft(
+                args.get("draft_id", ""),
+                args.get("page", 1),
+            )
         return envelope_json(result)
     except Exception as exc:
         return envelope_error_json(agent="capture", intent="show_capture_draft", exc=exc)

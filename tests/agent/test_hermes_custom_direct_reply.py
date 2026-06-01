@@ -1,6 +1,7 @@
 import json
 
 from agent.hermes_custom_envelope_adapter import (
+    agent_result_envelope_content_for_model,
     ensure_source_footer_for_final_response,
     direct_reply_from_latest_tool_result,
     direct_reply_from_tool_result_content,
@@ -129,6 +130,71 @@ def test_direct_reply_extracts_rag_answer_for_weixin():
             platform="weixin",
         )
         == "RAG 回答\n\n📎 来源\n[1] AI文章"
+    )
+
+
+def test_envelope_adapter_mentions_media_attachment_for_user_requested_artifacts():
+    from bridge.result_envelope import artifact_ref, envelope_json, success_envelope
+
+    content = agent_result_envelope_content_for_model(
+        envelope_json(
+            success_envelope(
+                agent="rag",
+                intent="search_knowledge_base",
+                chat_preview="已生成完整报告。",
+                durable_artifacts=[
+                    artifact_ref(
+                        type="rag_answer_report",
+                        id="r1",
+                        title="完整报告",
+                        path="/tmp/rag.md",
+                        status="created",
+                    )
+                ],
+            )
+        )
+    )
+
+    assert content is not None
+    assert "MEDIA:/tmp/rag.md" in content
+    assert "only if the user explicitly requested a file" in content
+
+
+def test_direct_reply_skips_file_artifact_so_model_can_send_attachment():
+    structured = {
+        "status": "success",
+        "agent": "rag",
+        "intent": "search_knowledge_base",
+        "durable_artifacts": [
+            {
+                "type": "rag_answer_report",
+                "id": "r1",
+                "title": "完整报告",
+                "path": "/tmp/rag.md",
+                "status": "created",
+            }
+        ],
+        "source_map": [],
+        "next_actions": [],
+        "warnings": [],
+        "errors": [],
+        "meta": {},
+    }
+    content = (
+        "USER_VISIBLE_REPLY:\n"
+        "已生成完整报告。\n\n"
+        "STRUCTURED_AGENT_RESULT_DO_NOT_REWRITE:\n"
+        f"{json.dumps(structured, ensure_ascii=False)}\n\n"
+        "Return USER_VISIBLE_REPLY as-is as the chat response."
+    )
+
+    assert (
+        direct_reply_from_tool_result_content(
+            "search_my_notes",
+            content,
+            platform="weixin",
+        )
+        is None
     )
 
 

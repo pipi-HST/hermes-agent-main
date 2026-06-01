@@ -21,7 +21,12 @@ CONTINUE_RAG_ANSWER_SCHEMA = {
     ),
     "parameters": {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "export_file": {
+                "type": "boolean",
+                "description": "只有用户明确要求把上一条完整 RAG 回答/引用报告发成文件时才设为 true；普通继续展开保持 false。",
+            },
+        },
         "required": [],
     },
 }
@@ -29,7 +34,10 @@ CONTINUE_RAG_ANSWER_SCHEMA = {
 
 def _handler(args: dict, **kw) -> str:
     try:
-        result = continue_latest_rag_answer()
+        if bool(args.get("export_file", False)):
+            result = continue_latest_rag_answer(export_file=True)
+        else:
+            result = continue_latest_rag_answer()
         return envelope_json(result)
     except Exception as exc:
         return envelope_error_json(agent="rag", intent="continue_rag_answer", exc=exc)

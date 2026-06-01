@@ -135,6 +135,7 @@ def test_synthesize_garden_tool_accepts_card_kind(monkeypatch):
 
     assert result["meta"]["card_kind"] == "method"
     assert captured["card_kind"] == "method"
+    assert captured["export_file"] is False
     assert tool.SYNTHESIZE_GARDEN_SCHEMA["parameters"]["properties"]["card_kind"]["enum"] == [
         "viewpoint",
         "fact",
@@ -142,6 +143,7 @@ def test_synthesize_garden_tool_accepts_card_kind(monkeypatch):
         "caution",
         "question",
     ]
+    assert tool.SYNTHESIZE_GARDEN_SCHEMA["parameters"]["properties"]["export_file"]["type"] == "boolean"
 
 
 def test_synthesize_garden_tool_treats_card_kind_as_optional_agent_hint():

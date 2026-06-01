@@ -17,7 +17,9 @@ CAPTURE_SCHEMA = {
     "description": (
         "提取内容并生成待确认草稿。支持三种输入：\n"
         "1. 链接URL：直接把用户发的链接传给 content（包括微信公众号 mp.weixin.qq.com、"
-        "小红书 xhslink.com/xiaohongshu.com、普通网页等），工具会自动抓取网页正文。\n"
+        "小红书 xhslink.com/xiaohongshu.com、普通网页等）。小红书会按图文笔记处理："
+        "先展开分享短链，提取标题/正文/多张图片，并对图片按顺序 OCR 后一起生成草稿；"
+        "普通网页会自动抓取网页正文。\n"
         "2. 图片文件路径：当用户发送图片时，你会看到类似 [User sent an image: /tmp/xxx.jpg] "
         "的占位文本——提取其中的文件路径（如 /tmp/xxx.jpg）传给 content，工具会自动做 OCR "
         "提取图中文字并生成草稿。\n"
@@ -38,6 +40,7 @@ CAPTURE_SCHEMA = {
                 "type": "string",
                 "description": (
                     "用户发来的原始内容。可以是：(1) URL链接，工具自动抓取网页；"
+                    "小红书链接会提取图文和图片 OCR；"
                     "(2) 图片文件路径（如 /tmp/xxx.jpg），工具自动 OCR；"
                     "(3) 语音转写文本或普通文本，直接作为草稿内容处理。"
                 ),

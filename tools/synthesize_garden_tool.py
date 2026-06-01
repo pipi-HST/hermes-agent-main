@@ -45,6 +45,10 @@ SYNTHESIZE_GARDEN_SCHEMA = {
                 "enum": ["viewpoint", "fact", "method", "caution", "question"],
                 "description": "可选系统提示，指定知识卡片类型；不填则由 Garden Agent 判断，不要要求用户先选择类型。",
             },
+            "export_file": {
+                "type": "boolean",
+                "description": "只有用户明确要求把 Garden 草稿发成文件/附件时才设为 true；普通生成草稿保持 false。",
+            },
         },
         "required": [],
     },
@@ -58,6 +62,7 @@ def _handler(params: dict, **kw) -> str:
             question_id=params.get("question_id", ""),
             title=params.get("title", ""),
             card_kind=params.get("card_kind", ""),
+            export_file=bool(params.get("export_file", False)),
         )
         return envelope_json(result)
     except Exception as exc:
