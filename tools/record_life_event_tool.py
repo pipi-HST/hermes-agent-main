@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import sys
-sys.path.insert(0, "/Users/pipi/hermes-custom")
+sys.path.insert(0, "/Users/pipi/hermes-life")
 
-from bridge.life_bridge import record_life_event as do_record_life_event
-from bridge.result_envelope import envelope_json
+from hermes_life.bridge.life_bridge import record_life_event as do_record_life_event
+from hermes_life.bridge.result_envelope import envelope_json
 from tools.hermes_custom_envelope import envelope_error_json
 from tools.registry import registry
 
