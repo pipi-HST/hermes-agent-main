@@ -27,6 +27,18 @@ def test_search_my_notes_export_file_is_explicit_opt_in():
     assert "只有用户明确要求" in prop["description"]
 
 
+def test_search_notes_schema_routes_previous_rag_export_to_continue_tool():
+    import tools.search_notes_tool as tool
+
+    description = tool.SEARCH_SCHEMA["description"]
+    export_description = tool.SEARCH_SCHEMA["parameters"]["properties"]["export_file"]["description"]
+
+    assert "导出文档" in description
+    assert "continue_rag_answer(export_file=true)" in description
+    assert "不要重新调用本工具" in description
+    assert "上一条 RAG 回答" in export_description
+
+
 def test_search_my_notes_handler_passes_export_file(monkeypatch):
     import tools.search_notes_tool as tool
 

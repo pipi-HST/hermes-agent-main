@@ -10,6 +10,9 @@ def test_continue_rag_answer_schema_targets_rag_followups():
     assert "继续展开" in description
     assert "上一条 RAG" in description
     assert "不要重新检索" in description
+    assert "导出文档" in description
+    assert "发文件" in description
+    assert "保存成 Markdown" in description
 
 
 def test_continue_rag_answer_registered_in_personal_assistant_toolset():

@@ -15,7 +15,7 @@ from tools.registry import registry
 CAPTURE_SCHEMA = {
     "name": "capture_content",
     "description": (
-        "提取内容并生成待确认草稿。支持三种输入：\n"
+        "提取内容并生成待确认草稿。支持四种输入：\n"
         "1. 链接URL：直接把用户发的链接传给 content（包括微信公众号 mp.weixin.qq.com、"
         "小红书 xhslink.com/xiaohongshu.com、普通网页等）。小红书会按图文笔记处理："
         "先展开分享短链，提取标题/正文/多张图片，并对图片按顺序 OCR 后一起生成草稿；"
@@ -23,7 +23,11 @@ CAPTURE_SCHEMA = {
         "2. 图片文件路径：当用户发送图片时，你会看到类似 [User sent an image: /tmp/xxx.jpg] "
         "的占位文本——提取其中的文件路径（如 /tmp/xxx.jpg）传给 content，工具会自动做 OCR "
         "提取图中文字并生成草稿。\n"
-        "3. 语音/音频转写文本：微信语音消息会自动转成文字传给你，直接把转写文本传给 content "
+        "3. 文档文件路径：当用户发送 .md/.txt/.docx/.pdf 等文档时，你会看到本地绝对路径"
+        "（如 /Users/.../.hermes/cache/documents/doc_xxx_整理稿.md）。如果用户要求总结、"
+        "提取、整理、保存或入库该文档，直接把这个文件路径传给 content，"
+        "不要要求用户粘贴正文，也不要假设文档正文已经注入给你。\n"
+        "4. 语音/音频转写文本：微信语音消息会自动转成文字传给你，直接把转写文本传给 content "
         "即可，和发普通文本一样处理。\n"
         "如果用户同时要求总结/提取/改写/全文保存/全文入库/全文存储/全文存进数据库，"
         "把用户的原话尽量完整放入 instruction，不要只传 URL，"
@@ -42,7 +46,9 @@ CAPTURE_SCHEMA = {
                     "用户发来的原始内容。可以是：(1) URL链接，工具自动抓取网页；"
                     "小红书链接会提取图文和图片 OCR；"
                     "(2) 图片文件路径（如 /tmp/xxx.jpg），工具自动 OCR；"
-                    "(3) 语音转写文本或普通文本，直接作为草稿内容处理。"
+                    "(3) 文档文件路径（如 /Users/.../doc_xxx.md、.txt、.docx、.pdf），"
+                    "工具读取文档正文后处理；"
+                    "(4) 语音转写文本或普通文本，直接作为草稿内容处理。"
                 ),
             },
             "instruction": {

@@ -82,6 +82,9 @@ def direct_reply_from_tool_result_content(
     """
     if (platform or "").lower() != "weixin":
         return None
+    mirrored_send_reply = _mirrored_send_message_empty_reply(tool_name, content)
+    if mirrored_send_reply is not None:
+        return mirrored_send_reply
     if tool_name not in DIRECT_REPLY_TOOL_NAMES:
         return None
     reply = _extract_user_visible_reply(content)
@@ -90,9 +93,34 @@ def direct_reply_from_tool_result_content(
     structured = _extract_structured_result(content)
     if structured and structured.get("status") != "success":
         return None
-    if structured and _local_file_artifact_paths(structured):
-        return None
+    if structured:
+        paths = _local_file_artifact_paths(structured)
+        if paths:
+            return _reply_with_media_artifacts(reply, paths)
     return _clip_reply(reply)
+
+
+def _mirrored_send_message_empty_reply(tool_name: str, content: Any) -> Optional[str]:
+    if tool_name != "send_message" or not isinstance(content, str):
+        return None
+    try:
+        payload = json.loads(content)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if (
+        payload.get("success") is True
+        and payload.get("platform") == "weixin"
+        and payload.get("mirrored") is True
+    ):
+        return "(empty)"
+    return None
+
+
+def _reply_with_media_artifacts(reply: str, paths: list[str]) -> str:
+    media_tags = "\n".join(f"MEDIA:{path}" for path in paths)
+    return media_tags
 
 
 def direct_reply_from_latest_tool_result(
@@ -270,7 +298,7 @@ def _artifact_attachment_instruction(structured: dict) -> str:
     media_examples = " ".join(f"MEDIA:{path}" for path in paths)
     return (
         "If durable_artifacts contains an absolute local file path and the user explicitly requested a file/export/attachment, "
-        f"send a short status message and call send_message with {media_examples}; "
+        f"include {media_examples} in the final reply so the gateway sends it as a native attachment; "
         "only if the user explicitly requested a file. "
         "Do not attach files automatically for normal answers. "
     )

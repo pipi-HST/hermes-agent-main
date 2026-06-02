@@ -17,6 +17,8 @@ CONTINUE_RAG_ANSWER_SCHEMA = {
     "description": (
         "继续展开上一条 RAG 知识库回答的后续内容。"
         "当用户在知识库回答后说“继续展开”“展开全文”“接着说”“后面呢”时调用。"
+        "当用户在上一条 RAG 回答后说“导出文档”“发文件”“保存成 Markdown”“完整引用报告”时，"
+        "调用本工具并设置 export_file=true。"
         "本工具只读取上一条 RAG 完整答案的下一页，不要重新检索、不要改写成新的 search_my_notes 查询。"
     ),
     "parameters": {

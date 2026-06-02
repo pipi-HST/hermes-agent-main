@@ -160,7 +160,7 @@ def test_envelope_adapter_mentions_media_attachment_for_user_requested_artifacts
     assert "only if the user explicitly requested a file" in content
 
 
-def test_direct_reply_skips_file_artifact_so_model_can_send_attachment():
+def test_direct_reply_includes_file_artifact_media_for_weixin():
     structured = {
         "status": "success",
         "agent": "rag",
@@ -194,7 +194,25 @@ def test_direct_reply_skips_file_artifact_so_model_can_send_attachment():
             content,
             platform="weixin",
         )
-        is None
+        == "MEDIA:/tmp/rag.md"
+    )
+
+
+def test_direct_reply_suppresses_mirrored_send_message_confirmation_for_weixin():
+    content = json.dumps({
+        "success": True,
+        "platform": "weixin",
+        "message_id": "m1",
+        "mirrored": True,
+    })
+
+    assert (
+        direct_reply_from_tool_result_content(
+            "send_message",
+            content,
+            platform="weixin",
+        )
+        == "(empty)"
     )
 
 

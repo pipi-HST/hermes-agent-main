@@ -779,6 +779,81 @@ def _build_media_placeholder(event) -> str:
     return "\n".join(parts)
 
 
+def _format_document_context_note(path: str, mime_type: str = "") -> str:
+    """Tell the agent to pass document paths to tools instead of assuming inline text."""
+    from tools.credential_files import to_agent_visible_cache_path
+
+    basename = os.path.basename(path)
+    parts = basename.split("_", 2)
+    display_name = parts[2] if len(parts) >= 3 else basename
+    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+    agent_path = to_agent_visible_cache_path(path)
+    try:
+        size_bytes = os.path.getsize(path)
+        size_text = f"; size: {size_bytes} bytes"
+    except OSError:
+        size_text = ""
+    mime_text = f"; type: {mime_type}" if mime_type else ""
+    return (
+        f"[User sent a document: {display_name}; path: {agent_path}"
+        f"{mime_text}{size_text}. "
+        "If the user wants this document summarized, extracted, organized, saved, "
+        "or captured into the knowledge base, call capture_content with content "
+        "set exactly to this file path and instruction set to the user's current "
+        "or immediately preceding request. Do not assume the document body is "
+        "already included in the conversation.]"
+    )
+
+
+_DOCUMENT_CONTEXT_RE = re.compile(
+    r"\[User sent a document: (?P<name>.*?); path: (?P<path>.*?)(?:; type: (?P<mime>.*?))?(?:; size: .*?)?\. "
+    r"If the user wants this document",
+    re.S,
+)
+
+
+def _latest_user_text_instruction(history: List[Dict[str, Any]]) -> str:
+    for item in reversed(history or []):
+        if item.get("role") != "user":
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content or "[User sent a document:" in content:
+            continue
+        if content.startswith("/"):
+            continue
+        return content[:500]
+    return ""
+
+
+def _latest_document_context_note(history: List[Dict[str, Any]]) -> str:
+    for item in reversed(history or []):
+        if item.get("role") != "user":
+            continue
+        content = str(item.get("content") or "")
+        match = _DOCUMENT_CONTEXT_RE.search(content)
+        if not match:
+            continue
+        path = match.group("path").strip()
+        mime_type = (match.group("mime") or "").strip()
+        if path:
+            return _format_document_context_note(path, mime_type)
+    return ""
+
+
+def _looks_like_document_followup_request(text: str) -> bool:
+    text = (text or "").strip()
+    if not text:
+        return False
+    has_document_ref = bool(re.search(r"(这篇|这份|这个|该|刚发|刚才|文件|文档|材料|文章|稿)", text))
+    has_capture_action = bool(
+        re.search(
+            r"(总结|整理|提取|概括|保存|入库|存库|归档|全文|核心内容|重点|改写|润色|发给我|展开)",
+            text,
+        )
+    )
+    return has_document_ref and has_capture_action
+
+
 def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
     """Consume and return the full pending event for a session.
 
@@ -7205,9 +7280,8 @@ class GatewayRunner:
 
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
-            from tools.credential_files import to_agent_visible_cache_path
 
-            _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
+            _TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype in {"", "application/octet-stream"}:
@@ -7221,29 +7295,30 @@ class GatewayRunner:
                 if not mtype.startswith(("application/", "text/")):
                     continue
 
-                basename = os.path.basename(path)
-                parts = basename.split("_", 2)
-                display_name = parts[2] if len(parts) >= 3 else basename
-                display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-
-                # Translate host cache path to in-container path if running under Docker backend.
-                # This ensures the agent receives a path it can open inside its sandbox, as the
-                # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
-                agent_path = to_agent_visible_cache_path(path)
-
-                if mtype.startswith("text/"):
-                    context_note = (
-                        f"[The user sent a text document: '{display_name}'. "
-                        f"Its content has been included below. "
-                        f"The file is also saved at: {agent_path}]"
-                    )
-                else:
-                    context_note = (
-                        f"[The user sent a document: '{display_name}'. "
-                        f"The file is saved at: {agent_path}. "
-                        f"Ask the user what they'd like you to do with it.]"
-                    )
+                context_note = _format_document_context_note(path, mtype)
+                if not (message_text or "").strip():
+                    previous_instruction = _latest_user_text_instruction(history)
+                    if previous_instruction:
+                        context_note = (
+                            f"{context_note}\n\n"
+                            "[Associated instruction from immediately preceding user message]\n"
+                            f"{previous_instruction}"
+                        )
                 message_text = f"{context_note}\n\n{message_text}"
+
+        if (
+            not event.media_urls
+            and _looks_like_document_followup_request(message_text)
+            and "[User sent a document:" not in message_text
+        ):
+            recent_document = _latest_document_context_note(history)
+            if recent_document:
+                message_text = (
+                    "[Recent document available for this request]\n"
+                    f"{recent_document}\n\n"
+                    "[User request for the recent document]\n"
+                    f"{message_text}"
+                )
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text

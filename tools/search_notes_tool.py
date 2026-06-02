@@ -20,6 +20,8 @@ SEARCH_SCHEMA = {
         "返回结果包含 [编号] 引用格式，请在回答中保留这些引用标注。"
         "用户在一次知识库回答后说“继续展开”“展开全文”“接着说”“后面呢”时，调用 continue_rag_answer 续读上一条完整答案，"
         "不要重新调用本工具检索。用户提出新问题或新角度时才调用本工具。"
+        "用户在上一条 RAG 回答后说“导出文档”“发文件”“保存成 Markdown”“完整引用报告”时，"
+        "调用 continue_rag_answer(export_file=true)，不要重新调用本工具。"
         "不要调用 show_capture_draft，除非用户明确说要看未入库 Capture 草稿。"
         "如果用户追问“刚刚查了什么/用了哪些材料/工具有没有跑通”，调用 agent_run_status。"
     ),
@@ -32,7 +34,7 @@ SEARCH_SCHEMA = {
             },
             "export_file": {
                 "type": "boolean",
-                "description": "只有用户明确要求发文件、导出、完整报告、完整引用报告时才设为 true；普通知识库问答必须保持 false。",
+                "description": "只有用户明确要求把本次新搜索发文件、导出、完整报告、完整引用报告时才设为 true；普通知识库问答必须保持 false。若用户要导出上一条 RAG 回答，必须调用 continue_rag_answer(export_file=true)。",
             },
         },
         "required": ["query"],
