@@ -17,7 +17,9 @@ GENERATE_CANVAS_SCHEMA = {
     "description": (
         "为 Obsidian 知识库生成 Canvas 关系图/画板。"
         "当用户说“生成 Canvas”“做成关系图”“把这个主题做成画板”时调用。"
-        "优先围绕 Theme/MOC 展开，左侧放来源 captures，右侧放 Garden cards。"
+        "当用户说“Garden Card 可视化”“知识卡片画布”“卡片聚类图”时，不要硬找 Theme/MOC，"
+        "直接调用本工具并把 theme 留空，工具会以 Garden cards 为主角生成聚类 Canvas。"
+        "当用户明确指定主题/MOC 时，围绕 Theme/MOC 展开。"
         "本工具只生成 .canvas 文件，不改写原笔记内容。"
     ),
     "parameters": {
