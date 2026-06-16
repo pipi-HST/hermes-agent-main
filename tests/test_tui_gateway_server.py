@@ -635,6 +635,16 @@ def test_resolve_model_strips_config_model(monkeypatch):
     assert server._resolve_model() == "nous/hermes-test"
 
 
+def test_resolve_model_accepts_config_model_name(monkeypatch):
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"model": {"name": " deepseek-v4-flash "}}
+    )
+
+    assert server._resolve_model() == "deepseek-v4-flash"
+
+
 def test_startup_runtime_uses_tui_provider_env(monkeypatch):
     monkeypatch.setenv("HERMES_MODEL", "nous/hermes-test")
     monkeypatch.setenv("HERMES_TUI_PROVIDER", "nous")
@@ -3214,6 +3224,164 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
 
     # Cleanup
     server._sessions.pop(sid, None)
+
+
+def test_session_create_passes_session_toolsets_to_agent(monkeypatch):
+    captured_toolsets: list[list[str] | None] = []
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            return None
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "x"
+            self.provider = "openrouter"
+            self.base_url = ""
+            self.api_key = ""
+
+    def _fake_make_agent(sid, key, session_id=None, enabled_toolsets=None):
+        captured_toolsets.append(enabled_toolsets)
+        return _FakeAgent()
+
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {
+                "cols": 80,
+                "enabled_toolsets": ["personal-assistant"],
+            },
+        }
+    )
+    sid = resp["result"]["session_id"]
+    session = server._sessions[sid]
+    session["agent_ready"].wait(timeout=2.0)
+
+    assert captured_toolsets == [["personal-assistant"]]
+
+    server._sessions.pop(sid, None)
+
+
+def test_session_resume_passes_requested_toolsets_to_agent(monkeypatch):
+    captured_toolsets: list[list[str] | None] = []
+    captured_session_overrides: list[list[str] | None] = []
+
+    class _FakeDB:
+        def get_session(self, session_id):
+            return {"id": session_id}
+
+        def reopen_session(self, _session_id):
+            return None
+
+        def get_messages_as_conversation(self, _session_id, include_ancestors=False):
+            return [{"role": "user", "content": "hello"}]
+
+    class _FakeAgent:
+        model = "x"
+        provider = "openrouter"
+        base_url = ""
+        api_key = ""
+
+    def _fake_make_agent(sid, key, session_id=None, enabled_toolsets=None):
+        captured_toolsets.append(enabled_toolsets)
+        return _FakeAgent()
+
+    def _fake_init_session(
+        sid,
+        key,
+        agent,
+        history,
+        cols=80,
+        enabled_toolsets_override=None,
+    ):
+        captured_session_overrides.append(enabled_toolsets_override)
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
+    monkeypatch.setattr(server, "_init_session", _fake_init_session)
+    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.resume",
+            "params": {
+                "session_id": "tip",
+                "enabled_toolsets": ["personal-assistant"],
+            },
+        }
+    )
+
+    assert "error" not in resp
+    assert captured_toolsets == [["personal-assistant"]]
+    assert captured_session_overrides == [["personal-assistant"]]
+
+
+def test_session_append_local_messages_persists_ui_only_actions(monkeypatch):
+    appended: list[tuple[str, str, str]] = []
+
+    class _FakeDB:
+        def append_message(self, session_id, role, content):
+            appended.append((session_id, role, content))
+            return len(appended)
+
+    session = {
+        "session_key": "session-key",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+    }
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.append_local_messages",
+                "params": {
+                    "session_id": "sid",
+                    "messages": [
+                        {"role": "user", "text": "存库"},
+                        {"role": "assistant", "text": "已确认入库：《A》。"},
+                    ],
+                },
+            }
+        )
+
+        assert resp["result"] == {"appended": 2}
+        assert session["history"] == [
+            {"role": "user", "content": "存库"},
+            {"role": "assistant", "content": "已确认入库：《A》。"},
+        ]
+        assert session["history_version"] == 1
+        assert appended == [
+            ("session-key", "user", "存库"),
+            ("session-key", "assistant", "已确认入库：《A》。"),
+        ]
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):

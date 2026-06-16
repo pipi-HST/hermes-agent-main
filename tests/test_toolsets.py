@@ -254,3 +254,20 @@ class TestDefaultPlatformWebSearchCoverage:
 
     def test_hermes_api_server_toolset_includes_web_search(self):
         assert "web_search" in resolve_toolset("hermes-api-server")
+
+
+class TestKnowledgeProductToolsets:
+    def test_personal_assistant_hides_theme_and_canvas_main_path(self):
+        tools = set(resolve_toolset("personal-assistant"))
+
+        assert "generate_canvas" not in tools
+        assert "theme_scan" not in tools
+        assert "theme_candidates" not in tools
+        assert "start_reading_session" in tools
+        assert "save_answer_to_knowledge" in tools
+        assert "synthesize_garden" in tools
+
+    def test_knowledge_advanced_keeps_theme_and_canvas_available(self):
+        tools = set(resolve_toolset("knowledge-advanced"))
+
+        assert {"generate_canvas", "theme_scan", "theme_candidates"}.issubset(tools)

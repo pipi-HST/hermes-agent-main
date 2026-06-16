@@ -140,8 +140,7 @@ def test_synthesize_garden_tool_accepts_card_kind(monkeypatch):
         "viewpoint",
         "fact",
         "method",
-        "caution",
-        "question",
+        "risk",
     ]
     assert tool.SYNTHESIZE_GARDEN_SCHEMA["parameters"]["properties"]["export_file"]["type"] == "boolean"
 

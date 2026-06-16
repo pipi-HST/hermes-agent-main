@@ -7,6 +7,8 @@ def test_theme_scan_schema_describes_index_first_scan():
 
     description = theme_scan_tool.THEME_SCAN_SCHEMA["description"]
 
+    assert "themes/*.md" in description
+    assert "MOC 风格的关系地图" in description
     assert "索引图谱" in description
     assert "不再逐篇调用 LLM 精筛" in description
     assert "不是扫描失败" in description
@@ -19,6 +21,8 @@ def test_theme_scan_schema_prevents_unconfirmed_rescan_and_preserves_next_action
 
     description = theme_scan_tool.THEME_SCAN_SCHEMA["description"]
 
+    assert "整理主题关联" in description
+    assert "沉淀成知识卡片" in description
     assert "不要自动改成 rescan_all=true" in description
     assert "先问用户是否全库扫描" in description
     assert "用户回复编号" in description

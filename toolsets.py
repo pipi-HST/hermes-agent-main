@@ -50,7 +50,10 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Personal knowledge management (hermes-custom)
     "capture_content", "refine_capture", "search_my_notes", "audit_library",
-    "agent_run_status", "record_life_event", "life_tick", "review_followup",
+    "start_reading_session", "discuss_reading", "show_reading_session",
+    "summarize_reading_session", "commit_reading_artifact",
+    "save_answer_to_knowledge",
+    "agent_run_status", "review_followup",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -492,13 +495,21 @@ TOOLSETS = {
         "tools": [
             "capture_content", "revise_capture_draft", "commit_capture_draft",
             "show_capture_draft", "refine_capture", "search_my_notes",
-            "continue_rag_answer", "generate_canvas",
-            "log_decision", "wellness_check",
-            "theme_scan", "theme_candidates", "graph_report", "synthesize_garden",
+            "continue_rag_answer",
+            "start_reading_session", "discuss_reading", "show_reading_session",
+            "summarize_reading_session", "commit_reading_artifact",
+            "save_answer_to_knowledge",
+            "graph_report", "synthesize_garden",
             "revise_garden_draft", "commit_garden_draft", "daily_review",
             "review_feedback", "review_followup", "audit_library", "agent_run_status",
-            "record_life_event", "life_tick", "send_message",
+            "send_message",
         ],
+        "includes": [],
+    },
+
+    "knowledge-advanced": {
+        "description": "Advanced/internal knowledge maintenance and visualization tools",
+        "tools": ["theme_scan", "theme_candidates", "generate_canvas"],
         "includes": [],
     },
 

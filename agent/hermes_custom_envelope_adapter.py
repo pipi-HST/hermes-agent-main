@@ -13,6 +13,7 @@ DIRECT_REPLY_TOOL_NAMES = {
     "revise_capture_draft",
     "show_capture_draft",
     "commit_capture_draft",
+    "save_answer_to_knowledge",
     "search_my_notes",
     "continue_rag_answer",
     "generate_canvas",

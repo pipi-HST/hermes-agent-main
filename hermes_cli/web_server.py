@@ -10,12 +10,15 @@ Usage:
 """
 
 import asyncio
+import base64
 import hmac
 import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -86,8 +89,10 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
-# In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
-# or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
+# In-browser terminal Chat tab (/chat, /api/pty, …). Off unless
+# ``hermes dashboard --tui`` or HERMES_DASHBOARD_TUI=1. The JSON-RPC sidecar
+# at /api/ws stays available to non-terminal dashboard pages such as
+# /knowledge-chat, guarded by the same token and loopback checks.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
 
 # Simple rate limiter for the reveal endpoint
@@ -460,6 +465,12 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+class DashboardUploadBody(BaseModel):
+    name: str
+    mime_type: str = ""
+    content_base64: str
+
+
 class ModelAssignment(BaseModel):
     """Payload for POST /api/model/set — assign a provider/model to a slot.
 
@@ -475,6 +486,15 @@ class ModelAssignment(BaseModel):
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
+_DASHBOARD_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+
+
+def _safe_dashboard_upload_name(name: str) -> str:
+    raw = Path(name or "upload").name
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", raw).strip(" .")
+    return cleaned or "upload"
+
+
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
 except (ValueError, TypeError):
@@ -637,6 +657,32 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+    }
+
+
+@app.post("/api/dashboard/uploads")
+async def upload_dashboard_file(body: DashboardUploadBody, request: Request):
+    _require_token(request)
+    try:
+        data = base64.b64decode(body.content_base64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 content")
+
+    if len(data) > _DASHBOARD_UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Upload too large")
+
+    upload_dir = PROJECT_ROOT / "tmp" / "dashboard-uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_dashboard_upload_name(body.name)
+    saved_path = upload_dir / f"{time.strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}-{safe_name}"
+    saved_path.write_bytes(data)
+
+    return {
+        "ok": True,
+        "name": safe_name,
+        "path": str(saved_path.resolve()),
+        "mime_type": body.mime_type,
+        "size": len(data),
     }
 
 
@@ -3395,22 +3441,18 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /api/ws — JSON-RPC WebSocket sidecar for the dashboard "Chat" tab.
+# /api/ws — JSON-RPC WebSocket sidecar for dashboard chat surfaces.
 #
 # Drives the same `tui_gateway.dispatch` surface Ink uses over stdio, so the
-# dashboard can render structured metadata (model badge, tool-call sidebar,
-# slash launcher, session info) alongside the xterm.js terminal that PTY
-# already paints. Both transports bind to the same session id when one is
-# active, so a tool.start emitted by the agent fans out to both sinks.
+# dashboard can render GUI chat, structured metadata, model badges, tool-call
+# sidebars, slash launchers, and session info. Unlike /api/pty, this endpoint
+# is useful without the terminal embed and remains protected by token +
+# loopback checks.
 # ---------------------------------------------------------------------------
 
 
 @app.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
-    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
-        return
-
     token = ws.query_params.get("token", "")
     if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         await ws.close(code=4401)
@@ -4303,6 +4345,433 @@ async def post_plugin_visibility(request: Request, name: str, body: _PluginVisib
     config["dashboard"]["hidden_plugins"] = hidden_list
     save_config(config)
     return {"ok": True, "name": name, "hidden": body.hidden}
+
+
+# ---------------------------------------------------------------------------
+# Hermes Knowledge product APIs
+# ---------------------------------------------------------------------------
+
+_KNOWLEDGE_CARD_KINDS = ("viewpoint", "method", "fact", "risk")
+
+
+class _KnowledgeDraftRevisionBody(BaseModel):
+    instruction: str
+
+
+class _KnowledgeAnswerDraftBody(BaseModel):
+    hermes_session_id: str = ""
+    user_message: str = ""
+    assistant_answer: str
+    instruction: str = ""
+    output_type: str = "auto"
+    assistant_message_id: str = ""
+    sources: list[dict[str, Any]] = []
+    target_capture_id: str = ""
+    answer_source: str = "auto"
+
+
+def _knowledge_custom_root() -> Path:
+    return Path(os.environ.get("HERMES_CUSTOM_ROOT", "/Users/pipi/hermes-custom")).expanduser()
+
+
+def _knowledge_db_path() -> Path:
+    return Path(
+        os.environ.get(
+            "HERMES_KNOWLEDGE_DB",
+            str(_knowledge_custom_root() / "data" / "captures.db"),
+        )
+    ).expanduser()
+
+
+def _knowledge_vault_path() -> Path:
+    config_path = _knowledge_custom_root() / "config.yaml"
+    if config_path.exists():
+        try:
+            cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            vault = cfg.get("vault") if isinstance(cfg, dict) else {}
+            if isinstance(vault, dict) and vault.get("path"):
+                return Path(str(vault["path"])).expanduser()
+        except Exception:
+            _log.warning("Failed to read Hermes Knowledge config at %s", config_path)
+    return Path("~/Obsidian/hermes-vault").expanduser()
+
+
+def _knowledge_conn() -> sqlite3.Connection:
+    db_path = _knowledge_db_path()
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail=f"Knowledge DB not found: {db_path}")
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _json_value(text: str, fallback):
+    try:
+        value = json.loads(text or "")
+    except (json.JSONDecodeError, TypeError):
+        return fallback
+    return value if isinstance(value, type(fallback)) else fallback
+
+
+def _clip_text(text: str, limit: int = 360) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _knowledge_read_note(vault_path: Path, file_path: str) -> tuple[dict, str] | None:
+    if not file_path:
+        return None
+    path = vault_path / file_path
+    if not path.exists() or not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            try:
+                frontmatter = yaml.safe_load(parts[1]) or {}
+            except yaml.YAMLError:
+                frontmatter = {}
+            return frontmatter, parts[2].strip()
+    return {}, text
+
+
+def _draft_row(row: sqlite3.Row, *, full: bool = False) -> dict:
+    data = dict(row)
+    capture_intent = _json_value(str(data.get("capture_intent") or "{}"), {})
+    draft_text = str(data.get("draft_text") or "")
+    raw_text = str(data.get("raw_text") or "")
+    body = draft_text or raw_text
+    result = {
+        "id": data.get("id", ""),
+        "title": data.get("title", "") or "未命名",
+        "status": data.get("status", ""),
+        "source": data.get("source", ""),
+        "source_type": data.get("source_type", ""),
+        "word_count": data.get("word_count", 0),
+        "instruction": data.get("instruction", ""),
+        "summary": data.get("summary", ""),
+        "tags": _json_value(str(data.get("tags") or "[]"), []),
+        "capture_intent": capture_intent,
+        "user_intent": capture_intent.get("material_intent")
+        or ("full_text" if capture_intent.get("output_shape") == ["full_text"] else ""),
+        "committed_capture_id": data.get("committed_capture_id", ""),
+        "created_at": data.get("created_at", ""),
+        "updated_at": data.get("updated_at", ""),
+        "draft_preview": _clip_text(body, 420),
+        "raw_preview": _clip_text(raw_text, 260),
+    }
+    if full:
+        result["draft_text"] = draft_text
+        result["raw_text"] = raw_text
+    return result
+
+
+def _reading_draft_row(row: sqlite3.Row, *, full: bool = False) -> dict:
+    data = dict(row)
+    result = {
+        "id": data.get("id", ""),
+        "session_id": data.get("session_id", ""),
+        "output_type": data.get("output_type", ""),
+        "target_capture_id": data.get("target_capture_id", ""),
+        "title": data.get("title", "") or "未命名",
+        "summary": data.get("summary", ""),
+        "status": data.get("status", ""),
+        "created_at": data.get("created_at", ""),
+        "updated_at": data.get("updated_at", ""),
+        "draft_preview": _clip_text(str(data.get("draft_text") or ""), 420),
+        "meta": _json_value(str(data.get("meta_json") or "{}"), {}),
+    }
+    if full:
+        result["draft_text"] = str(data.get("draft_text") or "")
+    return result
+
+
+@app.get("/api/knowledge/capture-drafts")
+async def get_knowledge_capture_drafts(request: Request, limit: int = 50):
+    _require_token(request)
+    with _knowledge_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM capture_drafts
+               ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                        rowid DESC
+               LIMIT ?""",
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+    drafts = [_draft_row(row) for row in rows]
+    return {
+        "drafts": drafts,
+        "total": len(drafts),
+        "open_count": sum(
+            1
+            for draft in drafts
+            if draft["status"] in {"raw_extracted", "draft_ready", "revision_requested", "draft_incomplete"}
+        ),
+    }
+
+
+@app.get("/api/knowledge/capture-drafts/{draft_id}")
+async def get_knowledge_capture_draft(request: Request, draft_id: str):
+    _require_token(request)
+    with _knowledge_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM capture_drafts WHERE id = ?",
+            (draft_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Capture draft not found")
+    return {"draft": _draft_row(row, full=True)}
+
+
+@app.post("/api/knowledge/capture-drafts/{draft_id}/commit")
+async def post_knowledge_capture_draft_commit(request: Request, draft_id: str):
+    _require_token(request)
+    root = _knowledge_custom_root()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from bridge.capture_bridge import commit_capture_draft
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Capture bridge unavailable: {exc}") from exc
+    result = commit_capture_draft(draft_id)
+    return result
+
+
+@app.post("/api/knowledge/capture-drafts/{draft_id}/revise")
+async def post_knowledge_capture_draft_revise(
+    request: Request,
+    draft_id: str,
+    body: _KnowledgeDraftRevisionBody,
+):
+    _require_token(request)
+    root = _knowledge_custom_root()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from bridge.capture_bridge import revise_capture_draft
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Capture bridge unavailable: {exc}") from exc
+    result = revise_capture_draft(draft_id=draft_id, instruction=body.instruction)
+    return result
+
+
+@app.post("/api/knowledge/answer-drafts")
+async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDraftBody):
+    _require_token(request)
+    root = _knowledge_custom_root()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from bridge.answer_bridge import save_answer_to_knowledge
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Answer bridge unavailable: {exc}") from exc
+    return save_answer_to_knowledge(
+        hermes_session_id=body.hermes_session_id,
+        user_message=body.user_message,
+        assistant_answer=body.assistant_answer,
+        instruction=body.instruction,
+        output_type=body.output_type,
+        assistant_message_id=body.assistant_message_id,
+        sources=body.sources,
+        target_capture_id=body.target_capture_id,
+        answer_source=body.answer_source,
+    )
+
+
+@app.get("/api/knowledge/reading-drafts")
+async def get_knowledge_reading_drafts(request: Request, limit: int = 50):
+    _require_token(request)
+    with _knowledge_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM reading_drafts
+               ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                        rowid DESC
+               LIMIT ?""",
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+    drafts = [_reading_draft_row(row) for row in rows]
+    return {
+        "drafts": drafts,
+        "total": len(drafts),
+        "open_count": sum(1 for draft in drafts if draft["status"] == "open"),
+    }
+
+
+@app.get("/api/knowledge/reading-drafts/{draft_id}")
+async def get_knowledge_reading_draft(request: Request, draft_id: str):
+    _require_token(request)
+    with _knowledge_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM reading_drafts WHERE id = ?",
+            (draft_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Reading draft not found")
+    return {"draft": _reading_draft_row(row, full=True)}
+
+
+@app.post("/api/knowledge/reading-drafts/{draft_id}/commit")
+async def post_knowledge_reading_draft_commit(request: Request, draft_id: str):
+    _require_token(request)
+    root = _knowledge_custom_root()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from bridge.reading_bridge import commit_reading_artifact
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Reading bridge unavailable: {exc}") from exc
+    return commit_reading_artifact(draft_id=draft_id)
+
+
+@app.post("/api/knowledge/reading-drafts/{draft_id}/revise")
+async def post_knowledge_reading_draft_revise(
+    request: Request,
+    draft_id: str,
+    body: _KnowledgeDraftRevisionBody,
+):
+    _require_token(request)
+    root = _knowledge_custom_root()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from bridge.answer_bridge import revise_answer_draft
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Answer bridge unavailable: {exc}") from exc
+    return revise_answer_draft(draft_id=draft_id, instruction=body.instruction)
+
+
+def _source_for_capture(conn: sqlite3.Connection, vault_path: Path, capture_id: str) -> dict:
+    row = conn.execute(
+        "SELECT id, file_path FROM captures WHERE id = ?",
+        (capture_id,),
+    ).fetchone()
+    if not row:
+        return {
+            "id": capture_id,
+            "title": "未找到来源材料",
+            "file_path": "",
+            "summary": "",
+        }
+    file_path = str(row["file_path"] or "")
+    note = _knowledge_read_note(vault_path, file_path)
+    frontmatter = note[0] if note else {}
+    title = str(frontmatter.get("title") or "").strip() or Path(file_path).stem or str(row["id"])
+    return {
+        "id": str(row["id"]),
+        "title": title,
+        "file_path": file_path,
+        "summary": str(frontmatter.get("story") or "").strip(),
+    }
+
+
+def _knowledge_card_note(vault_path: Path, card_id: str) -> tuple[str, dict, str]:
+    if not card_id:
+        return "", {}, ""
+    garden_dir = vault_path / "garden"
+    if not garden_dir.exists():
+        return "", {}, ""
+    matches = sorted(garden_dir.glob(f"*-{card_id}.md"))
+    if not matches:
+        return "", {}, ""
+    rel_path = f"garden/{matches[0].name}"
+    note = _knowledge_read_note(vault_path, rel_path)
+    if not note:
+        return rel_path, {}, ""
+    frontmatter, body = note
+    return rel_path, frontmatter, body
+
+
+def _knowledge_card_row(
+    row: sqlite3.Row,
+    *,
+    conn: sqlite3.Connection,
+    vault_path: Path,
+    full: bool = False,
+) -> dict:
+    data = dict(row)
+    card_id = str(data.get("id") or "")
+    file_path, frontmatter, markdown = _knowledge_card_note(vault_path, card_id)
+    capture_ids = _json_value(str(data.get("capture_ids") or "[]"), [])
+    core_arguments = _json_value(str(data.get("core_arguments") or "[]"), [])
+    knowledge_links = _json_value(str(data.get("knowledge_links") or "[]"), [])
+    key_materials = _json_value(str(data.get("key_materials") or "[]"), [])
+    summary = str(data.get("one_liner") or "").strip()
+    if not summary and core_arguments:
+        first = core_arguments[0]
+        if isinstance(first, dict):
+            summary = str(first.get("claim") or "").strip()
+        else:
+            summary = str(first).strip()
+    kind = str(data.get("card_kind") or "viewpoint").strip() or "viewpoint"
+    if kind not in _KNOWLEDGE_CARD_KINDS:
+        kind = "viewpoint"
+    card = {
+        "id": card_id,
+        "title": data.get("title", "") or "未命名卡片",
+        "kind": kind,
+        "summary": summary,
+        "status": data.get("status", ""),
+        "updated_at": data.get("updated_at", ""),
+        "created_at": data.get("created_at", ""),
+        "file_path": file_path,
+        "source_theme": str(frontmatter.get("source_theme") or "").strip(),
+        "sources": [
+            _source_for_capture(conn, vault_path, str(capture_id))
+            for capture_id in capture_ids
+            if str(capture_id).strip()
+        ],
+        "source_count": len(capture_ids),
+    }
+    if full:
+        card.update(
+            {
+                "core_arguments": core_arguments,
+                "knowledge_links": knowledge_links,
+                "key_materials": key_materials,
+                "my_view": data.get("my_view", ""),
+                "markdown": markdown,
+            }
+        )
+    return card
+
+
+@app.get("/api/knowledge/cards")
+async def get_knowledge_cards(request: Request, limit: int = 100):
+    _require_token(request)
+    vault_path = _knowledge_vault_path()
+    with _knowledge_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM garden_cards
+               ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                        rowid DESC
+               LIMIT ?""",
+            (max(1, min(limit, 300)),),
+        ).fetchall()
+        cards = [
+            _knowledge_card_row(row, conn=conn, vault_path=vault_path, full=True)
+            for row in rows
+        ]
+    groups = {kind: 0 for kind in _KNOWLEDGE_CARD_KINDS}
+    for card in cards:
+        groups[card["kind"]] = groups.get(card["kind"], 0) + 1
+    return {"cards": cards, "groups": groups, "total": len(cards)}
+
+
+@app.get("/api/knowledge/cards/{card_id}")
+async def get_knowledge_card(request: Request, card_id: str):
+    _require_token(request)
+    vault_path = _knowledge_vault_path()
+    with _knowledge_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM garden_cards WHERE id = ?",
+            (card_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Knowledge card not found")
+        card = _knowledge_card_row(row, conn=conn, vault_path=vault_path, full=True)
+    return {"card": card}
 
 
 @app.get("/dashboard-plugins/{plugin_name}/{file_path:path}")

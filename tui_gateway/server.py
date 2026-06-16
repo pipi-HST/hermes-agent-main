@@ -553,7 +553,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
         try:
             tokens = _set_session_context(key)
             try:
-                agent = _make_agent(sid, key)
+                enabled_toolsets_override = current.get("enabled_toolsets_override")
+                if enabled_toolsets_override is None:
+                    agent = _make_agent(sid, key)
+                else:
+                    agent = _make_agent(
+                        sid,
+                        key,
+                        enabled_toolsets=enabled_toolsets_override,
+                    )
             finally:
                 _clear_session_context(tokens)
 
@@ -781,7 +789,7 @@ def _resolve_model() -> str:
         return env
     m = _load_cfg().get("model", "")
     if isinstance(m, dict):
-        return str(m.get("default", "") or "").strip()
+        return str(m.get("default") or m.get("name") or m.get("model") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
     return "anthropic/claude-sonnet-4"
@@ -1024,6 +1032,35 @@ def _load_enabled_toolsets() -> list[str] | None:
                 flush=True,
             )
         return None
+
+
+def _normalize_session_toolsets(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("enabled_toolsets must be a list")
+
+    names = [str(item).strip() for item in value if str(item).strip()]
+    if not names:
+        return None
+
+    try:
+        from toolsets import validate_toolset
+    except Exception:
+        validate_toolset = None
+
+    if validate_toolset is not None:
+        unknown = [
+            name
+            for name in names
+            if name not in {"all", "*"} and not validate_toolset(name)
+        ]
+        if unknown:
+            raise ValueError(f"unknown toolset(s): {', '.join(unknown)}")
+
+    if any(name in {"all", "*"} for name in names):
+        return None
+    return names
 
 
 def _session_tool_progress_mode(sid: str) -> str:
@@ -1836,9 +1873,18 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
 def _reset_session_agent(sid: str, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
     try:
-        new_agent = _make_agent(
-            sid, session["session_key"], session_id=session["session_key"]
-        )
+        enabled_toolsets_override = session.get("enabled_toolsets_override")
+        if enabled_toolsets_override is None:
+            new_agent = _make_agent(
+                sid, session["session_key"], session_id=session["session_key"]
+            )
+        else:
+            new_agent = _make_agent(
+                sid,
+                session["session_key"],
+                session_id=session["session_key"],
+                enabled_toolsets=enabled_toolsets_override,
+            )
     finally:
         _clear_session_context(tokens)
     session["agent"] = new_agent
@@ -1858,7 +1904,12 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     return info
 
 
-def _make_agent(sid: str, key: str, session_id: str | None = None):
+def _make_agent(
+    sid: str,
+    key: str,
+    session_id: str | None = None,
+    enabled_toolsets: list[str] | None = None,
+):
     from run_agent import AIAgent
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -1898,7 +1949,11 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         verbose_logging=_load_tool_progress_mode() == "verbose",
         reasoning_config=_load_reasoning_config(),
         service_tier=_load_service_tier(),
-        enabled_toolsets=_load_enabled_toolsets(),
+        enabled_toolsets=(
+            enabled_toolsets
+            if enabled_toolsets is not None
+            else _load_enabled_toolsets()
+        ),
         platform="tui",
         session_id=session_id or key,
         session_db=_get_db(),
@@ -1911,7 +1966,14 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     )
 
 
-def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
+def _init_session(
+    sid: str,
+    key: str,
+    agent,
+    history: list,
+    cols: int = 80,
+    enabled_toolsets_override: list[str] | None = None,
+):
     _sessions[sid] = {
         "agent": agent,
         "session_key": key,
@@ -1927,6 +1989,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "tool_progress_mode": _load_tool_progress_mode(),
         "edit_snapshots": {},
         "tool_started_at": {},
+        "enabled_toolsets_override": enabled_toolsets_override,
         # Pin async event emissions to whichever transport created the
         # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
         "transport": current_transport() or _stdio_transport,
@@ -2097,6 +2160,12 @@ def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
+    try:
+        enabled_toolsets_override = _normalize_session_toolsets(
+            params.get("enabled_toolsets")
+        )
+    except ValueError as exc:
+        return _err(rid, 4019, str(exc))
     _enable_gateway_prompts()
 
     ready = threading.Event()
@@ -2115,6 +2184,7 @@ def _(rid, params: dict) -> dict:
         "pending_title": None,
         "running": False,
         "session_key": key,
+        "enabled_toolsets_override": enabled_toolsets_override,
         "show_reasoning": _load_show_reasoning(),
         "slash_worker": None,
         "tool_progress_mode": _load_tool_progress_mode(),
@@ -2258,6 +2328,9 @@ def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
     _enable_gateway_prompts()
     try:
+        enabled_toolsets_override = _normalize_session_toolsets(
+            params.get("enabled_toolsets")
+        )
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
         display_history = db.get_messages_as_conversation(
@@ -2266,10 +2339,18 @@ def _(rid, params: dict) -> dict:
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
-            agent = _make_agent(sid, target, session_id=target)
+            agent = _make_agent(
+                sid,
+                target,
+                session_id=target,
+                enabled_toolsets=enabled_toolsets_override,
+            )
         finally:
             _clear_session_context(tokens)
-        _init_session(sid, target, agent, history, cols=int(params.get("cols", 80)))
+        init_kwargs = {"cols": int(params.get("cols", 80))}
+        if enabled_toolsets_override is not None:
+            init_kwargs["enabled_toolsets_override"] = enabled_toolsets_override
+        _init_session(sid, target, agent, history, **init_kwargs)
     except Exception as e:
         return _err(rid, 5000, f"resume failed: {e}")
     return _ok(
@@ -2282,6 +2363,45 @@ def _(rid, params: dict) -> dict:
             "info": _session_info(agent),
         },
     )
+
+
+@method("session.append_local_messages")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+
+    raw_messages = params.get("messages")
+    if not isinstance(raw_messages, list):
+        return _err(rid, 4008, "messages must be a list")
+
+    messages: list[dict[str, str]] = []
+    for raw in raw_messages:
+        if not isinstance(raw, dict):
+            continue
+        role = str(raw.get("role") or "").strip()
+        text = str(raw.get("text") or raw.get("content") or "").strip()
+        if role not in {"user", "assistant"} or not text:
+            continue
+        messages.append({"role": role, "content": text})
+
+    if not messages:
+        return _ok(rid, {"appended": 0})
+
+    with session["history_lock"]:
+        session["history"] = [*session.get("history", []), *messages]
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+
+    db = _get_db()
+    if db is not None:
+        for message in messages:
+            db.append_message(
+                session_id=session["session_key"],
+                role=message["role"],
+                content=message["content"],
+            )
+
+    return _ok(rid, {"appended": len(messages)})
 
 
 @method("session.delete")

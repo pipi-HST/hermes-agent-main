@@ -1789,6 +1789,24 @@ class TestSilentDelivery:
             tick(verbose=False)
         deliver_mock.assert_called_once()
 
+    def test_repeated_failed_job_suppresses_duplicate_delivery(self, caplog):
+        job = {
+            **self._make_job(),
+            "last_status": "error",
+            "last_error": "some error",
+        }
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+                tick(verbose=False)
+        deliver_mock.assert_not_called()
+        mark_mock.assert_called_once_with("monitor-job", False, "some error", delivery_error=None)
+        assert any("repeated failure" in r.message for r in caplog.records)
+
     def test_output_saved_even_when_delivery_suppressed(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \

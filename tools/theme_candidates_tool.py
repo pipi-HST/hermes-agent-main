@@ -1,4 +1,4 @@
-"""Hermes tool: theme_candidates — 展示已有 Theme 候选组."""
+"""Hermes tool: theme_candidates — existing Theme map candidates."""
 from __future__ import annotations
 
 import sys
@@ -13,7 +13,9 @@ from tools.registry import registry
 THEME_CANDIDATES_SCHEMA = {
     "name": "theme_candidates",
     "description": (
-        "展示已有候选组：当用户在 theme_scan 返回“没有待扫描的新内容”后问"
+        "展示已有 Theme 候选组：读取前一次 theme_scan 生成的主题关联候选，"
+        "用于继续从某个主题方向生成 Knowledge Card 草稿。"
+        "当用户在 theme_scan 返回“没有待扫描的新内容”后问"
         "“有哪些内容”“有哪些组”“第一组是哪组”时调用。"
         "本工具只读取已经由 Theme Agent 生成的 pending candidates，不做全库搜索。"
         "如果用户回复“第一组/第二组”等编号，应使用返回 next_actions 里的 question_id "
@@ -42,7 +44,7 @@ def _handler(args: dict, **kw) -> str:
 
 registry.register(
     name="theme_candidates",
-    toolset="personal-assistant",
+    toolset="knowledge-advanced",
     schema=THEME_CANDIDATES_SCHEMA,
     handler=_handler,
     emoji="🌱",

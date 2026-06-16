@@ -1,8 +1,10 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
+import base64
 import os
 import json
 import tempfile
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -124,6 +126,360 @@ class TestWebServerEndpoints:
         assert "version" in data
         assert "hermes_home" in data
         assert "active_sessions" in data
+
+    def test_dashboard_upload_writes_file_under_tmp_uploads(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "PROJECT_ROOT", tmp_path)
+        text = "# hello\nbody"
+        payload = {
+            "name": "../notes/测试材料.md",
+            "mime_type": "text/markdown",
+            "content_base64": base64.b64encode(text.encode()).decode(),
+        }
+
+        response = self.client.post("/api/dashboard/uploads", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        saved = Path(data["path"])
+        assert saved.parent == tmp_path / "tmp" / "dashboard-uploads"
+        assert saved.name.endswith("-测试材料.md")
+        assert saved.read_text(encoding="utf-8") == text
+        assert data["name"] == "测试材料.md"
+        assert data["mime_type"] == "text/markdown"
+        assert data["size"] == len(text.encode())
+
+    def test_knowledge_capture_drafts_api_returns_reviewable_drafts(self, monkeypatch, tmp_path):
+        import sqlite3
+        import hermes_cli.web_server as ws
+
+        custom_root = tmp_path / "hermes-custom"
+        data_dir = custom_root / "data"
+        data_dir.mkdir(parents=True)
+        db_path = data_dir / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """CREATE TABLE capture_drafts (
+               id TEXT PRIMARY KEY,
+               raw_text TEXT NOT NULL DEFAULT '',
+               source TEXT NOT NULL DEFAULT '',
+               source_type TEXT NOT NULL DEFAULT '',
+               title TEXT NOT NULL DEFAULT '',
+               word_count INTEGER NOT NULL DEFAULT 0,
+               draft_text TEXT NOT NULL DEFAULT '',
+               instruction TEXT NOT NULL DEFAULT '',
+               summary TEXT NOT NULL DEFAULT '',
+               tags TEXT NOT NULL DEFAULT '[]',
+               status TEXT NOT NULL DEFAULT 'raw_extracted',
+               committed_capture_id TEXT NOT NULL DEFAULT '',
+               created_at TEXT NOT NULL DEFAULT (datetime('now')),
+               updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+               capture_intent TEXT NOT NULL DEFAULT '{}'
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO capture_drafts
+               (id, raw_text, source_type, title, word_count, draft_text,
+                instruction, summary, tags, status, capture_intent, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "draft-1",
+                "原文正文",
+                "document",
+                "智能问数",
+                4,
+                "# 智能问数\n\n整理稿正文",
+                "全文入库",
+                "这是一篇智能问数材料。",
+                '["ai","data"]',
+                "draft_ready",
+                '{"material_intent":"verbatim_full_text","output_shape":["full_text"]}',
+                "2026-06-15T00:00:00+00:00",
+            ),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+
+        list_resp = self.client.get("/api/knowledge/capture-drafts")
+        detail_resp = self.client.get("/api/knowledge/capture-drafts/draft-1")
+
+        assert list_resp.status_code == 200
+        drafts = list_resp.json()["drafts"]
+        assert drafts[0]["id"] == "draft-1"
+        assert drafts[0]["title"] == "智能问数"
+        assert drafts[0]["user_intent"] == "verbatim_full_text"
+        assert drafts[0]["tags"] == ["ai", "data"]
+        assert "整理稿正文" in drafts[0]["draft_preview"]
+        assert detail_resp.status_code == 200
+        detail = detail_resp.json()
+        assert detail["draft"]["draft_text"] == "# 智能问数\n\n整理稿正文"
+        assert detail["draft"]["raw_text"] == "原文正文"
+
+    def test_knowledge_cards_api_returns_grouped_cards_with_readable_sources(
+        self, monkeypatch, tmp_path
+    ):
+        import sqlite3
+        import hermes_cli.web_server as ws
+
+        custom_root = tmp_path / "hermes-custom"
+        vault = tmp_path / "vault"
+        (custom_root / "data").mkdir(parents=True)
+        (vault / "captures").mkdir(parents=True)
+        (vault / "garden").mkdir(parents=True)
+        (vault / "captures" / "source.md").write_text(
+            "---\n"
+            "title: Building Effective AI Agents\n"
+            "story: Anthropic agent workflow guidance.\n"
+            "---\n\n"
+            "# Building Effective AI Agents\n\n正文",
+            encoding="utf-8",
+        )
+        (vault / "garden" / "Agent 工作流选型-card-1.md").write_text(
+            "---\n"
+            "type: garden_card\n"
+            "source_theme: themes/ai-agent-engineering.md\n"
+            "---\n\n"
+            "# Agent 工作流选型\n\n## 内容\n\n从任务不确定性判断是否需要工作流。",
+            encoding="utf-8",
+        )
+        config = custom_root / "config.yaml"
+        config.write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
+        db_path = custom_root / "data" / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """CREATE TABLE captures (
+               id TEXT PRIMARY KEY,
+               file_path TEXT NOT NULL DEFAULT '',
+               raw_path TEXT NOT NULL DEFAULT '',
+               created_at TEXT NOT NULL DEFAULT (datetime('now')),
+               updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE garden_cards (
+               id TEXT PRIMARY KEY,
+               title TEXT NOT NULL DEFAULT '',
+               one_liner TEXT NOT NULL DEFAULT '',
+               card_kind TEXT NOT NULL DEFAULT 'viewpoint',
+               core_arguments TEXT NOT NULL DEFAULT '[]',
+               knowledge_links TEXT NOT NULL DEFAULT '[]',
+               key_materials TEXT NOT NULL DEFAULT '[]',
+               my_view TEXT NOT NULL DEFAULT '',
+               status TEXT NOT NULL DEFAULT 'seed',
+               capture_ids TEXT NOT NULL DEFAULT '[]',
+               created_at TEXT NOT NULL DEFAULT (datetime('now')),
+               updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+            ("cap-1", "captures/source.md"),
+        )
+        conn.execute(
+            """INSERT INTO garden_cards
+               (id, title, one_liner, card_kind, core_arguments, key_materials,
+                my_view, status, capture_ids, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "card-1",
+                "Agent 工作流选型",
+                "先从增强型调用开始，再逐步引入工作流。",
+                "method",
+                '[{"claim":"复杂度应该服务于任务不确定性。"}]',
+                '["工具质量","上下文工程"]',
+                "适合评估 agent 产品架构。",
+                "seed",
+                '["cap-1"]',
+                "2026-06-15T00:00:00+00:00",
+            ),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+
+        resp = self.client.get("/api/knowledge/cards")
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["groups"]["method"] == 1
+        card = payload["cards"][0]
+        assert card["id"] == "card-1"
+        assert card["kind"] == "method"
+        assert card["summary"] == "先从增强型调用开始，再逐步引入工作流。"
+        assert card["file_path"] == "garden/Agent 工作流选型-card-1.md"
+        assert card["source_theme"] == "themes/ai-agent-engineering.md"
+        assert "任务不确定性" in card["markdown"]
+        assert card["sources"] == [
+            {
+                "id": "cap-1",
+                "title": "Building Effective AI Agents",
+                "file_path": "captures/source.md",
+                "summary": "Anthropic agent workflow guidance.",
+            }
+        ]
+
+    def test_post_knowledge_answer_draft_calls_bridge(self, monkeypatch, tmp_path):
+        import types
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_knowledge_custom_root", lambda: tmp_path)
+        called = {}
+
+        def fake_save(**kwargs):
+            called.update(kwargs)
+            return {
+                "status": "success",
+                "agent": "reading",
+                "intent": "save_answer_to_knowledge",
+                "chat_preview": "已生成学习笔记草稿",
+                "durable_artifacts": [],
+                "source_map": [],
+                "next_actions": [],
+                "warnings": [],
+                "errors": [],
+                "meta": {"reading_draft_id": "draft1"},
+            }
+
+        fake_module = types.ModuleType("bridge.answer_bridge")
+        fake_module.save_answer_to_knowledge = fake_save
+        monkeypatch.setitem(sys.modules, "bridge.answer_bridge", fake_module)
+
+        response = self.client.post(
+            "/api/knowledge/answer-drafts",
+            json={
+                "hermes_session_id": "session1",
+                "user_message": "为什么重要？",
+                "assistant_answer": "因为它可复用。",
+                "instruction": "存起来",
+                "output_type": "auto",
+                "assistant_message_id": "assistant1",
+                "sources": [{"type": "capture_note", "id": "cap1", "title": "A"}],
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["meta"]["reading_draft_id"] == "draft1"
+        assert called["assistant_answer"] == "因为它可复用。"
+
+    def test_get_knowledge_reading_draft_returns_full_text(self, monkeypatch, tmp_path):
+        import sqlite3
+        import hermes_cli.web_server as web_server
+
+        db_path = tmp_path / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """CREATE TABLE reading_drafts (
+               id TEXT PRIMARY KEY,
+               session_id TEXT NOT NULL,
+               output_type TEXT NOT NULL DEFAULT '',
+               target_capture_id TEXT NOT NULL DEFAULT '',
+               title TEXT NOT NULL DEFAULT '',
+               summary TEXT NOT NULL DEFAULT '',
+               draft_text TEXT NOT NULL DEFAULT '',
+               status TEXT NOT NULL DEFAULT 'open',
+               meta_json TEXT NOT NULL DEFAULT '{}',
+               created_at TEXT NOT NULL DEFAULT (datetime('now')),
+               updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO reading_drafts
+               (id, session_id, output_type, title, summary, draft_text, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("draft1", "session1", "local_learning_note", "标题", "摘要", "# 标题\n正文", "open"),
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(web_server, "_knowledge_db_path", lambda: db_path)
+
+        response = self.client.get("/api/knowledge/reading-drafts/draft1")
+
+        assert response.status_code == 200
+        assert response.json()["draft"]["draft_text"] == "# 标题\n正文"
+
+    def test_get_knowledge_reading_drafts_lists_answer_drafts(self, monkeypatch, tmp_path):
+        import sqlite3
+        import hermes_cli.web_server as web_server
+
+        db_path = tmp_path / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """CREATE TABLE reading_drafts (
+               id TEXT PRIMARY KEY,
+               session_id TEXT NOT NULL,
+               output_type TEXT NOT NULL DEFAULT '',
+               target_capture_id TEXT NOT NULL DEFAULT '',
+               title TEXT NOT NULL DEFAULT '',
+               summary TEXT NOT NULL DEFAULT '',
+               draft_text TEXT NOT NULL DEFAULT '',
+               status TEXT NOT NULL DEFAULT 'open',
+               meta_json TEXT NOT NULL DEFAULT '{}',
+               created_at TEXT NOT NULL DEFAULT (datetime('now')),
+               updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO reading_drafts
+               (id, session_id, output_type, title, summary, draft_text, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("draft1", "session1", "local_learning_note", "企业级取数 Agent", "摘要", "# 正文", "open"),
+        )
+        conn.execute(
+            """INSERT INTO reading_drafts
+               (id, session_id, output_type, title, summary, draft_text, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("draft2", "session1", "knowledge_card", "旧卡片", "摘要", "# 卡片", "committed"),
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(web_server, "_knowledge_db_path", lambda: db_path)
+
+        response = self.client.get("/api/knowledge/reading-drafts")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 2
+        assert payload["open_count"] == 1
+        assert payload["drafts"][0]["title"] in {"企业级取数 Agent", "旧卡片"}
+
+    def test_post_knowledge_reading_draft_revise_calls_bridge(self, monkeypatch, tmp_path):
+        import types
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_knowledge_custom_root", lambda: tmp_path)
+        called = {}
+
+        def fake_revise(**kwargs):
+            called.update(kwargs)
+            return {
+                "status": "success",
+                "agent": "reading",
+                "intent": "revise_answer_draft",
+                "chat_preview": "已修改文稿草稿",
+                "durable_artifacts": [],
+                "source_map": [],
+                "next_actions": [],
+                "warnings": [],
+                "errors": [],
+                "meta": {"reading_draft_id": "draft1"},
+            }
+
+        fake_module = types.ModuleType("bridge.answer_bridge")
+        fake_module.revise_answer_draft = fake_revise
+        monkeypatch.setitem(sys.modules, "bridge.answer_bridge", fake_module)
+
+        response = self.client.post(
+            "/api/knowledge/reading-drafts/draft1/revise",
+            json={"instruction": "展开第二段"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["meta"]["reading_draft_id"] == "draft1"
+        assert called == {"draft_id": "draft1", "instruction": "展开第二段"}
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
@@ -2324,3 +2680,34 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+class TestGatewayWebSocket:
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, _isolate_hermes_home):
+        from starlette.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        self.ws_module = ws
+        self.token = ws._SESSION_TOKEN
+        self.client = TestClient(ws.app)
+
+    def _url(self, token: str | None = None) -> str:
+        from urllib.parse import urlencode
+
+        tok = token if token is not None else self.token
+        return f"/api/ws?{urlencode({'token': tok})}"
+
+    def test_gateway_ws_stays_available_when_embedded_chat_disabled(self, monkeypatch):
+        monkeypatch.setattr(self.ws_module, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)
+
+        async def fake_handle_ws(ws):
+            await ws.accept()
+            await ws.send_text("gateway-sidecar-ok")
+            await ws.close()
+
+        monkeypatch.setattr("tui_gateway.ws.handle_ws", fake_handle_ws)
+
+        with self.client.websocket_connect(self._url()) as conn:
+            assert conn.receive_text() == "gateway-sidecar-ok"

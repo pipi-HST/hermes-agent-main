@@ -1,4 +1,4 @@
-"""Hermes tool: theme_scan — 手动触发主题聚类."""
+"""Hermes tool: theme_scan — Obsidian Theme map scan."""
 from __future__ import annotations
 
 import sys
@@ -12,7 +12,11 @@ from tools.registry import registry
 THEME_SCAN_SCHEMA = {
     "name": "theme_scan",
     "description": (
-        "手动触发知识库主题聚类扫描，发现最近保存内容之间的关联。"
+        "知识库主题地图工具：扫描最近保存内容之间的关联，并自动生成或更新 "
+        "Obsidian vault 里的 themes/*.md 主题页。Theme 页面是 MOC 风格的关系地图，"
+        "用于整理多篇 Capture 之间的关系，也可以给 Knowledge Card 沉淀提供方向。"
+        "当用户要求“扫描最近内容”“整理主题关联”“看看有没有可以沉淀成知识卡片的内容”"
+        "“重建主题页”“整理 MOC”时，可以调用本工具。"
         "这是索引图谱优先的扫描：先用 identity/section embeddings 和元数据找关系，"
         "不再逐篇调用 LLM 精筛；LLM 只负责解释已经发现的候选关联。"
         "扫描发现关联时，Theme Agent 会说明这些材料的共同问题，"
@@ -65,7 +69,7 @@ def _handler(args: dict, **kw) -> str:
 
 registry.register(
     name="theme_scan",
-    toolset="personal-assistant",
+    toolset="knowledge-advanced",
     schema=THEME_SCAN_SCHEMA,
     handler=_handler,
     emoji="🔗",

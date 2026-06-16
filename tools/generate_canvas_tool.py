@@ -1,4 +1,4 @@
-"""Hermes tool: generate_canvas — generate Obsidian Canvas relationship maps."""
+"""Hermes tool: generate_canvas — advanced Obsidian Canvas relationship maps."""
 from __future__ import annotations
 
 import sys
@@ -15,11 +15,9 @@ from tools.registry import registry
 GENERATE_CANVAS_SCHEMA = {
     "name": "generate_canvas",
     "description": (
-        "为 Obsidian 知识库生成 Canvas 关系图/画板。"
-        "当用户说“生成 Canvas”“做成关系图”“把这个主题做成画板”时调用。"
-        "当用户说“Garden Card 可视化”“知识卡片画布”“卡片聚类图”时，不要硬找 Theme/MOC，"
-        "直接调用本工具并把 theme 留空，工具会以 Garden cards 为主角生成聚类 Canvas。"
-        "当用户明确指定主题/MOC 时，围绕 Theme/MOC 展开。"
+        "高级/内部工具：为 Obsidian 知识库生成 Canvas 关系图/画板。"
+        "新版 Hermes Knowledge 主流程不主动推荐 Canvas；只有用户明确要求"
+        "“生成 Canvas”“做成关系图”“把这个主题做成画板”时才调用。"
         "本工具只生成 .canvas 文件，不改写原笔记内容。"
     ),
     "parameters": {
@@ -61,7 +59,7 @@ def _handler(args: dict, **kw) -> str:
 
 registry.register(
     name="generate_canvas",
-    toolset="personal-assistant",
+    toolset="knowledge-advanced",
     schema=GENERATE_CANVAS_SCHEMA,
     handler=_handler,
     emoji="🗺️",

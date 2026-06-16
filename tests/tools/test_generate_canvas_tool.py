@@ -9,12 +9,12 @@ def test_generate_canvas_tool_schema_routes_canvas_requests():
     assert "Obsidian" in description
 
 
-def test_generate_canvas_tool_registers_in_personal_assistant_toolset():
+def test_generate_canvas_tool_registers_in_advanced_knowledge_toolset():
     import tools.generate_canvas_tool  # noqa: F401
     from tools.registry import registry
 
     entry = registry.get_entry("generate_canvas")
 
     assert entry is not None
-    assert entry.toolset == "personal-assistant"
+    assert entry.toolset == "knowledge-advanced"
     assert entry.schema["parameters"]["properties"]["export_file"]["type"] == "boolean"

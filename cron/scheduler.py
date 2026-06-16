@@ -133,6 +133,14 @@ SILENT_MARKER = "[SILENT]"
 _hermes_home: Path | None = None
 
 
+def _is_repeated_job_failure(job: dict, error: Optional[str]) -> bool:
+    """Return True when this run repeats the previous failure exactly."""
+    return (
+        job.get("last_status") == "error"
+        and str(job.get("last_error") or "") == str(error or "")
+    )
+
+
 def _get_hermes_home() -> Path:
     """Resolve Hermes home dynamically while preserving test monkeypatch hooks."""
     return _hermes_home or get_hermes_home()
@@ -1761,6 +1769,12 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 should_deliver = bool(deliver_content)
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                    should_deliver = False
+                if should_deliver and not success and _is_repeated_job_failure(job, error):
+                    logger.info(
+                        "Job '%s': repeated failure unchanged — skipping duplicate delivery",
+                        job["id"],
+                    )
                     should_deliver = False
 
                 delivery_error = None
