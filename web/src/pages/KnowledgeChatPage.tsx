@@ -2151,11 +2151,37 @@ function TranscriptMessage({
             {message.text}
           </p>
         ) : (
-          <Markdown content={message.text} streaming={streaming} />
+          <Markdown
+            content={stripTrailingSourceSection(message.text)}
+            streaming={streaming}
+          />
         )}
       </div>
     </article>
   );
+}
+
+/**
+ * Remove the trailing "来源" / "参考来源" / "References" section from an
+ * assistant message so it is only shown in the inspector panel, not inline.
+ */
+function stripTrailingSourceSection(text: string): string {
+  const lines = text.split("\n");
+  let cutIndex = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (
+      /^#{0,3}\s*(参考来源|来源|引用|references?)\s*[:：]?$/i.test(trimmed)
+    ) {
+      cutIndex = i;
+    }
+  }
+
+  if (cutIndex < 0) return text;
+  // Trim trailing blank lines before the source heading
+  while (cutIndex > 0 && lines[cutIndex - 1].trim() === "") cutIndex--;
+  return lines.slice(0, cutIndex).join("\n");
 }
 
 function InspectorPanel({

@@ -286,7 +286,8 @@ export function extractSourceHints(
   const seen = new Set<string>();
   const deduped: KnowledgeSourceHint[] = [];
   for (const hint of hints) {
-    const key = `${hint.label.trim()}|${hint.url ?? ""}`;
+    const normalized = hint.label.trim().replace(/^\[\d+\]\s*/, "");
+    const key = `${normalized}|${hint.url ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push({ ...hint, id: `source-${deduped.length + 1}` });

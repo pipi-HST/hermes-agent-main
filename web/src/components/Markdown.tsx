@@ -53,6 +53,7 @@ type BlockNode =
   | { type: "code"; lang: string; content: string }
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
+  | { type: "table"; headers: string[]; rows: string[][] }
   | { type: "list"; ordered: boolean; items: string[] }
   | { type: "paragraph"; content: string };
 
@@ -92,6 +93,30 @@ function parseBlocks(text: string): BlockNode[] {
         content: headingMatch[2],
       });
       i++;
+      continue;
+    }
+
+    // Pipe table — header row followed by separator row (|---|---|)
+    if (
+      line.startsWith("|") &&
+      i + 1 < lines.length &&
+      /^\|[\s:]*-{2,}[\s:]*(\|[\s:]*-{2,}[\s:]*)+\|?\s*$/.test(lines[i + 1])
+    ) {
+      const parseRow = (r: string) =>
+        r
+          .replace(/^\|/, "")
+          .replace(/\|$/, "")
+          .split("|")
+          .map((c) => c.trim());
+
+      const headers = parseRow(line);
+      i += 2; // skip header + separator
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].startsWith("|")) {
+        rows.push(parseRow(lines[i]));
+        i++;
+      }
+      blocks.push({ type: "table", headers, rows });
       continue;
     }
 
@@ -139,7 +164,8 @@ function parseBlocks(text: string): BlockNode[] {
       !lines[i].match(/^#{1,4}\s/) &&
       !lines[i].match(/^[-*+]\s/) &&
       !lines[i].match(/^\d+[.)]\s/) &&
-      !lines[i].match(/^[-*_]{3,}\s*$/)
+      !lines[i].match(/^[-*_]{3,}\s*$/) &&
+      !lines[i].startsWith("|")
     ) {
       paraLines.push(lines[i]);
       i++;
@@ -199,6 +225,46 @@ function Block({
           {caret}
         </>
       );
+
+    case "table": {
+      const colCount = block.headers.length;
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr>
+                {block.headers.map((h, ci) => (
+                  <th
+                    key={ci}
+                    className="border border-border bg-secondary/40 px-2.5 py-1.5 text-left font-semibold"
+                  >
+                    <InlineContent text={h} highlightTerms={highlightTerms} />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, ri) => (
+                <tr key={ri}>
+                  {Array.from({ length: colCount }).map((_, ci) => (
+                    <td
+                      key={ci}
+                      className="border border-border px-2.5 py-1.5"
+                    >
+                      <InlineContent
+                        text={row[ci] ?? ""}
+                        highlightTerms={highlightTerms}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {caret}
+        </div>
+      );
+    }
 
     case "list": {
       const Tag = block.ordered ? "ol" : "ul";
