@@ -34,6 +34,7 @@ export interface ToolEntry {
   status: "running" | "done" | "error";
   startedAt: number;
   completedAt?: number;
+  turnIndex?: number;
 }
 
 const STATUS_TONE: Record<ToolEntry["status"], string> = {

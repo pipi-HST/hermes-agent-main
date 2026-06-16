@@ -17,6 +17,7 @@ import {
 import {
   Activity,
   BarChart3,
+  BookMarked,
   BookOpen,
   Clock,
   Code,
@@ -28,6 +29,7 @@ import {
   Globe,
   Heart,
   KeyRound,
+  Layers3,
   Menu,
   MessageSquare,
   Package,
@@ -67,6 +69,8 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
+import KnowledgeChatPage from "@/pages/KnowledgeChatPage";
+import KnowledgeCardsBoardPage from "@/pages/KnowledgeCardsBoardPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -96,6 +100,18 @@ const CHAT_NAV_ITEM: NavItem = {
   icon: Terminal,
 };
 
+const KNOWLEDGE_CHAT_NAV_ITEM: NavItem = {
+  path: "/knowledge-chat",
+  label: "Knowledge Workbench",
+  icon: Sparkles,
+};
+
+const CARDS_BOARD_NAV_ITEM: NavItem = {
+  path: "/cards-board",
+  label: "Knowledge Cards",
+  icon: Layers3,
+};
+
 /**
  * Built-in routes except /chat.  Chat is rendered persistently (outside
  * <Routes>) when embedded — see the persistent chat host block rendered
@@ -115,6 +131,8 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
   "/profiles": ProfilesPage,
+  "/knowledge-chat": KnowledgeChatPage,
+  "/cards-board": KnowledgeCardsBoardPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -177,6 +195,8 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Terminal,
   Globe,
   Database,
+  BookMarked,
+  Layers3,
   Shield,
   Users,
   Wrench,
@@ -315,6 +335,9 @@ export default function App() {
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
+  const isKnowledgeWorkspaceRoute =
+    normalizedPath === "/knowledge-chat" ||
+    normalizedPath === "/cards-board";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
@@ -364,8 +387,17 @@ export default function App() {
 
   const builtinNav = useMemo(() => {
     const base = embeddedChat
-      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
-      : BUILTIN_NAV_REST;
+      ? [
+          CHAT_NAV_ITEM,
+          KNOWLEDGE_CHAT_NAV_ITEM,
+          CARDS_BOARD_NAV_ITEM,
+          ...BUILTIN_NAV_REST,
+        ]
+      : [
+          KNOWLEDGE_CHAT_NAV_ITEM,
+          CARDS_BOARD_NAV_ITEM,
+          ...BUILTIN_NAV_REST,
+        ];
     return showTokenAnalytics ? base : base.filter((n) => n.path !== "/analytics");
   }, [embeddedChat, showTokenAnalytics]);
 
@@ -590,14 +622,14 @@ export default function App() {
                 isChatRoute
                   ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
                   : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
-                isDocsRoute && "min-h-0 flex-1",
+                (isDocsRoute || isKnowledgeWorkspaceRoute) && "min-h-0 flex-1",
               )}
             >
               <PluginSlot name="pre-main" />
               <div
                 className={cn(
                   "w-full min-w-0",
-                  (isDocsRoute || isChatRoute) &&
+                  (isDocsRoute || isChatRoute || isKnowledgeWorkspaceRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >

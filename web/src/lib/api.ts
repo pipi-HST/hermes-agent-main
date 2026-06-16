@@ -63,6 +63,12 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  uploadDashboardFile: (body: DashboardUploadRequest) =>
+    fetchJSON<DashboardUploadResponse>("/api/dashboard/uploads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -340,6 +346,69 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
+
+  // Hermes Knowledge
+  getKnowledgeCaptureDrafts: (limit = 50) =>
+    fetchJSON<KnowledgeCaptureDraftsResponse>(
+      `/api/knowledge/capture-drafts?limit=${limit}`,
+    ),
+  getKnowledgeCaptureDraft: (draftId: string) =>
+    fetchJSON<KnowledgeCaptureDraftResponse>(
+      `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}`,
+    ),
+  commitKnowledgeCaptureDraft: (draftId: string) =>
+    fetchJSON<Record<string, unknown>>(
+      `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}/commit`,
+      { method: "POST" },
+    ),
+  reviseKnowledgeCaptureDraft: (draftId: string, instruction: string) =>
+    fetchJSON<Record<string, unknown>>(
+      `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}/revise`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction }),
+      },
+    ),
+  createKnowledgeAnswerDraft: (body: KnowledgeAnswerDraftRequest) =>
+    fetchJSON<{
+      ok: boolean;
+      USER_VISIBLE_REPLY?: string;
+      chat_preview?: string;
+      meta?: Record<string, unknown>;
+    }>("/api/knowledge/answer-drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  getKnowledgeReadingDraft: (draftId: string) =>
+    fetchJSON<KnowledgeReadingDraftResponse>(
+      `/api/knowledge/reading-drafts/${encodeURIComponent(draftId)}`,
+    ),
+  getKnowledgeReadingDrafts: (limit = 50) =>
+    fetchJSON<KnowledgeReadingDraftsResponse>(
+      `/api/knowledge/reading-drafts?limit=${limit}`,
+    ),
+  commitKnowledgeReadingDraft: (draftId: string) =>
+    fetchJSON<Record<string, unknown>>(
+      `/api/knowledge/reading-drafts/${encodeURIComponent(draftId)}/commit`,
+      { method: "POST" },
+    ),
+  reviseKnowledgeReadingDraft: (draftId: string, instruction: string) =>
+    fetchJSON<Record<string, unknown>>(
+      `/api/knowledge/reading-drafts/${encodeURIComponent(draftId)}/revise`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction }),
+      },
+    ),
+  getKnowledgeCards: (limit = 100) =>
+    fetchJSON<KnowledgeCardsResponse>(`/api/knowledge/cards?limit=${limit}`),
+  getKnowledgeCard: (cardId: string) =>
+    fetchJSON<KnowledgeCardResponse>(
+      `/api/knowledge/cards/${encodeURIComponent(cardId)}`,
+    ),
 };
 
 export interface ActionResponse {
@@ -379,6 +448,136 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export interface DashboardUploadRequest {
+  name: string;
+  mime_type: string;
+  content_base64: string;
+}
+
+export interface DashboardUploadResponse {
+  ok: boolean;
+  name: string;
+  path: string;
+  mime_type: string;
+  size: number;
+}
+
+export type KnowledgeCardKind = "viewpoint" | "method" | "fact" | "risk";
+
+export interface KnowledgeCaptureDraft {
+  id: string;
+  title: string;
+  status: string;
+  source: string;
+  source_type: string;
+  word_count: number;
+  instruction: string;
+  summary: string;
+  tags: string[];
+  capture_intent: Record<string, unknown>;
+  user_intent: string;
+  committed_capture_id: string;
+  created_at: string;
+  updated_at: string;
+  draft_preview: string;
+  raw_preview: string;
+  draft_text?: string;
+  raw_text?: string;
+}
+
+export interface KnowledgeCaptureDraftsResponse {
+  drafts: KnowledgeCaptureDraft[];
+  total: number;
+  open_count: number;
+}
+
+export interface KnowledgeCaptureDraftResponse {
+  draft: KnowledgeCaptureDraft;
+}
+
+export interface KnowledgeAnswerDraftSource {
+  type?: string;
+  id?: string;
+  source_id?: string;
+  title?: string;
+  label?: string;
+  url?: string;
+  excerpt?: string;
+}
+
+export interface KnowledgeReadingDraft {
+  id: string;
+  session_id: string;
+  output_type: "local_learning_note" | "knowledge_card" | "enhance_capture" | string;
+  target_capture_id: string;
+  title: string;
+  summary: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  draft_preview: string;
+  draft_text?: string;
+  meta?: Record<string, unknown>;
+}
+
+export interface KnowledgeReadingDraftResponse {
+  draft: KnowledgeReadingDraft;
+}
+
+export interface KnowledgeReadingDraftsResponse {
+  drafts: KnowledgeReadingDraft[];
+  total: number;
+  open_count: number;
+}
+
+export interface KnowledgeAnswerDraftRequest {
+  hermes_session_id: string;
+  user_message: string;
+  assistant_answer: string;
+  instruction: string;
+  output_type: "auto" | "local_learning_note" | "knowledge_card" | "enhance_capture";
+  assistant_message_id: string;
+  sources: KnowledgeAnswerDraftSource[];
+  target_capture_id?: string;
+  answer_source?: "auto" | "provided" | "latest_rag_full_answer";
+}
+
+export interface KnowledgeSource {
+  id: string;
+  title: string;
+  file_path: string;
+  summary: string;
+}
+
+export interface KnowledgeCard {
+  id: string;
+  title: string;
+  kind: KnowledgeCardKind;
+  summary: string;
+  status: string;
+  updated_at: string;
+  created_at: string;
+  file_path: string;
+  source_theme: string;
+  sources: KnowledgeSource[];
+  source_count: number;
+  core_arguments?: Array<Record<string, unknown> | string>;
+  knowledge_links?: string[];
+  key_materials?: string[];
+  my_view?: string;
+  markdown?: string;
+}
+
+export interface KnowledgeCardsResponse {
+  cards: KnowledgeCard[];
+  groups: Record<KnowledgeCardKind, number>;
+  total: number;
+}
+
+export interface KnowledgeCardResponse {
+  card: KnowledgeCard;
 }
 
 export interface SessionInfo {
