@@ -16,6 +16,7 @@ import importlib.util
 import json
 import logging
 import os
+import plistlib
 import re
 import secrets
 import sqlite3
@@ -2669,6 +2670,339 @@ async def delete_cron_job(job_id: str):
     if not remove_job(job_id):
         raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True}
+
+
+def _automation_launchagent_plist(label: str) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+
+def _read_launchagent_plist(label: str) -> dict[str, Any]:
+    path = _automation_launchagent_plist(label)
+    if not path.exists():
+        return {}
+    try:
+        with path.open("rb") as fh:
+            data = plistlib.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        _log.warning("Failed to read LaunchAgent plist: %s", path)
+        return {}
+
+
+def _launchagent_status(label: str) -> tuple[str, int | None]:
+    try:
+        proc = subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return ("unknown", None)
+    if proc.returncode != 0:
+        return ("stopped", None)
+    text = proc.stdout or ""
+    state = "running" if "state = running" in text else "stopped"
+    match = re.search(r"\bpid = (\d+)", text)
+    return (state, int(match.group(1)) if match else None)
+
+
+def _automation_enabled_from_plist(data: dict[str, Any]) -> bool:
+    return bool(data.get("RunAtLoad") or data.get("KeepAlive"))
+
+
+def _automation_boundary(
+    *,
+    item_id: str,
+    name: str,
+    kind: str,
+    enabled: bool,
+    runtime_status: str,
+    read_write: str,
+    writes_tables: list[str] | None = None,
+    writes_paths: list[str] | None = None,
+    toolsets: list[str] | None = None,
+    risk_level: str = "low",
+    description: str = "",
+    next_run_at: str = "",
+    last_run_at: str = "",
+    last_status: str = "",
+    pid: int | None = None,
+    source_path: str = "",
+) -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "name": name,
+        "kind": kind,
+        "enabled": enabled,
+        "runtime_status": runtime_status,
+        "next_run_at": next_run_at or "",
+        "last_run_at": last_run_at or "",
+        "last_status": last_status or "",
+        "read_write": read_write,
+        "writes_tables": writes_tables or [],
+        "writes_paths": writes_paths or [],
+        "toolsets": toolsets or [],
+        "risk_level": risk_level,
+        "description": description,
+        "pid": pid,
+        "source_path": source_path,
+    }
+
+
+def _automation_boundary_for_cron_job(job: dict[str, Any]) -> dict[str, Any]:
+    name = str(job.get("name") or job.get("id") or "cron job")
+    toolsets = job.get("enabled_toolsets") or job.get("toolsets") or []
+    if not isinstance(toolsets, list):
+        toolsets = []
+
+    lowered = f"{name}\n{job.get('prompt') or ''}".lower()
+    name_lower = name.lower()
+    if "theme_scan" in lowered or "theme-scan" in name_lower:
+        read_write = "vault_write"
+        writes_tables = ["captures", "pending_questions", "theme_candidates"]
+        writes_paths = [str(_knowledge_vault_path() / "themes")]
+        risk = "high"
+        description = "Scheduled theme maintenance; disabled jobs cannot auto-trigger."
+    elif "daily_review" in lowered or "daily-review" in lowered or "knowledge-review" in toolsets:
+        read_write = "state_write"
+        writes_tables = ["review_items", "captures", "agent_runs"]
+        writes_paths = [str(get_hermes_home() / "cron" / "output")]
+        risk = "medium"
+        description = "Knowledge review job; writes review state and cron output."
+    elif "life_tick" in lowered or "life-assistant" in name_lower:
+        read_write = "state_write"
+        writes_tables = ["life_*"]
+        writes_paths = []
+        risk = "high"
+        description = "Life Assistant tick; disabled jobs cannot auto-trigger."
+    else:
+        read_write = "mixed"
+        writes_tables = ["agent_runs"]
+        writes_paths = [str(get_hermes_home() / "cron" / "output")]
+        risk = "medium"
+        description = "Scheduled Hermes agent job."
+
+    enabled = bool(job.get("enabled", True)) and str(job.get("state") or "").lower() != "paused"
+    return _automation_boundary(
+        item_id=f"cron:{job.get('id') or name}",
+        name=name,
+        kind="cron",
+        enabled=enabled,
+        runtime_status="configured" if enabled else "disabled",
+        next_run_at=str(job.get("next_run_at") or ""),
+        last_run_at=str(job.get("last_run_at") or job.get("last_run") or ""),
+        last_status=str(job.get("last_status") or ""),
+        read_write=read_write,
+        writes_tables=writes_tables,
+        writes_paths=writes_paths,
+        toolsets=[str(t) for t in toolsets],
+        risk_level=risk,
+        description=description,
+        source_path=str(get_hermes_home() / "cron" / "jobs.json"),
+    )
+
+
+@app.get("/api/knowledge/automation-boundaries")
+async def get_knowledge_automation_boundaries():
+    items: list[dict[str, Any]] = []
+
+    try:
+        from cron.jobs import list_jobs
+        cron_jobs = list_jobs(include_disabled=True)
+    except Exception:
+        _log.exception("Failed to list Hermes cron jobs")
+        cron_jobs = []
+    for job in cron_jobs:
+        items.append(_automation_boundary_for_cron_job(job))
+
+    for label, name, description, writes_tables, writes_paths, risk in (
+        (
+            "ai.hermes.gateway",
+            "Hermes gateway",
+            "LaunchAgent hosts the gateway and in-process cron ticker.",
+            ["agent_runs"],
+            [str(get_hermes_home() / "logs")],
+            "medium",
+        ),
+        (
+            "com.pipi.hermes-vault-watcher",
+            "Vault watcher",
+            "LaunchAgent runs watch_vault.py; it calls repair_data(apply=True, rename_readable=True).",
+            ["captures", "capture_drafts", "reading_drafts"],
+            [str(_knowledge_vault_path()), str(_knowledge_custom_root() / "data")],
+            "high",
+        ),
+    ):
+        plist_data = _read_launchagent_plist(label)
+        runtime_status, pid = _launchagent_status(label)
+        items.append(
+            _automation_boundary(
+                item_id=f"launchagent:{label}",
+                name=name,
+                kind="launchagent",
+                enabled=_automation_enabled_from_plist(plist_data),
+                runtime_status=runtime_status,
+                read_write="mixed",
+                writes_tables=writes_tables,
+                writes_paths=writes_paths,
+                risk_level=risk,
+                description=description,
+                pid=pid,
+                source_path=str(_automation_launchagent_plist(label)),
+            )
+        )
+
+    gateway_running = bool(get_running_pid())
+    items.extend(
+        [
+            _automation_boundary(
+                item_id="gateway_ticker:cron",
+                name="Gateway cron ticker",
+                kind="gateway_ticker",
+                enabled=gateway_running,
+                runtime_status="running" if gateway_running else "stopped",
+                read_write="mixed",
+                writes_tables=["agent_runs", "review_items"],
+                writes_paths=[str(get_hermes_home() / "cron")],
+                risk_level="medium",
+                description="The gateway calls cron.scheduler.tick periodically; individual cron job enabled flags still gate execution.",
+            ),
+            _automation_boundary(
+                item_id="gateway_ticker:kanban",
+                name="Gateway kanban dispatcher",
+                kind="gateway_ticker",
+                enabled=gateway_running,
+                runtime_status="running" if gateway_running else "stopped",
+                read_write="state_write",
+                writes_tables=["kanban_tasks", "kanban_runs"],
+                writes_paths=[],
+                risk_level="medium",
+                description="Gateway-embedded dispatcher may claim and update kanban tasks when the kanban plugin is configured.",
+            ),
+        ]
+    )
+
+    cron_by_name = {str(item.get("name") or "").lower(): item for item in items if item.get("kind") == "cron"}
+    daily_enabled = bool(cron_by_name.get("daily-review", {}).get("enabled"))
+    theme_enabled = bool(cron_by_name.get("theme-scan", {}).get("enabled"))
+    life_enabled = bool(cron_by_name.get("life-assistant-tick", {}).get("enabled"))
+
+    items.extend(
+        [
+            _automation_boundary(
+                item_id="tool:daily_review",
+                name="daily_review",
+                kind="tool",
+                enabled=daily_enabled,
+                runtime_status="configured" if daily_enabled else "disabled",
+                read_write="state_write",
+                writes_tables=["review_items", "captures", "agent_runs"],
+                writes_paths=[],
+                toolsets=["knowledge-review"],
+                risk_level="medium",
+                description="Knowledge review tool; scheduled only through the daily-review cron job.",
+            ),
+            _automation_boundary(
+                item_id="tool:theme_scan",
+                name="theme_scan",
+                kind="tool",
+                enabled=theme_enabled,
+                runtime_status="configured" if theme_enabled else "disabled",
+                read_write="vault_write",
+                writes_tables=["captures", "pending_questions", "theme_candidates"],
+                writes_paths=[str(_knowledge_vault_path() / "themes")],
+                toolsets=["knowledge-advanced"],
+                risk_level="high",
+                description="Theme clustering and vault maintenance tool; disabled unless the theme-scan cron is enabled or invoked manually.",
+            ),
+            _automation_boundary(
+                item_id="tool:life_tick",
+                name="life_tick",
+                kind="tool",
+                enabled=life_enabled,
+                runtime_status="configured" if life_enabled else "disabled",
+                read_write="state_write",
+                writes_tables=["life_*"],
+                writes_paths=[],
+                toolsets=["personal-assistant"],
+                risk_level="high",
+                description="Life Assistant scheduler tool; automatic cron trigger is disabled when life-assistant-tick is disabled.",
+            ),
+            _automation_boundary(
+                item_id="tool:record_life_event",
+                name="record_life_event",
+                kind="tool",
+                enabled=False,
+                runtime_status="disabled",
+                read_write="state_write",
+                writes_tables=["life_*"],
+                writes_paths=[],
+                toolsets=["personal-assistant"],
+                risk_level="high",
+                description="Manual Life Assistant write tool. It is not part of the knowledge-review cron lane.",
+            ),
+            _automation_boundary(
+                item_id="tool:capture_content",
+                name="capture_content",
+                kind="tool",
+                enabled=False,
+                runtime_status="configured",
+                read_write="vault_write",
+                writes_tables=["capture_drafts", "agent_runs"],
+                writes_paths=[str(_knowledge_vault_path())],
+                toolsets=["personal-assistant"],
+                risk_level="medium",
+                description="User-invoked capture draft tool; not an automatic background job.",
+            ),
+            _automation_boundary(
+                item_id="tool:synthesize_garden",
+                name="synthesize_garden",
+                kind="tool",
+                enabled=False,
+                runtime_status="configured",
+                read_write="vault_write",
+                writes_tables=["garden_drafts", "garden_cards", "agent_runs"],
+                writes_paths=[str(_knowledge_vault_path() / "Garden Card")],
+                toolsets=["personal-assistant"],
+                risk_level="medium",
+                description="User-invoked Garden Card synthesis tool; not an automatic background job.",
+            ),
+            _automation_boundary(
+                item_id="watcher:watch_vault",
+                name="scripts/watch_vault.py",
+                kind="watcher",
+                enabled=_launchagent_status("com.pipi.hermes-vault-watcher")[0] == "running",
+                runtime_status=_launchagent_status("com.pipi.hermes-vault-watcher")[0],
+                read_write="vault_write",
+                writes_tables=["captures", "capture_drafts", "reading_drafts"],
+                writes_paths=[str(_knowledge_vault_path()), str(_knowledge_custom_root() / "data")],
+                risk_level="high",
+                description="Polls Obsidian captures/raw files and runs repair_data in apply mode after detected changes.",
+                source_path=str(_knowledge_custom_root() / "scripts" / "watch_vault.py"),
+            ),
+            _automation_boundary(
+                item_id="repair:repair_data",
+                name="scripts/repair_data.py",
+                kind="repair",
+                enabled=False,
+                runtime_status="configured",
+                read_write="vault_write",
+                writes_tables=["captures", "capture_drafts"],
+                writes_paths=[str(_knowledge_vault_path()), str(_knowledge_custom_root() / "data" / "backups")],
+                risk_level="high",
+                description="Repair script is read-only unless called with apply=True; the vault watcher calls it with apply=True.",
+                source_path=str(_knowledge_custom_root() / "scripts" / "repair_data.py"),
+            ),
+        ]
+    )
+
+    return {
+        "items": items,
+        "total": len(items),
+        "generated_at": time.time(),
+    }
 
 
 # ---------------------------------------------------------------------------
