@@ -12,6 +12,7 @@ Usage:
 import asyncio
 import base64
 import hmac
+import importlib
 import importlib.util
 import json
 import logging
@@ -56,7 +57,7 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -68,7 +69,7 @@ except ImportError:
         _lazy_ensure("tool.dashboard", prompt=False)
         from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
     except Exception:
@@ -4692,6 +4693,26 @@ class _KnowledgeDraftRevisionBody(BaseModel):
     instruction: str
 
 
+class _KnowledgeEditableCaptureDraftBody(BaseModel):
+    content: str
+    source: str = ""
+    source_type: str = "manual"
+    instruction: str = ""
+    title: str = ""
+    folder_path: str = ""
+    summary: str | None = None
+    tags: list[str] | None = None
+    folder_suggestion: dict[str, Any] | None = None
+    card_suggestion: dict[str, Any] | None = None
+    existing_folders: list[str] = []
+
+
+class _KnowledgeCaptureUpdateBody(BaseModel):
+    body: str = ""
+    title: str = ""
+    folder_path: str | None = None
+
+
 class _KnowledgeAnswerDraftBody(BaseModel):
     hermes_session_id: str = ""
     user_message: str = ""
@@ -4704,8 +4725,103 @@ class _KnowledgeAnswerDraftBody(BaseModel):
     answer_source: str = "auto"
 
 
+class _KnowledgeGardenDraftBody(BaseModel):
+    capture_ids: list[str] = []
+    title: str = ""
+    card_kind: str = ""
+    instruction: str = ""
+
+
+class _KnowledgeLibraryCreateBody(BaseModel):
+    title: str = ""
+    body: str = ""
+    folder_path: str = "Inbox"
+    source: str = "Hermes Knowledge Library"
+    source_type: str = "manual"
+
+
+class _KnowledgeLibraryFolderCreateBody(BaseModel):
+    name: str
+
+
+class _KnowledgeLibraryFolderUpdateBody(BaseModel):
+    name: str
+
+
+class _KnowledgeLibraryUpdateBody(BaseModel):
+    title: str = ""
+    body: str | None = None
+    folder_path: str | None = None
+    summary: str | None = None
+    tags: list[str] | None = None
+    folder_suggestion: dict[str, Any] | None = None
+    card_suggestion: dict[str, Any] | None = None
+
+
+class _KnowledgeLibrarySelectionChatBody(BaseModel):
+    question: str
+    selected_text: str = ""
+    surrounding_before: str = ""
+    surrounding_after: str = ""
+    heading_path: list[str] = []
+    selection_start: int | None = None
+    selection_end: int | None = None
+    selection_confidence: str = "none"
+    mode: str = "local_web"
+
+
 def _knowledge_custom_root() -> Path:
     return Path(os.environ.get("HERMES_CUSTOM_ROOT", "/Users/pipi/hermes-custom")).expanduser()
+
+
+def _knowledge_custom_import_failure_detail(
+    label: str,
+    module_name: str,
+    exc: ModuleNotFoundError,
+    root: Path,
+) -> dict[str, Any]:
+    missing_name = str(getattr(exc, "name", "") or "").strip()
+    requested_parts = {part for part in module_name.split(".") if part}
+    if missing_name and missing_name not in requested_parts:
+        reason = "missing_dependency"
+        message = (
+            f"{label} cannot be imported because dashboard Python is missing "
+            f"dependency '{missing_name}'."
+        )
+    else:
+        reason = "missing_bridge_module"
+        message = f"{label} module '{module_name}' was not found under HERMES_CUSTOM_ROOT."
+
+    requirements_path = root / "requirements.txt"
+    install_command = (
+        f"{sys.executable} -m pip install -r {requirements_path}"
+        if requirements_path.exists()
+        else f"{sys.executable} -m pip install {missing_name or module_name}"
+    )
+    return {
+        "message": message,
+        "reason": reason,
+        "module": module_name,
+        "missing_module": missing_name,
+        "custom_root": str(root),
+        "python": sys.executable,
+        "install_command": install_command,
+    }
+
+
+def _knowledge_custom_module(module_name: str, label: str):
+    root = _knowledge_custom_root()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        detail = _knowledge_custom_import_failure_detail(label, module_name, exc, root)
+        _log.warning("%s import failed: %s", label, detail)
+        raise HTTPException(status_code=503, detail=detail) from exc
+    except Exception as exc:
+        _log.exception("%s import failed", label)
+        raise HTTPException(status_code=500, detail=f"{label} unavailable: {exc}") from exc
 
 
 def _knowledge_db_path() -> Path:
@@ -4739,12 +4855,60 @@ def _knowledge_conn() -> sqlite3.Connection:
     return conn
 
 
+@app.get("/api/knowledge/runtime-check")
+async def get_knowledge_runtime_check(request: Request):
+    _require_token(request)
+    modules = [
+        ("bridge.capture_bridge", "Capture bridge"),
+        ("bridge.answer_bridge", "Answer bridge"),
+        ("bridge.research_bridge", "Research bridge"),
+        ("bridge.reading_bridge", "Reading bridge"),
+    ]
+    checks: list[dict[str, Any]] = []
+    ok = True
+    for module_name, label in modules:
+        try:
+            _knowledge_custom_module(module_name, label)
+            checks.append({"module": module_name, "label": label, "ok": True})
+        except HTTPException as exc:
+            ok = False
+            checks.append(
+                {
+                    "module": module_name,
+                    "label": label,
+                    "ok": False,
+                    "status_code": exc.status_code,
+                    "detail": exc.detail,
+                }
+            )
+    return {
+        "ok": ok,
+        "custom_root": str(_knowledge_custom_root()),
+        "python": sys.executable,
+        "checks": checks,
+    }
+
+
 def _json_value(text: str, fallback):
     try:
         value = json.loads(text or "")
     except (json.JSONDecodeError, TypeError):
         return fallback
     return value if isinstance(value, type(fallback)) else fallback
+
+
+def _knowledge_normalized_card_payload(data: dict) -> dict:
+    root = _knowledge_custom_root()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from agents.garden_card_payload import normalize_garden_payload, parse_payload_json
+    except Exception:
+        return {}
+    return normalize_garden_payload(
+        parse_payload_json(str(data.get("payload_json") or "{}")),
+        legacy=data,
+    )
 
 
 def _clip_text(text: str, limit: int = 360) -> str:
@@ -4770,6 +4934,566 @@ def _knowledge_read_note(vault_path: Path, file_path: str) -> tuple[dict, str] |
                 frontmatter = {}
             return frontmatter, parts[2].strip()
     return {}, text
+
+
+_KNOWLEDGE_DEFAULT_FOLDERS = ["Inbox", "AI 产品", "数据 Agent", "待读", "临时"]
+_KNOWLEDGE_OPEN_DRAFT_STATUSES = {
+    "raw_extracted",
+    "draft_ready",
+    "revision_requested",
+    "draft_incomplete",
+}
+
+
+def _knowledge_folder(value: Any) -> str:
+    folder = str(value or "").strip()
+    return folder or "Inbox"
+
+
+def _knowledge_folder_store_path() -> Path:
+    return _knowledge_custom_root() / "data" / "knowledge_folders.json"
+
+
+def _knowledge_stored_folders() -> list[str]:
+    path = _knowledge_folder_store_path()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(data, dict):
+        data = data.get("folders", [])
+    if not isinstance(data, list):
+        return []
+    folders = []
+    for item in data:
+        folder = _knowledge_folder(item)
+        if folder not in folders:
+            folders.append(folder)
+    return folders
+
+
+def _knowledge_hidden_folders() -> list[str]:
+    path = _knowledge_folder_store_path()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    hidden = []
+    for item in data.get("hidden", []):
+        folder = _knowledge_folder(item)
+        if folder not in hidden:
+            hidden.append(folder)
+    return hidden
+
+
+def _knowledge_visible_folder_paths() -> list[str]:
+    hidden_folders = set(_knowledge_hidden_folders())
+    folders: list[str] = []
+    for folder in _KNOWLEDGE_DEFAULT_FOLDERS:
+        if folder not in hidden_folders and folder not in folders:
+            folders.append(folder)
+    for folder in _knowledge_stored_folders():
+        if folder not in hidden_folders and folder not in folders:
+            folders.append(folder)
+    return folders or ["Inbox"]
+
+
+def _knowledge_write_folder_store(folders: list[str], hidden: list[str] | None = None) -> None:
+    clean_folders: list[str] = []
+    for item in folders:
+        folder = _knowledge_folder(item)
+        if folder not in clean_folders:
+            clean_folders.append(folder)
+    clean_hidden: list[str] = []
+    for item in hidden or []:
+        folder = _knowledge_folder(item)
+        if folder not in clean_hidden:
+            clean_hidden.append(folder)
+    path = _knowledge_folder_store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if clean_hidden:
+        payload: Any = {"folders": clean_folders, "hidden": clean_hidden}
+    else:
+        payload = clean_folders
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _knowledge_save_stored_folder(folder: str) -> list[str]:
+    folder = _knowledge_folder(folder)
+    folders = _knowledge_stored_folders()
+    if folder not in folders:
+        folders.append(folder)
+    hidden = [item for item in _knowledge_hidden_folders() if item != folder]
+    _knowledge_write_folder_store(folders, hidden)
+    return folders
+
+
+def _knowledge_rename_stored_folder(old_folder: str, new_folder: str) -> None:
+    old_folder = _knowledge_folder(old_folder)
+    new_folder = _knowledge_folder(new_folder)
+    folders = [
+        (new_folder if folder == old_folder else folder)
+        for folder in _knowledge_stored_folders()
+    ]
+    if new_folder not in folders:
+        folders.append(new_folder)
+    folders = [folder for folder in folders if folder != old_folder]
+    hidden = [folder for folder in _knowledge_hidden_folders() if folder != new_folder]
+    if old_folder in _KNOWLEDGE_DEFAULT_FOLDERS and old_folder != new_folder and old_folder not in hidden:
+        hidden.append(old_folder)
+    _knowledge_write_folder_store(folders, hidden)
+
+
+def _knowledge_tags(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _knowledge_render_markdown(frontmatter: dict, body: str) -> str:
+    return (
+        "---\n"
+        + yaml.dump(frontmatter, allow_unicode=True, sort_keys=False)
+        + "---\n\n"
+        + (body or "").strip()
+        + "\n"
+    )
+
+
+def _knowledge_garden_card_count(conn: sqlite3.Connection | None, capture_id: str) -> int:
+    capture_id = (capture_id or "").strip()
+    if not conn or not capture_id or not _knowledge_table_exists(conn, "garden_cards"):
+        return 0
+    rows = conn.execute(
+        "SELECT capture_ids FROM garden_cards WHERE capture_ids LIKE ?",
+        (f"%{capture_id}%",),
+    ).fetchall()
+    count = 0
+    for row in rows:
+        ids = _json_value(str(row["capture_ids"] or "[]"), [])
+        if capture_id in {str(item).strip() for item in ids}:
+            count += 1
+    return count
+
+
+def _knowledge_rows_referencing_capture(
+    conn: sqlite3.Connection,
+    table: str,
+    capture_id: str,
+) -> list[dict[str, str]]:
+    if not _knowledge_table_exists(conn, table):
+        return []
+    rows = conn.execute(
+        f"SELECT id, title, status, capture_ids FROM {table} WHERE capture_ids LIKE ?",
+        (f"%{capture_id}%",),
+    ).fetchall()
+    refs: list[dict[str, str]] = []
+    for row in rows:
+        ids = _json_value(str(row["capture_ids"] or "[]"), [])
+        if capture_id not in {str(item).strip() for item in ids}:
+            continue
+        refs.append(
+            {
+                "id": str(row["id"] or ""),
+                "title": str(row["title"] or ""),
+                "status": str(row["status"] or ""),
+            }
+        )
+    return refs
+
+
+def _knowledge_capture_backlinks(
+    vault_path: Path,
+    *,
+    capture_id: str,
+    file_path: str,
+    title: str,
+    limit: int = 20,
+) -> list[dict[str, str]]:
+    targets = {
+        value
+        for value in (
+            capture_id,
+            file_path,
+            file_path.removesuffix(".md"),
+            Path(file_path).stem if file_path else "",
+            title,
+        )
+        if value
+    }
+    if not targets or not vault_path.exists():
+        return []
+    backlinks: list[dict[str, str]] = []
+    for path in vault_path.rglob("*.md"):
+        try:
+            rel_path = path.relative_to(vault_path).as_posix()
+        except ValueError:
+            continue
+        if rel_path == file_path or rel_path.startswith("_archive/"):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if not any(target in text for target in targets):
+            continue
+        backlinks.append({"path": rel_path, "title": path.stem})
+        if len(backlinks) >= limit:
+            break
+    return backlinks
+
+
+def _knowledge_capture_dependency_summary(
+    conn: sqlite3.Connection,
+    vault_path: Path,
+    *,
+    capture_id: str,
+    file_path: str,
+    title: str,
+) -> dict[str, Any]:
+    garden_cards = _knowledge_rows_referencing_capture(conn, "garden_cards", capture_id)
+    garden_drafts = _knowledge_rows_referencing_capture(conn, "garden_drafts", capture_id)
+    committed_draft_rows = conn.execute(
+        "SELECT id, title, status FROM capture_drafts WHERE committed_capture_id = ?",
+        (capture_id,),
+    ).fetchall()
+    committed_drafts = [
+        {
+            "id": str(row["id"] or ""),
+            "title": str(row["title"] or ""),
+            "status": str(row["status"] or ""),
+        }
+        for row in committed_draft_rows
+    ]
+    event_count = 0
+    if _knowledge_table_exists(conn, "agent_run_objects"):
+        event_count = int(
+            conn.execute(
+                "SELECT COUNT(DISTINCT run_id) FROM agent_run_objects WHERE object_id = ?",
+                (capture_id,),
+            ).fetchone()[0]
+            or 0
+        )
+    backlinks = _knowledge_capture_backlinks(
+        vault_path,
+        capture_id=capture_id,
+        file_path=file_path,
+        title=title,
+    )
+    return {
+        "garden_cards": garden_cards,
+        "garden_drafts": garden_drafts,
+        "committed_drafts": committed_drafts,
+        "backlinks": backlinks,
+        "event_count": event_count,
+        "policy": {
+            "action": "archive_capture_only",
+            "obsidian_file": "retained",
+            "database_row": "retained_with_review_state_archived",
+            "garden_cards": "retained",
+            "garden_drafts": "retained",
+            "committed_drafts": "retained",
+            "backlinks": "retained",
+        },
+    }
+
+
+def _knowledge_capture_dependency_response(
+    conn: sqlite3.Connection,
+    vault_path: Path,
+    *,
+    item_id: str,
+) -> dict[str, Any]:
+    row = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Library capture not found")
+    item = _knowledge_capture_library_item(vault_path, row, conn=conn, full=False)
+    dependencies = _knowledge_capture_dependency_summary(
+        conn,
+        vault_path,
+        capture_id=item_id,
+        file_path=str(row["file_path"] or ""),
+        title=str(item.get("title") or ""),
+    )
+    return {
+        "ok": True,
+        "id": item_id,
+        "dependencies": dependencies,
+    }
+
+
+def _knowledge_capture_library_item(
+    vault_path: Path,
+    row: sqlite3.Row,
+    *,
+    conn: sqlite3.Connection | None = None,
+    full: bool = False,
+) -> dict:
+    data = dict(row)
+    file_path = str(data.get("file_path") or "")
+    note = _knowledge_read_note(vault_path, file_path)
+    frontmatter, body = note if note else ({}, "")
+    title = str(frontmatter.get("title") or "").strip() or Path(file_path).stem or str(data.get("id") or "未命名")
+    summary = str(frontmatter.get("story") or frontmatter.get("summary") or "").strip()
+    item = {
+        "id": str(data.get("id") or ""),
+        "kind": "capture",
+        "title": title,
+        "summary": summary,
+        "preview": _clip_text(summary or body, 360),
+        "body": body if full else "",
+        "folder_path": _knowledge_folder(frontmatter.get("folder_path") or frontmatter.get("folder")),
+        "tags": _knowledge_tags(frontmatter.get("tags")),
+        "source": str(frontmatter.get("source") or "").strip(),
+        "source_type": str(frontmatter.get("source_type") or "").strip(),
+        "status": str(frontmatter.get("status") or data.get("review_state") or "captured"),
+        "file_path": file_path,
+        "raw_path": str(data.get("raw_path") or ""),
+        "word_count": int(frontmatter.get("word_count") or len(body)),
+        "created_at": str(data.get("created_at") or ""),
+        "updated_at": str(data.get("updated_at") or ""),
+        "indexed": data.get("embedding") is not None,
+        "title_source": str(frontmatter.get("title_source") or "").strip(),
+        "garden_card_count": _knowledge_garden_card_count(conn, str(data.get("id") or "")),
+    }
+    return item
+
+
+def _knowledge_draft_library_item(
+    row: sqlite3.Row,
+    *,
+    conn: sqlite3.Connection | None = None,
+    full: bool = False,
+) -> dict:
+    data = dict(row)
+    capture_intent = _json_value(str(data.get("capture_intent") or "{}"), {})
+    draft_text = str(data.get("draft_text") or "")
+    raw_text = str(data.get("raw_text") or "")
+    body = draft_text or raw_text
+    item = {
+        "id": str(data.get("id") or ""),
+        "kind": "capture_draft",
+        "title": str(data.get("title") or "").strip() or "未命名",
+        "summary": str(data.get("summary") or "").strip(),
+        "preview": _clip_text(str(data.get("summary") or "") or body, 360),
+        "body": body if full else "",
+        "folder_path": _knowledge_folder(capture_intent.get("folder_path")),
+        "tags": _json_value(str(data.get("tags") or "[]"), []),
+        "source": str(data.get("source") or ""),
+        "source_type": str(data.get("source_type") or ""),
+        "status": str(data.get("status") or ""),
+        "file_path": "",
+        "raw_path": "",
+        "word_count": int(data.get("word_count") or len(body)),
+        "created_at": str(data.get("created_at") or ""),
+        "updated_at": str(data.get("updated_at") or ""),
+        "indexed": False,
+        "title_source": str(capture_intent.get("title_source") or "").strip(),
+        "committed_capture_id": str(data.get("committed_capture_id") or ""),
+        "garden_card_count": _knowledge_garden_card_count(conn, str(data.get("committed_capture_id") or "")),
+    }
+    return item
+
+
+def _knowledge_markdown_heading_path(body: str, before_text: str = "") -> list[str]:
+    source = before_text if before_text else body
+    headings: list[tuple[int, str]] = []
+    for line in source.splitlines():
+        match = re.match(r"^(#{1,3})\s+(.+?)\s*$", line.strip())
+        if not match:
+            continue
+        level = len(match.group(1))
+        text = match.group(2).strip()
+        headings = [(old_level, old_text) for old_level, old_text in headings if old_level < level]
+        headings.append((level, text))
+    return [text for _, text in headings[-3:]]
+
+
+def _knowledge_markdown_outline(body: str, *, limit: int = 20) -> str:
+    lines = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not re.match(r"^#{1,3}\s+.+", stripped):
+            continue
+        lines.append(stripped)
+        if len(lines) >= limit:
+            break
+    return "\n".join(lines)
+
+
+def _knowledge_question_terms(question: str) -> list[str]:
+    terms = re.findall(r"[\w\u4e00-\u9fff]{2,}", question.lower())
+    seen: set[str] = set()
+    result: list[str] = []
+    for term in terms:
+        if term in seen:
+            continue
+        seen.add(term)
+        result.append(term)
+    return result[:8]
+
+
+def _knowledge_relevant_article_excerpt(body: str, question: str, *, limit: int = 4200) -> str:
+    body = (body or "").strip()
+    if len(body) <= limit:
+        return body
+    terms = _knowledge_question_terms(question)
+    paragraphs = [part.strip() for part in re.split(r"\n{2,}", body) if part.strip()]
+    scored: list[tuple[int, int, str]] = []
+    for index, paragraph in enumerate(paragraphs):
+        lowered = paragraph.lower()
+        score = sum(1 for term in terms if term and term in lowered)
+        if score:
+            scored.append((score, -index, paragraph))
+    selected = [paragraph for _, _, paragraph in sorted(scored, reverse=True)[:4]]
+    if not selected:
+        head = body[: int(limit * 0.7)]
+        tail = body[-int(limit * 0.25):]
+        return f"{head}\n\n...\n\n{tail}"
+    excerpt = "\n\n...\n\n".join(selected)
+    if len(excerpt) < limit * 0.6:
+        excerpt = f"{body[:1200]}\n\n...\n\n{excerpt}\n\n...\n\n{body[-800:]}"
+    return excerpt[:limit]
+
+
+def _knowledge_research_context_body(body: str) -> str:
+    return re.sub(r"^\s*# [^\n]+\n{1,2}", "", body or "", count=1).strip()
+
+
+def _knowledge_selection_chat_messages(item: dict, body: _KnowledgeLibrarySelectionChatBody) -> list[dict[str, str]]:
+    question = body.question.strip()
+    selected_text = body.selected_text.strip()
+    article_body = str(item.get("body") or "")
+    heading_path = [part.strip() for part in (body.heading_path or []) if part.strip()]
+    if selected_text and not heading_path:
+        before = body.surrounding_before
+        if not before and selected_text in article_body:
+            before = article_body.split(selected_text, 1)[0]
+        heading_path = _knowledge_markdown_heading_path(article_body, before)
+    outline = _knowledge_markdown_outline(article_body)
+    if selected_text:
+        user_context = "\n\n".join(
+            part for part in [
+                f"文件标题：{item.get('title') or '未命名'}",
+                f"状态：{item.get('kind')}",
+                f"文件夹：{item.get('folder_path') or 'Inbox'}",
+                f"摘要：{item.get('summary') or '无'}",
+                f"标签：{', '.join(item.get('tags') or []) or '无'}",
+                f"标题路径：{' > '.join(heading_path) if heading_path else '未识别'}",
+                f"文章目录：\n{outline}" if outline else "",
+                f"选中文本：\n{_clip_text(selected_text, 4000)}",
+                f"选区前文：\n{_clip_text(body.surrounding_before, 2200)}" if body.surrounding_before else "",
+                f"选区后文：\n{_clip_text(body.surrounding_after, 2200)}" if body.surrounding_after else "",
+                f"用户问题：{question}",
+            ] if part
+        )
+    else:
+        user_context = "\n\n".join(
+            part for part in [
+                f"文件标题：{item.get('title') or '未命名'}",
+                f"状态：{item.get('kind')}",
+                f"文件夹：{item.get('folder_path') or 'Inbox'}",
+                f"摘要：{item.get('summary') or '无'}",
+                f"标签：{', '.join(item.get('tags') or []) or '无'}",
+                f"文章目录：\n{outline}" if outline else "",
+                f"文章相关内容：\n{_knowledge_relevant_article_excerpt(article_body, question)}",
+                f"用户问题：{question}",
+            ] if part
+        )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是 Hermes Knowledge 的文章阅读助手。请根据用户问题和提供的结构化上下文回答。"
+                "回答必须基于当前文章内容；如果文章没有相关信息，直接说明。"
+                "不要修改正文，不要主动生成摘要、标签或 Garden Card。保持中文回答，结构清晰，避免空泛。"
+            ),
+        },
+        {"role": "user", "content": user_context},
+    ]
+
+
+def _knowledge_call_selection_chat(messages: list[dict[str, str]]) -> str:
+    from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+
+    response = call_llm(
+        task="knowledge_selection_chat",
+        messages=messages,
+        temperature=0.2,
+        max_tokens=1800,
+        timeout=90,
+    )
+    answer = extract_content_or_reasoning(response).strip()
+    if not answer:
+        raise RuntimeError("selection chat returned empty answer")
+    return answer
+
+
+def _knowledge_library_items(
+    conn: sqlite3.Connection,
+    vault_path: Path,
+    *,
+    folder: str = "",
+    view: str = "",
+    search: str = "",
+    limit: int = 200,
+) -> list[dict]:
+    rows = conn.execute(
+        """SELECT * FROM captures
+           WHERE COALESCE(review_state, '') != 'archived'
+           ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                    rowid DESC
+           LIMIT 10000""",
+    ).fetchall()
+    draft_rows = conn.execute(
+        """SELECT * FROM capture_drafts
+           WHERE COALESCE(committed_capture_id, '') = ''
+             AND COALESCE(status, '') NOT IN ('abandoned', 'discarded')
+           ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                    rowid DESC
+           LIMIT 10000""",
+    ).fetchall()
+    items = [
+        *[_knowledge_capture_library_item(vault_path, row, conn=conn) for row in rows],
+        *[_knowledge_draft_library_item(row, conn=conn) for row in draft_rows],
+    ]
+    folder = folder.strip()
+    view = view.strip()
+    search_text = search.strip().lower()
+    if folder:
+        items = [item for item in items if item.get("folder_path") == folder]
+    if view == "recent":
+        pass
+    elif view == "review":
+        items = [
+            item for item in items
+            if item["kind"] == "capture_draft" and item["status"] in _KNOWLEDGE_OPEN_DRAFT_STATUSES
+        ]
+    elif view == "suggestions":
+        items = [
+            item for item in items
+            if item["kind"] == "capture_draft" or item.get("title_source") == "ai"
+        ]
+    elif view == "unindexed":
+        items = [item for item in items if not item.get("indexed")]
+    if search_text:
+        items = [
+            item for item in items
+            if search_text in "\n".join(
+                str(item.get(key, ""))
+                for key in ("title", "summary", "preview", "source", "source_type")
+            ).lower()
+        ]
+    items.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    return items[: max(1, min(limit, 500))]
 
 
 def _draft_row(row: sqlite3.Row, *, full: bool = False) -> dict:
@@ -4803,24 +5527,728 @@ def _draft_row(row: sqlite3.Row, *, full: bool = False) -> dict:
     return result
 
 
-def _reading_draft_row(row: sqlite3.Row, *, full: bool = False) -> dict:
+def _reading_draft_needs_capture_lookup(data: dict, meta: dict) -> bool:
+    meta_capture_id = meta.get("capture_id")
+    return (
+        not str(data.get("target_capture_id") or "").strip()
+        and not (isinstance(meta_capture_id, str) and meta_capture_id.strip())
+        and data.get("status") == "committed"
+        and data.get("output_type") in {"local_learning_note", "discussion_note"}
+    )
+
+
+def _reading_draft_capture_ids(
+    conn: sqlite3.Connection,
+    vault_path: Path,
+    draft_ids: set[str],
+) -> dict[str, str]:
+    if not draft_ids:
+        return {}
+    resolved: dict[str, str] = {}
+    rows = conn.execute(
+        """SELECT id, file_path FROM captures
+           WHERE file_path != ''
+           ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                    rowid DESC""",
+    ).fetchall()
+    for row in rows:
+        if len(resolved) >= len(draft_ids):
+            break
+        capture_id = str(row["id"] or "").strip()
+        note = _knowledge_read_note(vault_path, str(row["file_path"] or ""))
+        if not note:
+            continue
+        frontmatter, _ = note
+        draft_id = str(frontmatter.get("reading_draft_id") or "").strip()
+        if draft_id in draft_ids:
+            resolved[draft_id] = str(frontmatter.get("id") or capture_id).strip()
+    return resolved
+
+
+def _reading_draft_row(
+    row: sqlite3.Row,
+    *,
+    resolved_capture_ids: dict[str, str] | None = None,
+    full: bool = False,
+) -> dict:
     data = dict(row)
+    meta = _json_value(str(data.get("meta_json") or "{}"), {})
+    target_capture_id = str(data.get("target_capture_id") or "").strip()
+    if _reading_draft_needs_capture_lookup(data, meta):
+        target_capture_id = (resolved_capture_ids or {}).get(str(data.get("id") or ""), "")
+        if target_capture_id:
+            meta = {
+                **meta,
+                "capture_id": target_capture_id,
+                "capture_id_source": "vault_frontmatter",
+            }
     result = {
         "id": data.get("id", ""),
         "session_id": data.get("session_id", ""),
         "output_type": data.get("output_type", ""),
-        "target_capture_id": data.get("target_capture_id", ""),
+        "target_capture_id": target_capture_id,
         "title": data.get("title", "") or "未命名",
         "summary": data.get("summary", ""),
         "status": data.get("status", ""),
         "created_at": data.get("created_at", ""),
         "updated_at": data.get("updated_at", ""),
         "draft_preview": _clip_text(str(data.get("draft_text") or ""), 420),
-        "meta": _json_value(str(data.get("meta_json") or "{}"), {}),
+        "meta": meta,
     }
     if full:
         result["draft_text"] = str(data.get("draft_text") or "")
     return result
+
+
+def _knowledge_related_object_ids(
+    conn: sqlite3.Connection,
+    vault_path: Path,
+    object_type: str,
+    object_id: str,
+) -> list[str]:
+    object_id = (object_id or "").strip()
+    if not object_id:
+        return []
+    ids = [object_id]
+    if object_type == "reading_draft":
+        row = conn.execute(
+            "SELECT * FROM reading_drafts WHERE id = ?",
+            (object_id,),
+        ).fetchone()
+        if row:
+            data = dict(row)
+            meta = _json_value(str(data.get("meta_json") or "{}"), {})
+            target_capture_id = str(data.get("target_capture_id") or "").strip()
+            if not target_capture_id and _reading_draft_needs_capture_lookup(data, meta):
+                target_capture_id = _reading_draft_capture_ids(conn, vault_path, {object_id}).get(object_id, "")
+            ids.extend([
+                target_capture_id,
+                str(meta.get("capture_id") or "").strip(),
+            ])
+    elif object_type == "capture_draft":
+        row = conn.execute(
+            "SELECT id, committed_capture_id FROM capture_drafts WHERE id = ?",
+            (object_id,),
+        ).fetchone()
+        if row:
+            ids.append(str(row["committed_capture_id"] or "").strip())
+    elif object_type == "capture":
+        rows = conn.execute(
+            "SELECT id FROM capture_drafts WHERE committed_capture_id = ?",
+            (object_id,),
+        ).fetchall()
+        ids.extend(str(row["id"] or "").strip() for row in rows)
+    elif object_type == "garden_draft":
+        row = conn.execute(
+            "SELECT capture_ids FROM garden_drafts WHERE id = ?",
+            (object_id,),
+        ).fetchone()
+        if row:
+            ids.extend(str(item).strip() for item in _json_value(str(row["capture_ids"] or "[]"), []))
+    elif object_type == "garden_card":
+        row = conn.execute(
+            "SELECT capture_ids FROM garden_cards WHERE id = ?",
+            (object_id,),
+        ).fetchone()
+        if row:
+            ids.extend(str(item).strip() for item in _json_value(str(row["capture_ids"] or "[]"), []))
+    capture_ids = [value for value in ids if value]
+    for capture_id in capture_ids:
+        pattern = f"%{capture_id}%"
+        draft_rows = conn.execute(
+            "SELECT id FROM garden_drafts WHERE capture_ids LIKE ?",
+            (pattern,),
+        ).fetchall()
+        ids.extend(str(row["id"] or "").strip() for row in draft_rows)
+        card_rows = conn.execute(
+            "SELECT id FROM garden_cards WHERE capture_ids LIKE ?",
+            (pattern,),
+        ).fetchall()
+        ids.extend(str(row["id"] or "").strip() for row in card_rows)
+    seen = set()
+    result = []
+    for value in ids:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _knowledge_object_allowed_agents(object_type: str) -> set[str] | None:
+    return {
+        "reading_draft": {"reading", "garden"},
+        "capture_draft": {"capture", "garden"},
+        "capture": {"capture", "garden"},
+        "garden_draft": {"garden"},
+        "garden_card": {"garden"},
+    }.get(object_type)
+
+
+def _knowledge_object_event_allowed(object_type: str, row: sqlite3.Row) -> bool:
+    agent = str(row["agent"] or "").strip()
+    allowed_agents = _knowledge_object_allowed_agents(object_type)
+    if not allowed_agents:
+        return True
+    return agent in allowed_agents
+
+
+def _knowledge_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _knowledge_run_event_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    warnings = _json_value(str(data.get("warnings_json") or "[]"), [])
+    errors = _json_value(str(data.get("errors_json") or "[]"), [])
+    output = _json_value(str(data.get("output_json") or "{}"), {})
+    evidence = _json_value(str(data.get("evidence_json") or "{}"), {})
+    return {
+        "id": data.get("id", ""),
+        "agent": data.get("agent", ""),
+        "intent": data.get("intent", ""),
+        "trigger": data.get("trigger", ""),
+        "status": data.get("status", ""),
+        "input": _json_value(str(data.get("input_json") or "{}"), {}),
+        "output": output,
+        "evidence": evidence,
+        "warnings": warnings,
+        "errors": errors,
+        "created_at": data.get("created_at", ""),
+        "updated_at": data.get("updated_at", ""),
+        "completed_at": data.get("completed_at", ""),
+    }
+
+
+@app.get("/api/knowledge/library/folders")
+async def get_knowledge_library_folders(request: Request):
+    _require_token(request)
+    vault_path = _knowledge_vault_path()
+    with _knowledge_conn() as conn:
+        items = _knowledge_library_items(conn, vault_path, limit=500)
+    configured_folders = _knowledge_visible_folder_paths()
+    counts: dict[str, int] = {folder: 0 for folder in configured_folders}
+    for item in items:
+        folder = _knowledge_folder(item.get("folder_path"))
+        counts[folder] = counts.get(folder, 0) + 1
+    folders = [
+        {"path": folder, "name": folder, "count": counts.get(folder, 0)}
+        for folder in configured_folders
+    ]
+    extra = sorted(folder for folder in counts if folder not in configured_folders)
+    folders.extend({"path": folder, "name": folder, "count": counts[folder]} for folder in extra)
+    smart_views = [
+        {"key": "recent", "label": "最近入库", "count": len(items)},
+        {
+            "key": "review",
+            "label": "待审阅",
+            "count": sum(
+                1
+                for item in items
+                if item["kind"] == "capture_draft" and item["status"] in _KNOWLEDGE_OPEN_DRAFT_STATUSES
+            ),
+        },
+        {
+            "key": "suggestions",
+            "label": "有 AI 建议",
+            "count": sum(
+                1
+                for item in items
+                if item["kind"] == "capture_draft" or item.get("title_source") == "ai"
+            ),
+        },
+        {
+            "key": "unindexed",
+            "label": "尚未检索",
+            "count": sum(1 for item in items if not item.get("indexed")),
+        },
+    ]
+    return {"folders": folders, "smart_views": smart_views}
+
+
+@app.post("/api/knowledge/library/folders")
+async def post_knowledge_library_folder(
+    request: Request,
+    body: _KnowledgeLibraryFolderCreateBody,
+):
+    _require_token(request)
+    folder = _knowledge_folder(body.name)
+    if len(folder) > 80:
+        raise HTTPException(status_code=400, detail="folder name is too long")
+    _knowledge_save_stored_folder(folder)
+    return {"ok": True, "folder": {"path": folder, "name": folder, "count": 0}}
+
+
+@app.patch("/api/knowledge/library/folders/{folder_path:path}")
+async def patch_knowledge_library_folder(
+    request: Request,
+    folder_path: str,
+    body: _KnowledgeLibraryFolderUpdateBody,
+):
+    _require_token(request)
+    old_folder = _knowledge_folder(folder_path)
+    new_folder = _knowledge_folder(body.name)
+    if not new_folder:
+        raise HTTPException(status_code=400, detail="folder name is required")
+    if len(new_folder) > 80:
+        raise HTTPException(status_code=400, detail="folder name is too long")
+    if old_folder == "Inbox":
+        raise HTTPException(status_code=400, detail="Inbox cannot be renamed")
+    if old_folder == new_folder:
+        return {"ok": True, "folder": {"path": new_folder, "name": new_folder, "count": 0}, "updated_items": 0}
+
+    vault_path = _knowledge_vault_path()
+    write_service_module = _knowledge_custom_module("bridge.knowledge_write_service", "Knowledge write service")
+    KnowledgeWriteService = write_service_module.KnowledgeWriteService
+    MarkdownWriteRequest = write_service_module.MarkdownWriteRequest
+
+    updated_items = 0
+    with _knowledge_conn() as conn:
+        draft_rows = conn.execute(
+            """SELECT * FROM capture_drafts
+               WHERE COALESCE(committed_capture_id, '') = ''
+                 AND COALESCE(status, '') NOT IN ('abandoned', 'discarded')"""
+        ).fetchall()
+        for row in draft_rows:
+            data = dict(row)
+            capture_intent = _json_value(str(data.get("capture_intent") or "{}"), {})
+            if _knowledge_folder(capture_intent.get("folder_path")) != old_folder:
+                continue
+            capture_intent["folder_path"] = new_folder
+            conn.execute(
+                "UPDATE capture_drafts SET capture_intent = ?, updated_at = datetime('now') WHERE id = ?",
+                (json.dumps(capture_intent, ensure_ascii=False), str(data.get("id") or "")),
+            )
+            updated_items += 1
+
+        write_service = KnowledgeWriteService(vault_path)
+        capture_rows = conn.execute(
+            "SELECT * FROM captures WHERE COALESCE(review_state, '') != 'archived'"
+        ).fetchall()
+        for row in capture_rows:
+            data = dict(row)
+            file_path = str(data.get("file_path") or "")
+            note = _knowledge_read_note(vault_path, file_path)
+            if not note:
+                continue
+            frontmatter, current_body = note
+            if _knowledge_folder(frontmatter.get("folder_path") or frontmatter.get("folder")) != old_folder:
+                continue
+            frontmatter["folder_path"] = new_folder
+            write_service.write_markdown_artifact(
+                MarkdownWriteRequest(
+                    kind="capture_note",
+                    relative_path=file_path,
+                    content=_knowledge_render_markdown(frontmatter, current_body),
+                    db_object_id=str(data.get("id") or ""),
+                    db_table="captures",
+                    requires_backup=True,
+                )
+            )
+            conn.execute(
+                "UPDATE captures SET updated_at = datetime('now') WHERE id = ?",
+                (str(data.get("id") or ""),),
+            )
+            updated_items += 1
+        conn.commit()
+
+    _knowledge_rename_stored_folder(old_folder, new_folder)
+    return {
+        "ok": True,
+        "folder": {"path": new_folder, "name": new_folder, "count": updated_items},
+        "updated_items": updated_items,
+    }
+
+
+@app.get("/api/knowledge/library/items")
+async def get_knowledge_library_items(
+    request: Request,
+    folder: str = "",
+    view: str = "",
+    search: str = "",
+    limit: int = 200,
+):
+    _require_token(request)
+    vault_path = _knowledge_vault_path()
+    with _knowledge_conn() as conn:
+        items = _knowledge_library_items(
+            conn,
+            vault_path,
+            folder=folder,
+            view=view,
+            search=search,
+            limit=limit,
+        )
+    return {"items": items, "total": len(items)}
+
+
+@app.get("/api/knowledge/library/items/{kind}/{item_id}")
+async def get_knowledge_library_item(request: Request, kind: str, item_id: str):
+    _require_token(request)
+    kind = (kind or "").strip()
+    vault_path = _knowledge_vault_path()
+    with _knowledge_conn() as conn:
+        if kind == "capture":
+            row = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Library capture not found")
+            return {"item": _knowledge_capture_library_item(vault_path, row, conn=conn, full=True)}
+        if kind == "capture_draft":
+            row = conn.execute("SELECT * FROM capture_drafts WHERE id = ?", (item_id,)).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Library draft not found")
+            return {"item": _knowledge_draft_library_item(row, conn=conn, full=True)}
+    raise HTTPException(status_code=400, detail="Unsupported library item kind")
+
+
+@app.get("/api/knowledge/library/items/{kind}/{item_id}/dependencies")
+async def get_knowledge_library_item_dependencies(request: Request, kind: str, item_id: str):
+    _require_token(request)
+    kind = (kind or "").strip()
+    if kind != "capture":
+        return {
+            "ok": True,
+            "id": item_id,
+            "dependencies": {
+                "garden_cards": [],
+                "garden_drafts": [],
+                "committed_drafts": [],
+                "backlinks": [],
+                "event_count": 0,
+                "policy": {
+                    "action": "delete_draft_only",
+                    "database_row": "removed_or_marked_discarded_by_capture_bridge",
+                },
+            },
+        }
+    vault_path = _knowledge_vault_path()
+    with _knowledge_conn() as conn:
+        return _knowledge_capture_dependency_response(conn, vault_path, item_id=item_id)
+
+
+def _knowledge_library_selection_item(kind: str, item_id: str) -> dict[str, Any]:
+    kind = (kind or "").strip()
+    vault_path = _knowledge_vault_path()
+    with _knowledge_conn() as conn:
+        if kind == "capture":
+            row = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Library capture not found")
+            if str(row["review_state"] or "") == "archived":
+                raise HTTPException(status_code=409, detail="Library capture is archived")
+            return _knowledge_capture_library_item(vault_path, row, conn=conn, full=True)
+        if kind == "capture_draft":
+            row = conn.execute("SELECT * FROM capture_drafts WHERE id = ?", (item_id,)).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Library draft not found")
+            return _knowledge_draft_library_item(row, conn=conn, full=True)
+    raise HTTPException(status_code=400, detail="Unsupported library item kind")
+
+
+def _knowledge_library_selection_research_kwargs(
+    kind: str,
+    item_id: str,
+    body: _KnowledgeLibrarySelectionChatBody,
+) -> dict[str, Any]:
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+    kind = (kind or "").strip()
+    item = _knowledge_library_selection_item(kind, item_id)
+    return {
+        "query": question,
+        "mode": body.mode,
+        "article_context": {
+            "kind": kind,
+            "id": item_id,
+            "title": item.get("title") or "",
+            "body": _knowledge_research_context_body(item.get("body") or item.get("preview") or ""),
+            "folder_path": item.get("folder_path") or "Inbox",
+            "summary": item.get("summary") or "",
+            "tags": item.get("tags") or [],
+            "file_path": item.get("file_path") or "",
+        },
+        "selection_context": {
+            "selected_text": body.selected_text,
+            "surrounding_before": body.surrounding_before,
+            "surrounding_after": body.surrounding_after,
+            "heading_path": body.heading_path,
+            "selection_start": body.selection_start,
+            "selection_end": body.selection_end,
+            "selection_confidence": body.selection_confidence,
+        },
+    }
+
+
+def _knowledge_library_selection_chat_response(
+    result: dict[str, Any],
+    body: _KnowledgeLibrarySelectionChatBody,
+) -> dict[str, Any]:
+    selected_text = body.selected_text.strip()
+    citations = []
+    if selected_text:
+        citations.append({"label": "当前选区", "excerpt": _clip_text(selected_text, 220)})
+    meta = result.get("meta") if isinstance(result, dict) else {}
+    return {
+        "ok": True,
+        "answer": result.get("chat_preview") or meta.get("answer") or "",
+        "used_selection": bool(selected_text),
+        "citations": citations,
+        "mode": meta.get("mode") or body.mode,
+        "plan": meta.get("research_plan") if isinstance(meta.get("research_plan"), dict) else {},
+        "plan_status": meta.get("plan_status") or "",
+        "sources": {
+            "knowledge": meta.get("knowledge_sources") if isinstance(meta.get("knowledge_sources"), list) else [],
+            "web": meta.get("web_sources") if isinstance(meta.get("web_sources"), list) else [],
+        },
+        "warnings": result.get("warnings") if isinstance(result.get("warnings"), list) else [],
+        "meta": {
+            "web_queries": meta.get("web_queries") if isinstance(meta.get("web_queries"), list) else [],
+            "query_intent": meta.get("query_intent") or "",
+            "search_quality": meta.get("search_quality") if isinstance(meta.get("search_quality"), dict) else {},
+            "rewritten_web_queries": meta.get("rewritten_web_queries") if isinstance(meta.get("rewritten_web_queries"), list) else [],
+            "provider_status": meta.get("provider_status") if isinstance(meta.get("provider_status"), dict) else {},
+            "research_trace": meta.get("research_trace") if isinstance(meta.get("research_trace"), dict) else {},
+            "web_search_attempted": bool(meta.get("web_search_attempted")),
+        },
+    }
+
+
+def _sse_json(event: dict[str, Any]) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+
+
+@app.post("/api/knowledge/library/items/{kind}/{item_id}/selection-chat")
+async def post_knowledge_library_item_selection_chat(
+    request: Request,
+    kind: str,
+    item_id: str,
+    body: _KnowledgeLibrarySelectionChatBody,
+):
+    _require_token(request)
+    research_kwargs = _knowledge_library_selection_research_kwargs(kind, item_id, body)
+    try:
+        research_bridge = _knowledge_custom_module("bridge.research_bridge", "Research bridge")
+        async_answer = getattr(research_bridge, "async_research_answer", None)
+        if callable(async_answer):
+            result = await async_answer(**research_kwargs)
+        else:
+            result = research_bridge.research_answer(**research_kwargs)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("knowledge selection chat failed")
+        raise HTTPException(status_code=502, detail=f"Selection chat failed: {exc}") from exc
+    return _knowledge_library_selection_chat_response(result, body)
+
+
+@app.post("/api/knowledge/library/items/{kind}/{item_id}/selection-chat/stream")
+async def post_knowledge_library_item_selection_chat_stream(
+    request: Request,
+    kind: str,
+    item_id: str,
+    body: _KnowledgeLibrarySelectionChatBody,
+):
+    _require_token(request)
+    research_kwargs = _knowledge_library_selection_research_kwargs(kind, item_id, body)
+
+    async def event_stream():
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        async def on_event(event: dict[str, Any]) -> None:
+            await queue.put({"event": "progress", **event})
+
+        async def run_research() -> None:
+            try:
+                research_bridge = _knowledge_custom_module("bridge.research_bridge", "Research bridge")
+                async_answer = getattr(research_bridge, "async_research_answer", None)
+                if callable(async_answer):
+                    result = await async_answer(**research_kwargs, event_callback=on_event)
+                else:
+                    result = await asyncio.to_thread(research_bridge.research_answer, **research_kwargs)
+                await queue.put({"event": "complete", "response": _knowledge_library_selection_chat_response(result, body)})
+            except HTTPException as exc:
+                await queue.put({"event": "error", "message": exc.detail})
+            except Exception as exc:
+                _log.exception("knowledge selection chat stream failed")
+                await queue.put({"event": "error", "message": f"Selection chat failed: {exc}"})
+
+        task = asyncio.create_task(run_research())
+        yield _sse_json({"event": "start", "mode": body.mode})
+        try:
+            while True:
+                if await request.is_disconnected():
+                    task.cancel()
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                yield _sse_json(event)
+                if event.get("event") in {"complete", "error"}:
+                    break
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/knowledge/library/items")
+async def post_knowledge_library_item(request: Request, body: _KnowledgeLibraryCreateBody):
+    _require_token(request)
+    content = (body.body or "").strip()
+    title = (body.title or "").strip()
+    if not content and not title:
+        raise HTTPException(status_code=400, detail="title or body is required")
+    capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
+    create_editable_capture_draft = capture_bridge.create_editable_capture_draft
+    result = create_editable_capture_draft(
+        content=content or title,
+        source=body.source,
+        source_type=body.source_type,
+        instruction="自由编辑后入库到知识库",
+        title=title,
+        folder_path=_knowledge_folder(body.folder_path),
+        existing_folders=_knowledge_visible_folder_paths(),
+    )
+    draft_id = str((result.get("meta") or {}).get("draft_id") or result.get("draft_id") or "").strip()
+    if not draft_id:
+        durable = result.get("durable_artifacts") if isinstance(result.get("durable_artifacts"), list) else []
+        for artifact in durable:
+            if isinstance(artifact, dict) and artifact.get("type") == "capture_draft":
+                draft_id = str(artifact.get("id") or "").strip()
+                break
+    if draft_id:
+        with _knowledge_conn() as conn:
+            row = conn.execute("SELECT * FROM capture_drafts WHERE id = ?", (draft_id,)).fetchone()
+            if row:
+                return {"ok": True, "item": _knowledge_draft_library_item(row, conn=conn, full=True), "result": result}
+    return {"ok": True, "result": result}
+
+
+@app.patch("/api/knowledge/library/items/{kind}/{item_id}")
+async def patch_knowledge_library_item(
+    request: Request,
+    kind: str,
+    item_id: str,
+    body: _KnowledgeLibraryUpdateBody,
+):
+    _require_token(request)
+    kind = (kind or "").strip()
+    folder_path = _knowledge_folder(body.folder_path) if body.folder_path is not None else None
+    if kind == "capture_draft":
+        with _knowledge_conn() as conn:
+            row = conn.execute("SELECT * FROM capture_drafts WHERE id = ?", (item_id,)).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Library draft not found")
+            data = dict(row)
+            capture_intent = _json_value(str(data.get("capture_intent") or "{}"), {})
+            if folder_path is not None:
+                capture_intent["folder_path"] = folder_path
+            if body.folder_suggestion is not None:
+                capture_intent["folder_suggestion"] = body.folder_suggestion
+            if body.card_suggestion is not None:
+                capture_intent["card_suggestion"] = body.card_suggestion
+            title = body.title.strip() if body.title.strip() else str(data.get("title") or "")
+            draft_text = body.body if body.body is not None else str(data.get("draft_text") or data.get("raw_text") or "")
+            summary = body.summary if body.summary is not None else str(data.get("summary") or "")
+            tags = body.tags if body.tags is not None else _json_value(str(data.get("tags") or "[]"), [])
+            conn.execute(
+                """UPDATE capture_drafts
+                   SET title = ?, draft_text = ?, word_count = ?, summary = ?, tags = ?, capture_intent = ?, updated_at = datetime('now')
+                   WHERE id = ?""",
+                (
+                    title,
+                    draft_text,
+                    len(draft_text or ""),
+                    summary,
+                    json.dumps(tags or [], ensure_ascii=False),
+                    json.dumps(capture_intent, ensure_ascii=False),
+                    item_id,
+                ),
+            )
+            conn.commit()
+            refreshed = conn.execute("SELECT * FROM capture_drafts WHERE id = ?", (item_id,)).fetchone()
+            return {"ok": True, "item": _knowledge_draft_library_item(refreshed, conn=conn, full=True)}
+    if kind == "capture":
+        vault_path = _knowledge_vault_path()
+        write_service_module = _knowledge_custom_module("bridge.knowledge_write_service", "Knowledge write service")
+        KnowledgeWriteService = write_service_module.KnowledgeWriteService
+        MarkdownWriteRequest = write_service_module.MarkdownWriteRequest
+        with _knowledge_conn() as conn:
+            row = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Library capture not found")
+            file_path = str(row["file_path"] or "")
+            note = _knowledge_read_note(vault_path, file_path)
+            if not note:
+                raise HTTPException(status_code=404, detail="capture note file not found")
+            frontmatter, current_body = note
+            updated_body = body.body if body.body is not None else current_body
+            if body.title.strip():
+                frontmatter["title"] = body.title.strip()
+                frontmatter["title_source"] = "user"
+            if folder_path is not None:
+                frontmatter["folder_path"] = folder_path
+            frontmatter["word_count"] = len(updated_body or "")
+            write_result = KnowledgeWriteService(vault_path).write_markdown_artifact(
+                MarkdownWriteRequest(
+                    kind="capture_note",
+                    relative_path=file_path,
+                    content=_knowledge_render_markdown(frontmatter, updated_body),
+                    db_object_id=item_id,
+                    db_table="captures",
+                    requires_backup=True,
+                )
+            )
+            conn.execute(
+                "UPDATE captures SET updated_at = datetime('now') WHERE id = ?",
+                (item_id,),
+            )
+            conn.commit()
+            refreshed = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
+            return {
+                "ok": True,
+                "backup_path": write_result.backup_path,
+                "item": _knowledge_capture_library_item(vault_path, refreshed, conn=conn, full=True),
+            }
+    raise HTTPException(status_code=400, detail="Unsupported library item kind")
+
+
+@app.delete("/api/knowledge/library/items/{kind}/{item_id}")
+async def delete_knowledge_library_item(request: Request, kind: str, item_id: str):
+    _require_token(request)
+    kind = (kind or "").strip()
+    if kind == "capture_draft":
+        capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
+        discard_capture_draft = capture_bridge.discard_capture_draft
+        return discard_capture_draft(draft_id=item_id)
+    if kind == "capture":
+        vault_path = _knowledge_vault_path()
+        with _knowledge_conn() as conn:
+            dependency_response = _knowledge_capture_dependency_response(conn, vault_path, item_id=item_id)
+            conn.execute(
+                "UPDATE captures SET review_state = 'archived', updated_at = datetime('now') WHERE id = ?",
+                (item_id,),
+            )
+            conn.commit()
+        return {
+            "ok": True,
+            "status": "archived",
+            "id": item_id,
+            "dependencies": dependency_response["dependencies"],
+            "message": "已归档入库文件；源文件、卡片、引用和历史记录已保留。",
+        }
+    raise HTTPException(status_code=400, detail="Unsupported library item kind")
 
 
 @app.get("/api/knowledge/capture-drafts")
@@ -4859,17 +6287,55 @@ async def get_knowledge_capture_draft(request: Request, draft_id: str):
     return {"draft": _draft_row(row, full=True)}
 
 
+@app.post("/api/knowledge/capture-drafts/editable")
+async def post_knowledge_editable_capture_draft(
+    request: Request,
+    body: _KnowledgeEditableCaptureDraftBody,
+):
+    _require_token(request)
+    capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
+    create_editable_capture_draft = capture_bridge.create_editable_capture_draft
+    kwargs = {
+        "content": body.content,
+        "source": body.source,
+        "source_type": body.source_type,
+        "instruction": body.instruction,
+        "title": body.title,
+        "existing_folders": body.existing_folders or _knowledge_visible_folder_paths(),
+    }
+    if body.folder_path.strip():
+        kwargs["folder_path"] = body.folder_path
+    return create_editable_capture_draft(**kwargs)
+
+
+@app.patch("/api/knowledge/capture-drafts/{draft_id}/editable")
+async def patch_knowledge_editable_capture_draft(
+    request: Request,
+    draft_id: str,
+    body: _KnowledgeEditableCaptureDraftBody,
+):
+    _require_token(request)
+    capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
+    update_editable_capture_draft = capture_bridge.update_editable_capture_draft
+    return update_editable_capture_draft(
+        draft_id=draft_id,
+        content=body.content,
+        title=body.title,
+        summary=body.summary,
+        tags=body.tags,
+        folder_path=body.folder_path,
+        folder_suggestion=body.folder_suggestion,
+        card_suggestion=body.card_suggestion,
+        existing_folders=body.existing_folders or _knowledge_visible_folder_paths(),
+    )
+
+
 @app.post("/api/knowledge/capture-drafts/{draft_id}/commit")
 async def post_knowledge_capture_draft_commit(request: Request, draft_id: str):
     _require_token(request)
-    root = _knowledge_custom_root()
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
-    try:
-        from bridge.capture_bridge import commit_capture_draft
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Capture bridge unavailable: {exc}") from exc
-    result = commit_capture_draft(draft_id)
+    capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
+    commit_capture_draft = capture_bridge.commit_capture_draft
+    result = commit_capture_draft(draft_id, confirmation_source="dashboard")
     return result
 
 
@@ -4880,27 +6346,97 @@ async def post_knowledge_capture_draft_revise(
     body: _KnowledgeDraftRevisionBody,
 ):
     _require_token(request)
-    root = _knowledge_custom_root()
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
-    try:
-        from bridge.capture_bridge import revise_capture_draft
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Capture bridge unavailable: {exc}") from exc
+    capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
+    revise_capture_draft = capture_bridge.revise_capture_draft
     result = revise_capture_draft(draft_id=draft_id, instruction=body.instruction)
     return result
+
+
+@app.delete("/api/knowledge/capture-drafts/{draft_id}")
+async def delete_knowledge_capture_draft(request: Request, draft_id: str):
+    _require_token(request)
+    capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
+    discard_capture_draft = capture_bridge.discard_capture_draft
+    return discard_capture_draft(draft_id=draft_id)
+
+
+@app.patch("/api/knowledge/captures/{capture_id}")
+async def patch_knowledge_capture(
+    request: Request,
+    capture_id: str,
+    body: _KnowledgeCaptureUpdateBody,
+):
+    _require_token(request)
+    markdown_writer = _knowledge_custom_module("agents.markdown_writer", "Markdown writer")
+    write_service_module = _knowledge_custom_module("bridge.knowledge_write_service", "Knowledge write service")
+    repo_module = _knowledge_custom_module("db.repo", "Capture repository")
+    captures_route = _knowledge_custom_module("api.routes.captures", "Capture route helpers")
+    read_note = markdown_writer.read_note
+    KnowledgeWriteService = write_service_module.KnowledgeWriteService
+    MarkdownWriteRequest = write_service_module.MarkdownWriteRequest
+    CaptureRepo = repo_module.CaptureRepo
+    _hydrate_capture = captures_route._hydrate_capture
+    _maintain_capture_after_edit = captures_route._maintain_capture_after_edit
+    _render_markdown = captures_route._render_markdown
+    _strip_binary = captures_route._strip_binary
+
+    vault_path = _knowledge_vault_path()
+    with _knowledge_conn() as conn:
+        repo = CaptureRepo(conn)
+        item = repo.get_by_id(capture_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Capture not found")
+        file_path = str(item.get("file_path") or "")
+        if not file_path:
+            raise HTTPException(status_code=400, detail="capture has no editable note")
+        note = read_note(vault_path, file_path)
+        if note is None:
+            raise HTTPException(status_code=404, detail="capture note file not found")
+
+        frontmatter, current_body = note
+        updated_body = (body.body if body.body else current_body or "").strip()
+        if not updated_body:
+            raise HTTPException(status_code=400, detail="body cannot be empty")
+        if body.title.strip():
+            frontmatter["title"] = body.title.strip()
+            frontmatter["title_source"] = "user"
+        if body.folder_path is not None:
+            frontmatter["folder_path"] = _knowledge_folder(body.folder_path)
+        frontmatter["word_count"] = len(updated_body)
+        write_result = KnowledgeWriteService(vault_path).write_markdown_artifact(
+            MarkdownWriteRequest(
+                kind="capture_note",
+                relative_path=file_path,
+                content=_render_markdown(frontmatter, updated_body),
+                db_object_id=capture_id,
+                db_table="captures",
+                requires_backup=True,
+            )
+        )
+        repo.log_change(
+            "capture",
+            capture_id,
+            "body",
+            old_value="",
+            new_value="updated via dashboard API",
+            source="dashboard",
+        )
+        library_report = _maintain_capture_after_edit(repo, vault_path, capture_id, None)
+        refreshed = repo.get_by_id(capture_id) or item
+        return {
+            "capture_id": capture_id,
+            "file_path": file_path,
+            "backup_path": write_result.backup_path,
+            "library_postprocess": library_report,
+            "item": _strip_binary(_hydrate_capture(vault_path, refreshed)),
+        }
 
 
 @app.post("/api/knowledge/answer-drafts")
 async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDraftBody):
     _require_token(request)
-    root = _knowledge_custom_root()
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
-    try:
-        from bridge.answer_bridge import save_answer_to_knowledge
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Answer bridge unavailable: {exc}") from exc
+    answer_bridge = _knowledge_custom_module("bridge.answer_bridge", "Answer bridge")
+    save_answer_to_knowledge = answer_bridge.save_answer_to_knowledge
     return save_answer_to_knowledge(
         hermes_session_id=body.hermes_session_id,
         user_message=body.user_message,
@@ -4914,10 +6450,39 @@ async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDr
     )
 
 
+@app.post("/api/knowledge/garden-drafts")
+async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDraftBody):
+    _require_token(request)
+    garden_bridge = _knowledge_custom_module("bridge.garden_bridge", "Garden bridge")
+    commit_garden_draft = garden_bridge.commit_garden_draft
+    synthesize_garden = garden_bridge.synthesize_garden
+    result = synthesize_garden(
+        capture_ids=body.capture_ids,
+        title=body.title,
+        card_kind=body.card_kind,
+        instruction=body.instruction,
+    )
+    if result.get("status") == "error":
+        return result
+    artifacts = result.get("durable_artifacts") if isinstance(result.get("durable_artifacts"), list) else []
+    if any(isinstance(item, dict) and item.get("type") == "garden_card" for item in artifacts):
+        return result
+    draft_id = str((result.get("meta") or {}).get("draft_id") or "").strip()
+    if not draft_id:
+        for item in artifacts:
+            if isinstance(item, dict) and item.get("type") == "garden_draft":
+                draft_id = str(item.get("id") or "").strip()
+                break
+    if not draft_id:
+        return result
+    return commit_garden_draft(draft_id=draft_id)
+
+
 @app.get("/api/knowledge/reading-drafts")
 async def get_knowledge_reading_drafts(request: Request, limit: int = 50):
     _require_token(request)
     with _knowledge_conn() as conn:
+        vault_path = _knowledge_vault_path()
         rows = conn.execute(
             """SELECT * FROM reading_drafts
                ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
@@ -4925,7 +6490,16 @@ async def get_knowledge_reading_drafts(request: Request, limit: int = 50):
                LIMIT ?""",
             (max(1, min(limit, 200)),),
         ).fetchall()
-    drafts = [_reading_draft_row(row) for row in rows]
+        lookup_ids = {
+            str(row["id"] or "")
+            for row in rows
+            if _reading_draft_needs_capture_lookup(
+                dict(row),
+                _json_value(str(dict(row).get("meta_json") or "{}"), {}),
+            )
+        }
+        resolved_capture_ids = _reading_draft_capture_ids(conn, vault_path, lookup_ids)
+        drafts = [_reading_draft_row(row, resolved_capture_ids=resolved_capture_ids) for row in rows]
     return {
         "drafts": drafts,
         "total": len(drafts),
@@ -4937,25 +6511,111 @@ async def get_knowledge_reading_drafts(request: Request, limit: int = 50):
 async def get_knowledge_reading_draft(request: Request, draft_id: str):
     _require_token(request)
     with _knowledge_conn() as conn:
+        vault_path = _knowledge_vault_path()
         row = conn.execute(
             "SELECT * FROM reading_drafts WHERE id = ?",
             (draft_id,),
         ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Reading draft not found")
-    return {"draft": _reading_draft_row(row, full=True)}
+        if row is None:
+            raise HTTPException(status_code=404, detail="Reading draft not found")
+        data = dict(row)
+        lookup_ids = (
+            {str(data.get("id") or "")}
+            if _reading_draft_needs_capture_lookup(
+                data,
+                _json_value(str(data.get("meta_json") or "{}"), {}),
+            )
+            else set()
+        )
+        resolved_capture_ids = _reading_draft_capture_ids(conn, vault_path, lookup_ids)
+        draft = _reading_draft_row(row, resolved_capture_ids=resolved_capture_ids, full=True)
+    return {"draft": draft}
+
+
+@app.get("/api/knowledge/object-events")
+async def get_knowledge_object_events(
+    request: Request,
+    object_type: str,
+    object_id: str,
+    limit: int = 30,
+):
+    _require_token(request)
+    object_type = (object_type or "").strip()
+    object_id = (object_id or "").strip()
+    if not object_type or not object_id:
+        raise HTTPException(status_code=400, detail="object_type and object_id are required")
+    with _knowledge_conn() as conn:
+        vault_path = _knowledge_vault_path()
+        related_ids = _knowledge_related_object_ids(conn, vault_path, object_type, object_id)
+        if not related_ids:
+            return {"events": [], "related_ids": [], "total": 0}
+        limit_value = max(1, min(limit, 100))
+        rows: list[sqlite3.Row] = []
+        if _knowledge_table_exists(conn, "agent_run_objects"):
+            id_placeholders = ", ".join("?" for _ in related_ids)
+            params: list[Any] = list(related_ids)
+            agent_clause = ""
+            allowed_agents = _knowledge_object_allowed_agents(object_type)
+            if allowed_agents:
+                placeholders = ", ".join("?" for _ in allowed_agents)
+                agent_clause = f" AND ar.agent IN ({placeholders})"
+                params.extend(sorted(allowed_agents))
+            params.append(limit_value)
+            rows = conn.execute(
+                f"""SELECT DISTINCT ar.* FROM agent_runs ar
+                    JOIN agent_run_objects aro ON aro.run_id = ar.id
+                    WHERE aro.object_id IN ({id_placeholders}){agent_clause}
+                    ORDER BY datetime(replace(substr(ar.updated_at, 1, 19), 'T', ' ')) DESC,
+                             ar.rowid DESC
+                    LIMIT ?""",
+                params,
+            ).fetchall()
+
+        clauses = []
+        params: list[Any] = []
+        for related_id in related_ids:
+            pattern = f"%{related_id}%"
+            clauses.append("(input_json LIKE ? OR output_json LIKE ? OR evidence_json LIKE ?)")
+            params.extend([pattern, pattern, pattern])
+        allowed_agents = _knowledge_object_allowed_agents(object_type)
+        agent_clause = ""
+        if allowed_agents:
+            placeholders = ", ".join("?" for _ in allowed_agents)
+            agent_clause = f" AND agent IN ({placeholders})"
+            params.extend(sorted(allowed_agents))
+        existing_ids = [str(row["id"] or "") for row in rows]
+        exclude_clause = ""
+        if existing_ids:
+            placeholders = ", ".join("?" for _ in existing_ids)
+            exclude_clause = f" AND id NOT IN ({placeholders})"
+            params.extend(existing_ids)
+        params.append(max(0, limit_value - len(rows)) or 1)
+        fallback_rows = conn.execute(
+            f"""SELECT * FROM agent_runs
+                WHERE ({" OR ".join(clauses)}){agent_clause}{exclude_clause}
+                ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                         rowid DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+        rows = [*rows, *fallback_rows][:limit_value]
+    events = [
+        _knowledge_run_event_row(row)
+        for row in rows
+        if _knowledge_object_event_allowed(object_type, row)
+    ]
+    return {
+        "events": events,
+        "related_ids": related_ids,
+        "total": len(events),
+    }
 
 
 @app.post("/api/knowledge/reading-drafts/{draft_id}/commit")
 async def post_knowledge_reading_draft_commit(request: Request, draft_id: str):
     _require_token(request)
-    root = _knowledge_custom_root()
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
-    try:
-        from bridge.reading_bridge import commit_reading_artifact
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Reading bridge unavailable: {exc}") from exc
+    reading_bridge = _knowledge_custom_module("bridge.reading_bridge", "Reading bridge")
+    commit_reading_artifact = reading_bridge.commit_reading_artifact
     return commit_reading_artifact(draft_id=draft_id)
 
 
@@ -4966,21 +6626,32 @@ async def post_knowledge_reading_draft_revise(
     body: _KnowledgeDraftRevisionBody,
 ):
     _require_token(request)
-    root = _knowledge_custom_root()
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
-    try:
-        from bridge.answer_bridge import revise_answer_draft
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Answer bridge unavailable: {exc}") from exc
+    answer_bridge = _knowledge_custom_module("bridge.answer_bridge", "Answer bridge")
+    revise_answer_draft = answer_bridge.revise_answer_draft
     return revise_answer_draft(draft_id=draft_id, instruction=body.instruction)
 
 
+@app.delete("/api/knowledge/reading-drafts/{draft_id}")
+async def delete_knowledge_reading_draft(request: Request, draft_id: str):
+    _require_token(request)
+    reading_bridge = _knowledge_custom_module("bridge.reading_bridge", "Reading bridge")
+    discard_reading_artifact = reading_bridge.discard_reading_artifact
+    return discard_reading_artifact(draft_id=draft_id)
+
+
 def _source_for_capture(conn: sqlite3.Connection, vault_path: Path, capture_id: str) -> dict:
+    capture_id = (capture_id or "").strip()
     row = conn.execute(
         "SELECT id, file_path FROM captures WHERE id = ?",
         (capture_id,),
     ).fetchone()
+    if not row and len(capture_id) >= 6:
+        rows = conn.execute(
+            "SELECT id, file_path FROM captures WHERE id LIKE ? ORDER BY updated_at DESC LIMIT 2",
+            (f"{capture_id}%",),
+        ).fetchall()
+        if len(rows) == 1:
+            row = rows[0]
     if not row:
         return {
             "id": capture_id,
@@ -5027,29 +6698,25 @@ def _knowledge_card_row(
     data = dict(row)
     card_id = str(data.get("id") or "")
     file_path, frontmatter, markdown = _knowledge_card_note(vault_path, card_id)
-    capture_ids = _json_value(str(data.get("capture_ids") or "[]"), [])
+    payload = _knowledge_normalized_card_payload(data)
+    capture_ids = payload.get("source_ids") or _json_value(str(data.get("capture_ids") or "[]"), [])
     core_arguments = _json_value(str(data.get("core_arguments") or "[]"), [])
     knowledge_links = _json_value(str(data.get("knowledge_links") or "[]"), [])
     key_materials = _json_value(str(data.get("key_materials") or "[]"), [])
-    summary = str(data.get("one_liner") or "").strip()
-    if not summary and core_arguments:
-        first = core_arguments[0]
-        if isinstance(first, dict):
-            summary = str(first.get("claim") or "").strip()
-        else:
-            summary = str(first).strip()
-    kind = str(data.get("card_kind") or "viewpoint").strip() or "viewpoint"
+    summary = str(payload.get("claim") or data.get("one_liner") or "").strip()
+    kind = str(payload.get("card_kind") or data.get("card_kind") or "viewpoint").strip() or "viewpoint"
     if kind not in _KNOWLEDGE_CARD_KINDS:
         kind = "viewpoint"
     card = {
         "id": card_id,
-        "title": data.get("title", "") or "未命名卡片",
+        "title": payload.get("title") or data.get("title", "") or "未命名卡片",
         "kind": kind,
         "summary": summary,
         "status": data.get("status", ""),
         "updated_at": data.get("updated_at", ""),
         "created_at": data.get("created_at", ""),
         "file_path": file_path,
+        "markdown": markdown,
         "source_theme": str(frontmatter.get("source_theme") or "").strip(),
         "sources": [
             _source_for_capture(conn, vault_path, str(capture_id))
@@ -5061,6 +6728,8 @@ def _knowledge_card_row(
     if full:
         card.update(
             {
+                "schema_version": payload.get("schema_version") or data.get("schema_version", ""),
+                "payload": payload,
                 "core_arguments": core_arguments,
                 "knowledge_links": knowledge_links,
                 "key_materials": key_materials,
@@ -5078,13 +6747,14 @@ async def get_knowledge_cards(request: Request, limit: int = 100):
     with _knowledge_conn() as conn:
         rows = conn.execute(
             """SELECT * FROM garden_cards
+               WHERE COALESCE(status, '') != 'archived'
                ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
                         rowid DESC
                LIMIT ?""",
             (max(1, min(limit, 300)),),
         ).fetchall()
         cards = [
-            _knowledge_card_row(row, conn=conn, vault_path=vault_path, full=True)
+            _knowledge_card_row(row, conn=conn, vault_path=vault_path, full=False)
             for row in rows
         ]
     groups = {kind: 0 for kind in _KNOWLEDGE_CARD_KINDS}
@@ -5106,6 +6776,14 @@ async def get_knowledge_card(request: Request, card_id: str):
             raise HTTPException(status_code=404, detail="Knowledge card not found")
         card = _knowledge_card_row(row, conn=conn, vault_path=vault_path, full=True)
     return {"card": card}
+
+
+@app.delete("/api/knowledge/cards/{card_id}")
+async def delete_knowledge_card(request: Request, card_id: str):
+    _require_token(request)
+    garden_bridge = _knowledge_custom_module("bridge.garden_bridge", "Garden bridge")
+    archive_garden_card = garden_bridge.archive_garden_card
+    return archive_garden_card(card_id=card_id)
 
 
 @app.get("/dashboard-plugins/{plugin_name}/{file_path:path}")

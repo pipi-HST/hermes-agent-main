@@ -5,6 +5,7 @@ import os
 import json
 import tempfile
 import sys
+import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -216,6 +217,778 @@ class TestWebServerEndpoints:
         detail = detail_resp.json()
         assert detail["draft"]["draft_text"] == "# 智能问数\n\n整理稿正文"
         assert detail["draft"]["raw_text"] == "原文正文"
+
+    def test_knowledge_library_selection_chat_uses_async_research_bridge(self, monkeypatch, tmp_path):
+        import sqlite3
+
+        custom_root = tmp_path / "hermes-custom"
+        data_dir = custom_root / "data"
+        data_dir.mkdir(parents=True)
+        db_path = data_dir / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """CREATE TABLE capture_drafts (
+               id TEXT PRIMARY KEY,
+               raw_text TEXT NOT NULL DEFAULT '',
+               source TEXT NOT NULL DEFAULT '',
+               source_type TEXT NOT NULL DEFAULT '',
+               title TEXT NOT NULL DEFAULT '',
+               word_count INTEGER NOT NULL DEFAULT 0,
+               draft_text TEXT NOT NULL DEFAULT '',
+               instruction TEXT NOT NULL DEFAULT '',
+               summary TEXT NOT NULL DEFAULT '',
+               tags TEXT NOT NULL DEFAULT '[]',
+               status TEXT NOT NULL DEFAULT 'draft_ready',
+               committed_capture_id TEXT NOT NULL DEFAULT '',
+               created_at TEXT NOT NULL DEFAULT (datetime('now')),
+               updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+               capture_intent TEXT NOT NULL DEFAULT '{}'
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO capture_drafts
+               (id, raw_text, title, word_count, draft_text, summary, tags, status, capture_intent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "draft-chat-1",
+                "原文",
+                "测试文章",
+                2,
+                "# 测试文章\n\n苹果现在的市值多少",
+                "摘要",
+                '["test"]',
+                "draft_ready",
+                '{"folder_path":"Inbox"}',
+            ),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        if str(custom_root) not in sys.path:
+            sys.path.insert(0, str(custom_root))
+
+        import bridge.research_bridge as research_bridge
+
+        called = {}
+
+        async def fake_async_research_answer(**kwargs):
+            called.update(kwargs)
+            return {
+                "status": "success",
+                "chat_preview": "联网回答 [W1]",
+                "warnings": [],
+                "meta": {
+                    "mode": kwargs["mode"],
+                    "knowledge_sources": [],
+                    "web_sources": [
+                        {
+                            "ref": "W1",
+                            "type": "web",
+                            "id": "https://example.com",
+                            "title": "网页来源",
+                            "url": "https://example.com",
+                            "excerpt": "网页正文",
+                        }
+                    ],
+                },
+            }
+
+        monkeypatch.setattr(research_bridge, "async_research_answer", fake_async_research_answer)
+
+        resp = self.client.post(
+            "/api/knowledge/library/items/capture_draft/draft-chat-1/selection-chat",
+            json={
+                "question": "苹果现在的市值多少",
+                "selected_text": "苹果",
+                "mode": "web_only",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["answer"] == "联网回答 [W1]"
+        assert data["mode"] == "web_only"
+        assert data["sources"]["web"][0]["ref"] == "W1"
+        assert called["mode"] == "web_only"
+        assert called["selection_context"]["selected_text"] == "苹果"
+
+    def test_knowledge_library_selection_chat_streams_progress_before_final_answer(self, monkeypatch, tmp_path):
+        import sqlite3
+
+        custom_root = tmp_path / "hermes-custom"
+        data_dir = custom_root / "data"
+        data_dir.mkdir(parents=True)
+        db_path = data_dir / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """CREATE TABLE capture_drafts (
+               id TEXT PRIMARY KEY,
+               raw_text TEXT NOT NULL DEFAULT '',
+               source TEXT NOT NULL DEFAULT '',
+               source_type TEXT NOT NULL DEFAULT '',
+               title TEXT NOT NULL DEFAULT '',
+               word_count INTEGER NOT NULL DEFAULT 0,
+               draft_text TEXT NOT NULL DEFAULT '',
+               instruction TEXT NOT NULL DEFAULT '',
+               summary TEXT NOT NULL DEFAULT '',
+               tags TEXT NOT NULL DEFAULT '[]',
+               status TEXT NOT NULL DEFAULT 'draft_ready',
+               committed_capture_id TEXT NOT NULL DEFAULT '',
+               created_at TEXT NOT NULL DEFAULT (datetime('now')),
+               updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+               capture_intent TEXT NOT NULL DEFAULT '{}'
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO capture_drafts
+               (id, raw_text, title, word_count, draft_text, summary, tags, status, capture_intent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "draft-stream-1",
+                "原文",
+                "测试文章",
+                2,
+                "# 测试文章\n\nCoding agent",
+                "摘要",
+                '["test"]',
+                "draft_ready",
+                '{"folder_path":"Inbox"}',
+            ),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        if str(custom_root) not in sys.path:
+            sys.path.insert(0, str(custom_root))
+
+        import bridge.research_bridge as research_bridge
+
+        async def fake_async_research_answer(**kwargs):
+            event_callback = kwargs.get("event_callback")
+            assert event_callback is not None
+            await event_callback(
+                {
+                    "type": "plan",
+                    "plan_status": "planned_web_forced_by_mode",
+                    "needs_web": True,
+                    "queries": ["what is a coding agent"],
+                }
+            )
+            await event_callback(
+                {
+                    "type": "web_query_done",
+                    "query": "what is a coding agent",
+                    "result_count": 1,
+                    "web_sources": [
+                        {
+                            "ref": "W1",
+                            "title": "What Is an AI Coding Agent?",
+                            "url": "https://example.com/coding-agent",
+                        }
+                    ],
+                }
+            )
+            return {
+                "status": "success",
+                "chat_preview": "Coding agent 是能自主完成软件工程任务的 AI 系统 [W1]",
+                "warnings": [],
+                "meta": {
+                    "mode": kwargs["mode"],
+                    "knowledge_sources": [],
+                    "web_sources": [
+                        {
+                            "ref": "W1",
+                            "type": "web",
+                            "id": "https://example.com/coding-agent",
+                            "title": "What Is an AI Coding Agent?",
+                            "url": "https://example.com/coding-agent",
+                            "excerpt": "AI coding agents plan and complete software tasks.",
+                        }
+                    ],
+                    "research_trace": {
+                        "plan_status": "planned_web_forced_by_mode",
+                        "web_search_attempted": True,
+                        "web_queries": ["what is a coding agent"],
+                    },
+                },
+            }
+
+        monkeypatch.setattr(research_bridge, "async_research_answer", fake_async_research_answer)
+
+        resp = self.client.post(
+            "/api/knowledge/library/items/capture_draft/draft-stream-1/selection-chat/stream",
+            json={
+                "question": "什么是 coding agent",
+                "selected_text": "Coding agent",
+                "mode": "web_only",
+            },
+        )
+
+        assert resp.status_code == 200
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in resp.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert [event["event"] for event in events[:4]] == ["start", "progress", "progress", "complete"]
+        assert events[1]["type"] == "plan"
+        assert events[2]["web_sources"][0]["title"] == "What Is an AI Coding Agent?"
+        assert events[-1]["response"]["answer"].startswith("Coding agent 是")
+        assert events[-1]["response"]["sources"]["web"][0]["ref"] == "W1"
+
+    def test_knowledge_editable_capture_draft_api_delegates_to_bridge(self, monkeypatch, tmp_path):
+        custom_root = tmp_path / "hermes-custom"
+        custom_root.mkdir()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        calls = {}
+
+        bridge_pkg = types.ModuleType("bridge")
+        bridge_pkg.__path__ = []
+        capture_bridge = types.ModuleType("bridge.capture_bridge")
+
+        def create_editable_capture_draft(**kwargs):
+            calls["create"] = kwargs
+            return {
+                "status": "success",
+                "intent": "create_editable_capture_draft",
+                "meta": {"draft_id": "draft-editable", "title": "AI 标题"},
+            }
+
+        capture_bridge.create_editable_capture_draft = create_editable_capture_draft
+        monkeypatch.setitem(sys.modules, "bridge", bridge_pkg)
+        monkeypatch.setitem(sys.modules, "bridge.capture_bridge", capture_bridge)
+
+        resp = self.client.post(
+            "/api/knowledge/capture-drafts/editable",
+            json={
+                "content": "自由粘贴正文",
+                "source": "微信公众号",
+                "source_type": "manual",
+                "instruction": "保留例子",
+                "title": "用户标题",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["meta"]["draft_id"] == "draft-editable"
+        assert calls["create"] == {
+            "content": "自由粘贴正文",
+            "source": "微信公众号",
+            "source_type": "manual",
+            "instruction": "保留例子",
+            "title": "用户标题",
+            "existing_folders": ["Inbox", "AI 产品", "数据 Agent", "待读", "临时"],
+        }
+
+    def test_knowledge_editable_capture_draft_update_api_delegates_to_bridge(self, monkeypatch, tmp_path):
+        custom_root = tmp_path / "hermes-custom"
+        custom_root.mkdir()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        calls = {}
+
+        bridge_pkg = types.ModuleType("bridge")
+        bridge_pkg.__path__ = []
+        capture_bridge = types.ModuleType("bridge.capture_bridge")
+
+        def update_editable_capture_draft(**kwargs):
+            calls["update"] = kwargs
+            return {
+                "status": "success",
+                "intent": "update_editable_capture_draft",
+                "meta": {"draft_id": "draft-editable", "title": "用户标题"},
+            }
+
+        capture_bridge.update_editable_capture_draft = update_editable_capture_draft
+        monkeypatch.setitem(sys.modules, "bridge", bridge_pkg)
+        monkeypatch.setitem(sys.modules, "bridge.capture_bridge", capture_bridge)
+
+        resp = self.client.patch(
+            "/api/knowledge/capture-drafts/draft-editable/editable",
+            json={"content": "用户编辑后的正文", "title": "用户标题"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["intent"] == "update_editable_capture_draft"
+        assert calls["update"] == {
+            "draft_id": "draft-editable",
+            "content": "用户编辑后的正文",
+            "title": "用户标题",
+            "summary": None,
+            "tags": None,
+            "folder_path": "",
+            "folder_suggestion": None,
+            "card_suggestion": None,
+            "existing_folders": ["Inbox", "AI 产品", "数据 Agent", "待读", "临时"],
+        }
+
+    def test_knowledge_editable_capture_draft_missing_dependency_returns_guidance(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        custom_root = tmp_path / "hermes-custom"
+        custom_root.mkdir()
+        (custom_root / "requirements.txt").write_text("numpy==2.4.6\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+
+        original_import_module = web_server.importlib.import_module
+
+        def fake_import_module(name, package=None):
+            if name == "bridge.capture_bridge":
+                raise ModuleNotFoundError("No module named 'numpy'", name="numpy")
+            return original_import_module(name, package)
+
+        monkeypatch.setattr(web_server.importlib, "import_module", fake_import_module)
+
+        resp = self.client.post(
+            "/api/knowledge/capture-drafts/editable",
+            json={"content": "自由粘贴正文", "title": "用户标题"},
+        )
+
+        assert resp.status_code == 503
+        detail = resp.json()["detail"]
+        assert detail["reason"] == "missing_dependency"
+        assert detail["module"] == "bridge.capture_bridge"
+        assert detail["missing_module"] == "numpy"
+        assert str(custom_root / "requirements.txt") in detail["install_command"]
+
+    def test_knowledge_runtime_check_reports_custom_bridge_dependency_state(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        custom_root = tmp_path / "hermes-custom"
+        custom_root.mkdir()
+        (custom_root / "requirements.txt").write_text("numpy==2.4.6\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+
+        def fake_import_module(name, package=None):
+            if name == "bridge.answer_bridge":
+                raise ModuleNotFoundError("No module named 'numpy'", name="numpy")
+            return types.SimpleNamespace()
+
+        monkeypatch.setattr(web_server.importlib, "import_module", fake_import_module)
+
+        resp = self.client.get("/api/knowledge/runtime-check")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        failed = [item for item in data["checks"] if item["module"] == "bridge.answer_bridge"][0]
+        assert failed["ok"] is False
+        assert failed["status_code"] == 503
+        assert failed["detail"]["missing_module"] == "numpy"
+
+    def test_knowledge_capture_update_backs_up_and_runs_library(self, monkeypatch, tmp_path):
+        import sqlite3
+
+        custom_root = tmp_path / "hermes-custom"
+        data_dir = custom_root / "data"
+        vault = tmp_path / "vault"
+        data_dir.mkdir(parents=True)
+        vault.mkdir()
+        db_path = data_dir / "captures.db"
+        sqlite3.connect(db_path).close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        monkeypatch.setattr("hermes_cli.web_server._knowledge_vault_path", lambda: vault)
+        calls = {}
+
+        agents_pkg = types.ModuleType("agents")
+        markdown_writer = types.ModuleType("agents.markdown_writer")
+        bridge_pkg = types.ModuleType("bridge")
+        write_service_mod = types.ModuleType("bridge.knowledge_write_service")
+        db_pkg = types.ModuleType("db")
+        repo_mod = types.ModuleType("db.repo")
+        api_pkg = types.ModuleType("api")
+        routes_pkg = types.ModuleType("api.routes")
+        captures_mod = types.ModuleType("api.routes.captures")
+        agents_pkg.__path__ = []
+        bridge_pkg.__path__ = []
+        db_pkg.__path__ = []
+        api_pkg.__path__ = []
+        routes_pkg.__path__ = []
+
+        markdown_writer.read_note = lambda vault_path, file_path: ({"title": "旧标题"}, "旧正文")
+
+        class FakeMarkdownWriteRequest:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class FakeKnowledgeWriteService:
+            def __init__(self, vault_path):
+                self.vault_path = vault_path
+
+            def write_markdown_artifact(self, request):
+                calls["write"] = {
+                    "vault_path": self.vault_path,
+                    "request": request.kwargs,
+                }
+                return types.SimpleNamespace(backup_path="backups/cap-1.md")
+
+        class FakeCaptureRepo:
+            def __init__(self, conn):
+                self.conn = conn
+
+            def get_by_id(self, capture_id):
+                calls.setdefault("get_by_id", []).append(capture_id)
+                return {"id": capture_id, "file_path": "captures/cap-1.md"}
+
+            def log_change(self, *args, **kwargs):
+                calls["log_change"] = {"args": args, "kwargs": kwargs}
+
+        def fake_render_markdown(frontmatter, body):
+            calls["render"] = {"frontmatter": dict(frontmatter), "body": body}
+            return f"---\ntitle: {frontmatter.get('title')}\n---\n\n{body}"
+
+        def fake_maintain_capture_after_edit(repo, vault_path, capture_id, config):
+            calls["maintain"] = {
+                "vault_path": vault_path,
+                "capture_id": capture_id,
+                "config": config,
+            }
+            return {"status": "ok"}
+
+        captures_mod._render_markdown = fake_render_markdown
+        captures_mod._maintain_capture_after_edit = fake_maintain_capture_after_edit
+        captures_mod._hydrate_capture = lambda vault_path, row: {"id": row["id"], "title": "用户标题"}
+        captures_mod._strip_binary = lambda item: item
+        write_service_mod.KnowledgeWriteService = FakeKnowledgeWriteService
+        write_service_mod.MarkdownWriteRequest = FakeMarkdownWriteRequest
+        repo_mod.CaptureRepo = FakeCaptureRepo
+
+        monkeypatch.setitem(sys.modules, "agents", agents_pkg)
+        monkeypatch.setitem(sys.modules, "agents.markdown_writer", markdown_writer)
+        monkeypatch.setitem(sys.modules, "bridge", bridge_pkg)
+        monkeypatch.setitem(sys.modules, "bridge.knowledge_write_service", write_service_mod)
+        monkeypatch.setitem(sys.modules, "db", db_pkg)
+        monkeypatch.setitem(sys.modules, "db.repo", repo_mod)
+        monkeypatch.setitem(sys.modules, "api", api_pkg)
+        monkeypatch.setitem(sys.modules, "api.routes", routes_pkg)
+        monkeypatch.setitem(sys.modules, "api.routes.captures", captures_mod)
+
+        resp = self.client.patch(
+            "/api/knowledge/captures/cap-1",
+            json={"body": "用户修改后的正文", "title": "用户标题"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["backup_path"] == "backups/cap-1.md"
+        assert data["library_postprocess"] == {"status": "ok"}
+        assert calls["render"]["frontmatter"]["title"] == "用户标题"
+        assert calls["render"]["frontmatter"]["title_source"] == "user"
+        assert calls["render"]["frontmatter"]["word_count"] == len("用户修改后的正文")
+        assert calls["render"]["body"] == "用户修改后的正文"
+        assert calls["write"]["request"]["requires_backup"] is True
+        assert calls["maintain"]["capture_id"] == "cap-1"
+
+    def test_knowledge_library_capture_delete_archives_and_reports_dependencies(self, monkeypatch, tmp_path):
+        import sqlite3
+
+        custom_root = tmp_path / "hermes-custom"
+        data_dir = custom_root / "data"
+        vault = tmp_path / "vault"
+        data_dir.mkdir(parents=True)
+        (vault / "notes").mkdir(parents=True)
+        (vault / "notes" / "cap-1.md").write_text(
+            "---\n"
+            "title: 入库文件\n"
+            "folder_path: Inbox\n"
+            "---\n\n"
+            "正文",
+            encoding="utf-8",
+        )
+        (vault / "notes" / "ref.md").write_text(
+            "这里引用 cap-1 和 notes/cap-1。",
+            encoding="utf-8",
+        )
+        config = custom_root / "config.yaml"
+        config.write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
+        db_path = data_dir / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE captures (
+                id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL DEFAULT '',
+                raw_path TEXT NOT NULL DEFAULT '',
+                review_state TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                embedding BLOB
+            );
+            CREATE TABLE garden_cards (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                capture_ids TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE garden_drafts (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                capture_ids TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE capture_drafts (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                committed_capture_id TEXT NOT NULL DEFAULT '',
+                raw_text TEXT NOT NULL DEFAULT '',
+                draft_text TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL DEFAULT '',
+                word_count INTEGER NOT NULL DEFAULT 0,
+                instruction TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '[]',
+                capture_intent TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE agent_run_objects (
+                run_id TEXT NOT NULL,
+                object_id TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO captures (id, file_path, review_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            ("cap-1", "notes/cap-1.md", "captured", "2026-06-19T00:00:00+00:00", "2026-06-19T00:00:00+00:00"),
+        )
+        conn.execute(
+            "INSERT INTO garden_cards (id, title, status, capture_ids) VALUES (?, ?, ?, ?)",
+            ("card-1", "卡片", "active", json.dumps(["cap-1"])),
+        )
+        conn.execute(
+            "INSERT INTO garden_drafts (id, title, status, capture_ids) VALUES (?, ?, ?, ?)",
+            ("garden-draft-1", "卡片草稿", "open", json.dumps(["cap-1"])),
+        )
+        conn.execute(
+            "INSERT INTO capture_drafts (id, title, status, committed_capture_id) VALUES (?, ?, ?, ?)",
+            ("draft-1", "历史草稿", "committed", "cap-1"),
+        )
+        conn.execute(
+            "INSERT INTO agent_run_objects (run_id, object_id) VALUES (?, ?)",
+            ("run-1", "cap-1"),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        monkeypatch.setenv("HERMES_KNOWLEDGE_DB", str(db_path))
+
+        preview_resp = self.client.get("/api/knowledge/library/items/capture/cap-1/dependencies")
+        delete_resp = self.client.delete("/api/knowledge/library/items/capture/cap-1")
+
+        assert preview_resp.status_code == 200
+        preview = preview_resp.json()["dependencies"]
+        assert len(preview["garden_cards"]) == 1
+        assert len(preview["garden_drafts"]) == 1
+        assert len(preview["committed_drafts"]) == 1
+        assert len(preview["backlinks"]) == 1
+        assert preview["event_count"] == 1
+        assert preview["policy"]["action"] == "archive_capture_only"
+
+        assert delete_resp.status_code == 200
+        data = delete_resp.json()
+        assert data["status"] == "archived"
+        assert data["dependencies"]["garden_cards"][0]["id"] == "card-1"
+        conn = sqlite3.connect(db_path)
+        review_state = conn.execute("SELECT review_state FROM captures WHERE id = ?", ("cap-1",)).fetchone()[0]
+        card_count = conn.execute("SELECT COUNT(*) FROM garden_cards WHERE id = ?", ("card-1",)).fetchone()[0]
+        conn.close()
+        assert review_state == "archived"
+        assert card_count == 1
+
+    def test_knowledge_library_selection_chat_uses_capture_selection_context(self, monkeypatch, tmp_path):
+        import sqlite3
+        import hermes_cli.web_server as ws
+
+        custom_root = tmp_path / "hermes-custom"
+        data_dir = custom_root / "data"
+        vault = tmp_path / "vault"
+        data_dir.mkdir(parents=True)
+        (vault / "notes").mkdir(parents=True)
+        (vault / "notes" / "cap-1.md").write_text(
+            "---\n"
+            "title: AI 工作台\n"
+            "summary: 讨论知识库浏览模式。\n"
+            "folder_path: AI 产品\n"
+            "tags:\n"
+            "  - ai\n"
+            "---\n\n"
+            "# 总览\n\n"
+            "前文说明。\n\n"
+            "## 选区章节\n\n"
+            "这个概念需要结合上下文解释。\n\n"
+            "后文说明。",
+            encoding="utf-8",
+        )
+        config = custom_root / "config.yaml"
+        config.write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
+        db_path = data_dir / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE captures (
+                id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL DEFAULT '',
+                raw_path TEXT NOT NULL DEFAULT '',
+                review_state TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                embedding BLOB
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO captures (id, file_path, review_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            ("cap-1", "notes/cap-1.md", "captured", "2026-06-20T00:00:00+00:00", "2026-06-20T00:00:00+00:00"),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        monkeypatch.setenv("HERMES_KNOWLEDGE_DB", str(db_path))
+        calls = {}
+
+        def fake_research_answer(**kwargs):
+            calls.update(kwargs)
+            return {
+                "status": "success",
+                "agent": "research",
+                "intent": "research_answer",
+                "chat_preview": "这是结合上下文的解释。",
+                "durable_artifacts": [],
+                "source_map": [],
+                "next_actions": [],
+                "warnings": [],
+                "errors": [],
+                "meta": {
+                    "mode": kwargs["mode"],
+                    "knowledge_sources": [{"ref": "K1", "title": "AI 工作台"}],
+                    "web_sources": [{"ref": "W1", "title": "网页资料", "url": "https://example.com"}],
+                    "research_trace": {
+                        "plan_status": "planned_web_forced_by_mode",
+                        "web_search_attempted": True,
+                        "web_queries": ["SQL是什么意思"],
+                    },
+                },
+            }
+
+        fake_module = types.ModuleType("bridge.research_bridge")
+        fake_module.research_answer = fake_research_answer
+        monkeypatch.setitem(sys.modules, "bridge.research_bridge", fake_module)
+
+        response = self.client.post(
+            "/api/knowledge/library/items/capture/cap-1/selection-chat",
+            json={
+                "question": "这段是什么意思？",
+                "selected_text": "这个概念需要结合上下文解释。",
+                "surrounding_before": "## 选区章节\n\n",
+                "surrounding_after": "\n\n后文说明。",
+                "heading_path": ["总览", "选区章节"],
+                "mode": "local_web",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["answer"] == "这是结合上下文的解释。"
+        assert data["used_selection"] is True
+        assert data["citations"][0]["label"] == "当前选区"
+        assert data["sources"]["knowledge"][0]["ref"] == "K1"
+        assert data["sources"]["web"][0]["ref"] == "W1"
+        assert data["meta"]["research_trace"]["plan_status"] == "planned_web_forced_by_mode"
+        assert data["meta"]["research_trace"]["web_search_attempted"] is True
+        assert data["meta"]["research_trace"]["web_queries"] == ["SQL是什么意思"]
+        assert calls["mode"] == "local_web"
+        assert calls["article_context"]["title"] == "AI 工作台"
+        assert calls["selection_context"]["selected_text"] == "这个概念需要结合上下文解释。"
+        assert calls["selection_context"]["heading_path"] == ["总览", "选区章节"]
+
+    def test_knowledge_library_selection_chat_supports_draft_without_selection(self, monkeypatch, tmp_path):
+        import sqlite3
+        import hermes_cli.web_server as ws
+
+        custom_root = tmp_path / "hermes-custom"
+        data_dir = custom_root / "data"
+        data_dir.mkdir(parents=True)
+        db_path = data_dir / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE capture_drafts (
+                id TEXT PRIMARY KEY,
+                raw_text TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                word_count INTEGER NOT NULL DEFAULT 0,
+                draft_text TEXT NOT NULL DEFAULT '',
+                instruction TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'draft_ready',
+                committed_capture_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                capture_intent TEXT NOT NULL DEFAULT '{}'
+            );
+            """
+        )
+        conn.execute(
+            """INSERT INTO capture_drafts
+               (id, title, draft_text, summary, tags, status, capture_intent, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "draft-1",
+                "草稿文件",
+                "# 草稿\n\n这是一篇还没有入库的材料。",
+                "草稿摘要",
+                '["draft"]',
+                "draft_ready",
+                '{"folder_path":"Inbox"}',
+                "2026-06-20T00:00:00+00:00",
+                "2026-06-20T00:00:00+00:00",
+            ),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        monkeypatch.setenv("HERMES_KNOWLEDGE_DB", str(db_path))
+        calls = {}
+
+        def fake_research_answer(**kwargs):
+            calls.update(kwargs)
+            return {
+                "status": "success",
+                "agent": "research",
+                "intent": "research_answer",
+                "chat_preview": "草稿整体回答。",
+                "durable_artifacts": [],
+                "source_map": [],
+                "next_actions": [],
+                "warnings": [],
+                "errors": [],
+                "meta": {
+                    "mode": kwargs["mode"],
+                    "knowledge_sources": [],
+                    "web_sources": [],
+                },
+            }
+
+        fake_module = types.ModuleType("bridge.research_bridge")
+        fake_module.research_answer = fake_research_answer
+        monkeypatch.setitem(sys.modules, "bridge.research_bridge", fake_module)
+
+        response = self.client.post(
+            "/api/knowledge/library/items/capture_draft/draft-1/selection-chat",
+            json={"question": "这篇文章的核心判断是什么？"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["answer"] == "草稿整体回答。"
+        assert data["used_selection"] is False
+        assert calls["article_context"]["kind"] == "capture_draft"
+        assert calls["article_context"]["body"] == "这是一篇还没有入库的材料。"
+        assert calls["query"] == "这篇文章的核心判断是什么？"
 
     def test_knowledge_cards_api_returns_grouped_cards_with_readable_sources(
         self, monkeypatch, tmp_path
