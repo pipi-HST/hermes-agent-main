@@ -4972,3 +4972,46 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         server._sessions.pop("sid_busy", None)
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+def test_research_with_web_tool_summary_exposes_trace():
+    result = {
+        "status": "success",
+        "chat_preview": "回答 [W1]",
+        "warnings": ["模型返回了未提供的来源编号（K1），已改用可验证检索摘要。"],
+        "meta": {
+            "mode": "web_only",
+            "plan_status": "fallback",
+            "web_queries": ["公募基金是什么意思？"],
+            "provider_status": {
+                "search_backend": "brave-free",
+                "extract_backend": "tavily",
+            },
+            "research_trace": {
+                "mode": "web_only",
+                "plan_status": "fallback",
+                "queries": ["公募基金是什么意思？"],
+                "search_backend": "brave-free",
+                "extract_backend": "tavily",
+                "search_quality": {"passed": True, "reason": "passed"},
+                "sources": [
+                    {
+                        "ref": "W1",
+                        "title": "公募基金与私募基金的区别",
+                        "domain": "example.com",
+                        "extract_status": "full",
+                    }
+                ],
+                "warnings": ["模型返回了未提供的来源编号（K1），已改用可验证检索摘要。"],
+            },
+        },
+    }
+
+    summary = server._tool_summary("research_with_web", json.dumps(result, ensure_ascii=False), 1.2)
+
+    assert summary is not None
+    assert "检索过程" in summary
+    assert "search=brave-free" in summary
+    assert "extract=tavily" in summary
+    assert "公募基金是什么意思？" in summary
+    assert "[W1] 公募基金与私募基金的区别" in summary

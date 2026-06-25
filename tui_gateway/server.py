@@ -1519,12 +1519,62 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
         if n is not None:
             text = f"Extracted {n} {'page' if n == 1 else 'pages'}"
 
+    elif name == "research_with_web" and isinstance(data, dict):
+        return _research_with_web_summary(data, suffix)
+
     if isinstance(data, dict) and data.get("fallback_warning"):
         warning = str(data.get("fallback_warning") or "").strip()
         if warning:
             return f"{warning}{suffix}"
 
     return f"{text}{suffix}" if text else None
+
+
+def _research_with_web_summary(data: dict, suffix: str) -> str:
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    trace = meta.get("research_trace") if isinstance(meta.get("research_trace"), dict) else {}
+    provider_status = meta.get("provider_status") if isinstance(meta.get("provider_status"), dict) else {}
+    lines = [f"检索过程{suffix}"]
+    mode = trace.get("mode") or meta.get("mode")
+    plan_status = trace.get("plan_status") or meta.get("plan_status")
+    if mode or plan_status:
+        lines.append(f"- 模式：{mode or 'unknown'}；Planner：{plan_status or 'unknown'}")
+    search_backend = trace.get("search_backend") or provider_status.get("search_backend")
+    extract_backend = trace.get("extract_backend") or provider_status.get("extract_backend")
+    if search_backend or extract_backend:
+        lines.append(f"- Provider：search={search_backend or 'unknown'}；extract={extract_backend or 'unknown'}")
+    queries = trace.get("queries") or meta.get("web_queries") or []
+    if isinstance(queries, list) and queries:
+        lines.append("- 搜索词：")
+        lines.extend(f"  - {str(query)}" for query in queries[:4])
+    rewritten = trace.get("rewritten_queries") or meta.get("rewritten_web_queries") or []
+    if isinstance(rewritten, list) and rewritten:
+        lines.append("- 二次检索：")
+        lines.extend(f"  - {str(query)}" for query in rewritten[:4])
+    quality = trace.get("search_quality") or meta.get("search_quality") or {}
+    if isinstance(quality, dict) and quality:
+        status = "通过" if quality.get("passed") else "未通过"
+        reason = str(quality.get("reason") or "").strip()
+        lines.append(f"- 质量门禁：{status}{f'；{reason}' if reason else ''}")
+    sources = trace.get("sources")
+    if not isinstance(sources, list):
+        sources = meta.get("web_sources") if isinstance(meta.get("web_sources"), list) else []
+    if sources:
+        lines.append("- 采用来源：")
+        for source in sources[:5]:
+            if not isinstance(source, dict):
+                continue
+            ref = str(source.get("ref") or "").strip()
+            title = str(source.get("title") or source.get("url") or "").strip()
+            status = str(source.get("extract_status") or "").strip()
+            domain = str(source.get("domain") or "").strip()
+            bits = "，".join(bit for bit in (domain, status) if bit)
+            lines.append(f"  - [{ref}] {title}{f'（{bits}）' if bits else ''}")
+    warnings = trace.get("warnings") or data.get("warnings") or []
+    if isinstance(warnings, list) and warnings:
+        lines.append("- 提示：")
+        lines.extend(f"  - {str(warning)}" for warning in warnings[:3])
+    return "\n".join(lines)
 
 
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
@@ -1600,6 +1650,22 @@ def _on_tool_progress(
         return
     if event_type == "tool.started" and name:
         _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
+        return
+    if event_type == "research.progress":
+        payload = {"name": name or "research_with_web", "preview": preview or ""}
+        for key in (
+            "stage",
+            "status",
+            "queries",
+            "web_sources",
+            "candidate_sources",
+            "clue_sources",
+            "rejected_sources",
+            "warnings",
+        ):
+            if key in _kwargs:
+                payload[key] = _kwargs[key]
+        _emit("tool.progress", sid, payload)
         return
     if event_type == "reasoning.available" and preview:
         _emit("reasoning.available", sid, {"text": str(preview)})
@@ -2141,9 +2207,10 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             tc_info = tool_call_args.get(tc_id) if tc_id else None
             name = (tc_info[0] if tc_info else None) or m.get("tool_name") or "tool"
             args = (tc_info[1] if tc_info else None) or {}
-            messages.append(
-                {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
-            )
+            item = {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
+            if content_text.strip():
+                item["text"] = content_text
+            messages.append(item)
             continue
         if not content_text.strip():
             continue

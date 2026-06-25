@@ -232,6 +232,33 @@ def test_emit_without_payload(capture):
     assert "payload" not in json.loads(buf.getvalue())["params"]
 
 
+def test_research_progress_forwarded_as_tool_progress(capture):
+    server, buf = capture
+    server._sessions["s1"] = {"tool_progress_mode": "all"}
+
+    server._on_tool_progress(
+        "s1",
+        "research.progress",
+        "research_with_web",
+        "搜索：OpenAI 是什么",
+        None,
+        stage="web_query_start",
+        status="running",
+        queries=["OpenAI 是什么"],
+    )
+
+    msg = json.loads(buf.getvalue())
+    assert msg["params"]["type"] == "tool.progress"
+    assert msg["params"]["session_id"] == "s1"
+    assert msg["params"]["payload"] == {
+        "name": "research_with_web",
+        "preview": "搜索：OpenAI 是什么",
+        "stage": "web_query_start",
+        "status": "running",
+        "queries": ["OpenAI 是什么"],
+    }
+
+
 # ── Blocking prompt round-trip ───────────────────────────────────────
 
 

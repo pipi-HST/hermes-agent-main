@@ -1201,14 +1201,24 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                 }))
 
+            def _on_tool_progress(event_type, tool_name=None, preview=None, args=None, **kwargs):
+                """Forward custom in-tool progress events without duplicating lifecycle events."""
+                if event_type != "research.progress":
+                    return
+                payload = {
+                    "tool": tool_name or "research_with_web",
+                    "label": preview or kwargs.get("label") or tool_name or "research_with_web",
+                    "status": kwargs.get("status") or "running",
+                }
+                for key in ("stage", "queries", "web_sources", "candidate_sources", "clue_sources", "rejected_sources", "warnings"):
+                    if key in kwargs:
+                        payload[key] = kwargs[key]
+                _stream_q.put(("__tool_progress__", payload))
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
-            #
-            # ``tool_progress_callback`` is intentionally not wired here:
-            # it would duplicate every emit because ``run_agent`` fires it
-            # side-by-side with ``tool_start_callback``/``tool_complete_callback``.
-            # The structured callbacks are strictly richer (they carry the
-            # tool_call id), so they own the chat-completions SSE channel.
+            # ``tool_progress_callback`` is wired only for custom in-tool events;
+            # regular lifecycle events are ignored there to avoid duplicates.
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -1216,6 +1226,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
