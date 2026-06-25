@@ -35,6 +35,12 @@ export function PageHeaderProvider({
   const displayTitle = titleOverride ?? defaultTitle;
 
   const isChatRoute = pathname === "/chat" || pathname === "/chat/";
+  const isKnowledgeWorkspaceRoute = [
+    "/knowledge-library",
+    "/knowledge-chat",
+    "/capture-review",
+    "/cards-board",
+  ].some((route) => pathname === route || pathname.startsWith(`${route}/`));
 
   const value = useMemo(
     () => ({
@@ -48,52 +54,53 @@ export function PageHeaderProvider({
   return (
     <PageHeaderContext.Provider value={value}>
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
-        <header
-          className={cn(
-            "z-1 w-full shrink-0",
-            "box-border h-14 min-h-14",
-            "border-b border-current/20",
-            "bg-background-base/40 backdrop-blur-sm",
-            "overflow-hidden",
-            "sm:min-h-0",
-          )}
-          role="banner"
-        >
-          <div
+        {!isKnowledgeWorkspaceRoute ? (
+          <header
             className={cn(
-              "flex h-full w-full min-w-0 flex-1 gap-2 px-3 py-2 sm:gap-3 sm:px-6 sm:py-0",
-              isChatRoute
-                ? "flex-row items-center"
-                : "flex-col justify-center sm:flex-row sm:items-center",
+              "z-1 w-full shrink-0",
+              "box-border h-14 min-h-14",
+              "border-b border-border/80",
+              "bg-background/70 backdrop-blur-md",
+              "overflow-hidden",
+              "sm:min-h-0",
             )}
+            role="banner"
           >
-            <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-              <h1
-                className="font-expanded min-w-0 truncate text-sm font-bold tracking-[0.08em] text-midground"
-                style={{ mixBlendMode: "plus-lighter" }}
-              >
-                {displayTitle}
-              </h1>
-              {afterTitle}
-            </div>
-
-            {end ? (
-              <div
-                className={cn(
-                  "flex min-w-0 justify-end sm:max-w-md sm:flex-1",
-                  isChatRoute ? "w-auto shrink-0" : "w-full",
-                )}
-              >
-                {end}
+            <div
+              className={cn(
+                "flex h-full w-full min-w-0 flex-1 gap-2 px-3 py-2 sm:gap-3 sm:px-6 sm:py-0",
+                isChatRoute
+                  ? "flex-row items-center"
+                  : "flex-col justify-center sm:flex-row sm:items-center",
+              )}
+            >
+              <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+                <h1
+                  className="min-w-0 truncate text-sm font-semibold tracking-normal text-muted-foreground"
+                >
+                  {displayTitle}
+                </h1>
+                {afterTitle}
               </div>
-            ) : null}
-          </div>
-        </header>
+
+              {end ? (
+                <div
+                  className={cn(
+                    "flex min-w-0 justify-end sm:max-w-md sm:flex-1",
+                    isChatRoute ? "w-auto shrink-0" : "w-full",
+                  )}
+                >
+                  {end}
+                </div>
+              ) : null}
+            </div>
+          </header>
+        ) : null}
 
         <main
           className={cn(
             "min-h-0 w-full min-w-0 flex-1 flex flex-col",
-            isChatRoute
+            isChatRoute || isKnowledgeWorkspaceRoute
               ? "overflow-hidden"
               : "overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",
           )}

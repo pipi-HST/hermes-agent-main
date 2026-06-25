@@ -348,6 +348,149 @@ export const api = {
     }),
 
   // Hermes Knowledge
+  getKnowledgeAutomationBoundaries: () =>
+    fetchJSON<KnowledgeAutomationBoundariesResponse>(
+      "/api/knowledge/automation-boundaries",
+    ),
+  getKnowledgeLibraryFolders: () =>
+    fetchJSON<KnowledgeLibraryFoldersResponse>("/api/knowledge/library/folders"),
+  createKnowledgeLibraryFolder: (name: string) =>
+    fetchJSON<KnowledgeLibraryFolderCreateResponse>("/api/knowledge/library/folders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  updateKnowledgeLibraryFolder: (folderPath: string, name: string) =>
+    fetchJSON<KnowledgeLibraryFolderUpdateResponse>(
+      `/api/knowledge/library/folders/${encodeURIComponent(folderPath)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      },
+    ),
+  getKnowledgeLibraryItems: (params: { folder?: string; view?: string; search?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.folder) qs.set("folder", params.folder);
+    if (params.view) qs.set("view", params.view);
+    if (params.search) qs.set("search", params.search);
+    if (params.limit) qs.set("limit", String(params.limit));
+    return fetchJSON<KnowledgeLibraryItemsResponse>(
+      `/api/knowledge/library/items?${qs.toString()}`,
+    );
+  },
+  getKnowledgeLibraryItem: (kind: KnowledgeLibraryItemKind, itemId: string) =>
+    fetchJSON<KnowledgeLibraryItemResponse>(
+      `/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}`,
+    ),
+  getKnowledgeLibraryItemDependencies: (kind: KnowledgeLibraryItemKind, itemId: string) =>
+    fetchJSON<KnowledgeLibraryDependenciesResponse>(
+      `/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/dependencies`,
+    ),
+  selectionChatKnowledgeLibraryItem: (
+    kind: KnowledgeLibraryItemKind,
+    itemId: string,
+    body: KnowledgeLibrarySelectionChatRequest,
+  ) =>
+    fetchJSON<KnowledgeLibrarySelectionChatResponse>(
+      `/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/selection-chat`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  streamSelectionChatKnowledgeLibraryItem: async (
+    kind: KnowledgeLibraryItemKind,
+    itemId: string,
+    body: KnowledgeLibrarySelectionChatRequest,
+    onEvent: (event: KnowledgeLibrarySelectionChatStreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeLibrarySelectionChatResponse> => {
+    const headers = new Headers({ "Content-Type": "application/json", Accept: "text/event-stream" });
+    const token = window.__HERMES_SESSION_TOKEN__;
+    if (token) {
+      setSessionHeader(headers, token);
+    }
+    const res = await fetch(
+      `${BASE}/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/selection-chat/stream`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal,
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`${res.status}: ${text}`);
+    }
+    if (!res.body) {
+      throw new Error("Selection chat stream returned an empty body");
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalResponse: KnowledgeLibrarySelectionChatResponse | null = null;
+    const flush = (chunk: string) => {
+      buffer += chunk;
+      const frames = buffer.split(/\n\n/);
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const data = frame
+          .split(/\n/)
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n")
+          .trim();
+        if (!data) continue;
+        const event = JSON.parse(data) as KnowledgeLibrarySelectionChatStreamEvent;
+        onEvent(event);
+        if (event.event === "complete" && event.response) {
+          finalResponse = event.response;
+        }
+        if (event.event === "error") {
+          throw new Error(event.message || event.error || "Selection chat stream failed");
+        }
+      }
+    };
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (value) {
+          flush(decoder.decode(value, { stream: !done }));
+        }
+        if (done) break;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    flush(decoder.decode());
+    if (!finalResponse) {
+      throw new Error("Selection chat stream ended without a final answer");
+    }
+    return finalResponse;
+  },
+  createKnowledgeLibraryItem: (body: KnowledgeLibraryCreateRequest) =>
+    fetchJSON<KnowledgeLibraryCreateResponse>("/api/knowledge/library/items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  updateKnowledgeLibraryItem: (kind: KnowledgeLibraryItemKind, itemId: string, body: KnowledgeLibraryUpdateRequest) =>
+    fetchJSON<KnowledgeLibraryUpdateResponse>(
+      `/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  deleteKnowledgeLibraryItem: (kind: KnowledgeLibraryItemKind, itemId: string) =>
+    fetchJSON<KnowledgeLibraryDeleteResponse>(
+      `/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}`,
+      { method: "DELETE" },
+    ),
   getKnowledgeCaptureDrafts: (limit = 50) =>
     fetchJSON<KnowledgeCaptureDraftsResponse>(
       `/api/knowledge/capture-drafts?limit=${limit}`,
@@ -355,6 +498,21 @@ export const api = {
   getKnowledgeCaptureDraft: (draftId: string) =>
     fetchJSON<KnowledgeCaptureDraftResponse>(
       `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}`,
+    ),
+  createKnowledgeEditableCaptureDraft: (body: KnowledgeEditableCaptureDraftRequest) =>
+    fetchJSON<Record<string, unknown>>("/api/knowledge/capture-drafts/editable", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  updateKnowledgeEditableCaptureDraft: (draftId: string, body: KnowledgeEditableCaptureDraftUpdateRequest) =>
+    fetchJSON<Record<string, unknown>>(
+      `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}/editable`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
     ),
   commitKnowledgeCaptureDraft: (draftId: string) =>
     fetchJSON<Record<string, unknown>>(
@@ -370,6 +528,20 @@ export const api = {
         body: JSON.stringify({ instruction }),
       },
     ),
+  deleteKnowledgeCaptureDraft: (draftId: string) =>
+    fetchJSON<Record<string, unknown>>(
+      `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}`,
+      { method: "DELETE" },
+    ),
+  updateKnowledgeCapture: (captureId: string, body: KnowledgeCaptureUpdateRequest) =>
+    fetchJSON<Record<string, unknown>>(
+      `/api/knowledge/captures/${encodeURIComponent(captureId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   createKnowledgeAnswerDraft: (body: KnowledgeAnswerDraftRequest) =>
     fetchJSON<{
       ok: boolean;
@@ -381,6 +553,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  createKnowledgeGardenDraft: (body: KnowledgeGardenDraftRequest) =>
+    fetchJSON<KnowledgeGardenDraftResponse>("/api/knowledge/garden-drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   getKnowledgeReadingDraft: (draftId: string) =>
     fetchJSON<KnowledgeReadingDraftResponse>(
       `/api/knowledge/reading-drafts/${encodeURIComponent(draftId)}`,
@@ -388,6 +566,10 @@ export const api = {
   getKnowledgeReadingDrafts: (limit = 50) =>
     fetchJSON<KnowledgeReadingDraftsResponse>(
       `/api/knowledge/reading-drafts?limit=${limit}`,
+    ),
+  getKnowledgeObjectEvents: (objectType: KnowledgeObjectEventType, objectId: string, limit = 30) =>
+    fetchJSON<KnowledgeObjectEventsResponse>(
+      `/api/knowledge/object-events?object_type=${encodeURIComponent(objectType)}&object_id=${encodeURIComponent(objectId)}&limit=${limit}`,
     ),
   commitKnowledgeReadingDraft: (draftId: string) =>
     fetchJSON<Record<string, unknown>>(
@@ -403,11 +585,21 @@ export const api = {
         body: JSON.stringify({ instruction }),
       },
     ),
+  deleteKnowledgeReadingDraft: (draftId: string) =>
+    fetchJSON<Record<string, unknown>>(
+      `/api/knowledge/reading-drafts/${encodeURIComponent(draftId)}`,
+      { method: "DELETE" },
+    ),
   getKnowledgeCards: (limit = 100) =>
     fetchJSON<KnowledgeCardsResponse>(`/api/knowledge/cards?limit=${limit}`),
   getKnowledgeCard: (cardId: string) =>
     fetchJSON<KnowledgeCardResponse>(
       `/api/knowledge/cards/${encodeURIComponent(cardId)}`,
+    ),
+  deleteKnowledgeCard: (cardId: string) =>
+    fetchJSON<Record<string, unknown>>(
+      `/api/knowledge/cards/${encodeURIComponent(cardId)}`,
+      { method: "DELETE" },
     ),
 };
 
@@ -464,6 +656,277 @@ export interface DashboardUploadResponse {
   size: number;
 }
 
+export type AutomationBoundaryKind =
+  | "cron"
+  | "launchagent"
+  | "gateway_ticker"
+  | "tool"
+  | "watcher"
+  | "repair";
+
+export type AutomationBoundaryReadWrite =
+  | "readonly"
+  | "state_write"
+  | "vault_write"
+  | "external_write"
+  | "mixed";
+
+export interface KnowledgeAutomationBoundary {
+  id: string;
+  name: string;
+  kind: AutomationBoundaryKind;
+  enabled: boolean;
+  runtime_status: string;
+  next_run_at: string;
+  last_run_at: string;
+  last_status: string;
+  read_write: AutomationBoundaryReadWrite;
+  writes_tables: string[];
+  writes_paths: string[];
+  toolsets: string[];
+  risk_level: "low" | "medium" | "high" | string;
+  description: string;
+  pid?: number | null;
+  source_path: string;
+}
+
+export interface KnowledgeAutomationBoundariesResponse {
+  items: KnowledgeAutomationBoundary[];
+  total: number;
+  generated_at: number;
+}
+
+export interface KnowledgeLibraryFolder {
+  path: string;
+  name: string;
+  count: number;
+}
+
+export interface KnowledgeLibrarySmartView {
+  key: "recent" | "review" | "suggestions" | "unindexed" | string;
+  label: string;
+  count: number;
+}
+
+export interface KnowledgeLibraryFoldersResponse {
+  folders: KnowledgeLibraryFolder[];
+  smart_views: KnowledgeLibrarySmartView[];
+}
+
+export interface KnowledgeLibraryFolderCreateResponse {
+  ok: boolean;
+  folder: KnowledgeLibraryFolder;
+}
+
+export interface KnowledgeLibraryFolderUpdateResponse {
+  ok: boolean;
+  folder: KnowledgeLibraryFolder;
+  updated_items: number;
+}
+
+export type KnowledgeLibraryItemKind = "capture" | "capture_draft";
+
+export interface KnowledgeLibraryItem {
+  id: string;
+  kind: KnowledgeLibraryItemKind;
+  title: string;
+  summary: string;
+  preview: string;
+  body: string;
+  folder_path: string;
+  tags: string[];
+  source: string;
+  source_type: string;
+  status: string;
+  file_path: string;
+  raw_path: string;
+  word_count: number;
+  created_at: string;
+  updated_at: string;
+  indexed: boolean;
+  title_source: string;
+  garden_card_count: number;
+  committed_capture_id?: string;
+}
+
+export interface KnowledgeLibraryItemsResponse {
+  items: KnowledgeLibraryItem[];
+  total: number;
+}
+
+export interface KnowledgeLibraryItemResponse {
+  item: KnowledgeLibraryItem;
+}
+
+export interface KnowledgeLibraryCreateRequest {
+  title?: string;
+  body?: string;
+  folder_path?: string;
+  source?: string;
+  source_type?: string;
+}
+
+export interface KnowledgeLibraryUpdateRequest {
+  title?: string;
+  body?: string | null;
+  folder_path?: string | null;
+  summary?: string | null;
+  tags?: string[] | null;
+  folder_suggestion?: Record<string, unknown> | null;
+  card_suggestion?: Record<string, unknown> | null;
+}
+
+export interface KnowledgeLibraryCreateResponse {
+  ok: boolean;
+  item?: KnowledgeLibraryItem;
+  result?: Record<string, unknown>;
+}
+
+export interface KnowledgeLibraryUpdateResponse {
+  ok: boolean;
+  item: KnowledgeLibraryItem;
+  backup_path?: string;
+}
+
+export interface KnowledgeLibraryDependencies {
+  garden_cards?: Array<{ id: string; title: string; status: string }>;
+  garden_drafts?: Array<{ id: string; title: string; status: string }>;
+  committed_drafts?: Array<{ id: string; title: string; status: string }>;
+  backlinks?: Array<{ path: string; title: string }>;
+  event_count?: number;
+  policy?: Record<string, string>;
+}
+
+export interface KnowledgeLibraryDependenciesResponse {
+  ok?: boolean;
+  id?: string;
+  dependencies?: KnowledgeLibraryDependencies;
+}
+
+export interface KnowledgeLibraryDeleteResponse {
+  ok?: boolean;
+  status?: string;
+  id?: string;
+  message?: string;
+  dependencies?: KnowledgeLibraryDependencies;
+}
+
+export type KnowledgeResearchMode = "current_article_only" | "local_only" | "local_web" | "web_only";
+
+export interface KnowledgeResearchSource {
+  ref?: string;
+  type?: string;
+  id?: string;
+  title?: string;
+  path?: string;
+  url?: string;
+  domain?: string;
+  search_backend?: string;
+  fallback_candidate?: boolean;
+  section?: string;
+  excerpt?: string;
+  description?: string;
+  extract_status?: string;
+  rank_score?: number;
+  source_role?: "evidence" | "clue" | "rejected" | string;
+  evidence_role?: string;
+  source_authority?: string;
+  allowed_usage?: string[];
+  confidence?: string;
+  supports_claims?: string[];
+  source_score?: number;
+  quality_reason?: string;
+  entity_match?: boolean;
+  quality_tags?: string[];
+}
+
+export interface KnowledgeResearchTrace {
+  plan_status?: string;
+  intent_label?: string;
+  mode?: KnowledgeResearchMode;
+  web_search_attempted?: boolean;
+  web_queries?: string[];
+  rewritten_web_queries?: string[];
+  query_intent?: string;
+  answer_depth?: "brief" | "normal" | "detailed" | string;
+  search_quality?: Record<string, unknown>;
+  provider_status?: Record<string, unknown>;
+  retrieval_health?: Record<string, unknown>;
+  fallback_attempts?: Array<Record<string, unknown>>;
+  knowledge_sources?: KnowledgeResearchSource[];
+  web_sources?: KnowledgeResearchSource[];
+  candidate_sources?: KnowledgeResearchSource[];
+  retrieved_web_sources?: KnowledgeResearchSource[];
+  evidence_sources?: KnowledgeResearchSource[];
+  clue_sources?: KnowledgeResearchSource[];
+  rejected_sources?: KnowledgeResearchSource[];
+  source_counts?: Record<string, number>;
+  [key: string]: unknown;
+}
+
+export interface KnowledgeLibrarySelectionChatRequest {
+  question: string;
+  selected_text?: string;
+  surrounding_before?: string;
+  surrounding_after?: string;
+  heading_path?: string[];
+  selection_start?: number;
+  selection_end?: number;
+  selection_confidence?: "offset" | "text_only" | "none";
+  mode?: KnowledgeResearchMode;
+}
+
+export interface KnowledgeLibrarySelectionChatResponse {
+  ok: boolean;
+  answer: string;
+  used_selection: boolean;
+  citations?: Array<{ label: string; excerpt: string }>;
+  mode?: KnowledgeResearchMode;
+  sources?: {
+    knowledge?: KnowledgeResearchSource[];
+    web?: KnowledgeResearchSource[];
+  };
+  warnings?: string[];
+  meta?: {
+    web_queries?: string[];
+    query_intent?: string;
+    search_quality?: Record<string, unknown>;
+    rewritten_web_queries?: string[];
+    provider_status?: Record<string, unknown>;
+    research_trace?: KnowledgeResearchTrace;
+    web_search_attempted?: boolean;
+  };
+}
+
+export interface KnowledgeLibrarySelectionChatStreamEvent {
+  event: "start" | "progress" | "complete" | "error";
+  type?: string;
+  mode?: KnowledgeResearchMode;
+  plan_status?: string;
+  intent_label?: string;
+  needs_web?: boolean;
+  queries?: string[];
+  query?: string;
+  result_count?: number;
+  web_sources?: KnowledgeResearchSource[];
+  knowledge_sources?: KnowledgeResearchSource[];
+  candidate_sources?: KnowledgeResearchSource[];
+  evidence_sources?: KnowledgeResearchSource[];
+  clue_sources?: KnowledgeResearchSource[];
+  rejected_sources?: KnowledgeResearchSource[];
+  rewritten_queries?: string[];
+  search_quality?: Record<string, unknown>;
+  provider_status?: Record<string, unknown>;
+  backend?: string;
+  reason?: string;
+  new_result_count?: number;
+  warnings?: string[];
+  error?: string;
+  message?: string;
+  stage?: string;
+  response?: KnowledgeLibrarySelectionChatResponse;
+}
+
 export type KnowledgeCardKind = "viewpoint" | "method" | "fact" | "risk";
 
 export interface KnowledgeCaptureDraft {
@@ -495,6 +958,33 @@ export interface KnowledgeCaptureDraftsResponse {
 
 export interface KnowledgeCaptureDraftResponse {
   draft: KnowledgeCaptureDraft;
+}
+
+export interface KnowledgeEditableCaptureDraftRequest {
+  content: string;
+  source?: string;
+  source_type?: string;
+  instruction?: string;
+  title?: string;
+  folder_path?: string;
+  existing_folders?: string[];
+}
+
+export interface KnowledgeEditableCaptureDraftUpdateRequest {
+  content: string;
+  title?: string;
+  summary?: string | null;
+  tags?: string[] | null;
+  folder_path?: string;
+  folder_suggestion?: Record<string, unknown> | null;
+  card_suggestion?: Record<string, unknown> | null;
+  existing_folders?: string[];
+}
+
+export interface KnowledgeCaptureUpdateRequest {
+  body?: string;
+  title?: string;
+  folder_path?: string | null;
 }
 
 export interface KnowledgeAnswerDraftSource {
@@ -544,6 +1034,49 @@ export interface KnowledgeAnswerDraftRequest {
   answer_source?: "auto" | "provided" | "latest_rag_full_answer";
 }
 
+export interface KnowledgeGardenDraftRequest {
+  capture_ids: string[];
+  title?: string;
+  card_kind?: string;
+  instruction?: string;
+}
+
+export interface KnowledgeGardenDraftResponse {
+  ok?: boolean;
+  status?: string;
+  USER_VISIBLE_REPLY?: string;
+  chat_preview?: string;
+  error?: string;
+  errors?: string[];
+  meta?: Record<string, unknown>;
+  durable_artifacts?: Array<Record<string, unknown>>;
+  warnings?: string[];
+}
+
+export type KnowledgeObjectEventType = "conversation" | "reading_draft" | "capture_draft" | "capture" | "garden_draft" | "garden_card";
+
+export interface KnowledgeObjectEvent {
+  id: string;
+  agent: string;
+  intent: string;
+  trigger: string;
+  status: string;
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  evidence: Record<string, unknown>;
+  warnings: string[];
+  errors: string[];
+  created_at: string;
+  updated_at: string;
+  completed_at: string;
+}
+
+export interface KnowledgeObjectEventsResponse {
+  events: KnowledgeObjectEvent[];
+  related_ids: string[];
+  total: number;
+}
+
 export interface KnowledgeSource {
   id: string;
   title: string;
@@ -563,11 +1096,39 @@ export interface KnowledgeCard {
   source_theme: string;
   sources: KnowledgeSource[];
   source_count: number;
+  schema_version?: string;
+  payload?: KnowledgeCardPayload;
   core_arguments?: Array<Record<string, unknown> | string>;
   knowledge_links?: string[];
   key_materials?: string[];
   my_view?: string;
   markdown?: string;
+}
+
+export interface KnowledgeCardPayload {
+  schema_version: string;
+  title: string;
+  card_kind: KnowledgeCardKind;
+  claim: string;
+  confidence?: "low" | "medium" | "high" | string;
+  when_to_use: string[];
+  core_judgments: KnowledgeCardJudgment[];
+  boundaries: string[];
+  action_items: string[];
+  related_card_ids: string[];
+  source_ids: string[];
+}
+
+export interface KnowledgeCardJudgment {
+  id: string;
+  statement: string;
+  reasoning: string;
+  support: KnowledgeCardSupport[];
+}
+
+export interface KnowledgeCardSupport {
+  summary: string;
+  source_ids: string[];
 }
 
 export interface KnowledgeCardsResponse {

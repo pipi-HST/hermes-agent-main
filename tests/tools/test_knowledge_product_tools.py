@@ -40,3 +40,13 @@ def test_personal_assistant_skill_routes_explicit_theme_requests():
     assert "themes/*.md" in skill_text
     assert "Canvas 仍是高级可视化能力" in skill_text
     assert "synthesize_garden" in skill_text
+
+
+def test_dashboard_exposes_capture_review_workbench_route():
+    web_root = Path(__file__).parents[2] / "web" / "src"
+    app_text = (web_root / "App.tsx").read_text(encoding="utf-8")
+    title_text = (web_root / "lib" / "resolve-page-title.ts").read_text(encoding="utf-8")
+
+    assert '"/capture-review": KnowledgeChatPage' in app_text
+    assert 'normalizedPath === "/capture-review"' in app_text
+    assert '"/capture-review": "Capture Review"' in title_text

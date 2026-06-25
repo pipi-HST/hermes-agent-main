@@ -12,51 +12,23 @@ import {
   NavLink,
   Navigate,
   useLocation,
-  useNavigate,
 } from "react-router-dom";
 import {
-  Activity,
-  BarChart3,
-  BookMarked,
-  BookOpen,
-  Clock,
-  Code,
-  Cpu,
   Database,
-  Download,
-  Eye,
-  FileText,
-  Globe,
-  Heart,
-  KeyRound,
   Layers3,
   Menu,
-  MessageSquare,
-  Package,
-  Puzzle,
-  RotateCw,
-  Settings,
-  Shield,
+  PanelLeftClose,
+  PanelLeftOpen,
   Sparkles,
-  Star,
-  Terminal,
-  Users,
-  Wrench,
   X,
-  Zap,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
-import { SidebarFooter } from "@/components/SidebarFooter";
-import { SidebarStatusStrip } from "@/components/SidebarStatusStrip";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
-import { useSystemActions } from "@/contexts/useSystemActions";
-import type { SystemAction } from "@/contexts/system-actions-context";
 import ConfigPage from "@/pages/ConfigPage";
 import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
@@ -70,19 +42,17 @@ import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
 import KnowledgeChatPage from "@/pages/KnowledgeChatPage";
+import KnowledgeLibraryPage from "@/pages/KnowledgeLibraryPage";
 import KnowledgeCardsBoardPage from "@/pages/KnowledgeCardsBoardPage";
-import { LanguageSwitcher } from "@/components/LanguageSwitcher";
-import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
-import { api } from "@/lib/api";
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to="/knowledge-chat" replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -90,25 +60,24 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
     // Render nothing during the plugin-load window — a spinner here would just flash.
     return null;
   }
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to="/knowledge-chat" replace />;
 }
 
-const CHAT_NAV_ITEM: NavItem = {
-  path: "/chat",
-  labelKey: "chat",
-  label: "Chat",
-  icon: Terminal,
+const KNOWLEDGE_LIBRARY_NAV_ITEM: NavItem = {
+  path: "/knowledge-library",
+  label: "知识库",
+  icon: Database,
 };
 
-const KNOWLEDGE_CHAT_NAV_ITEM: NavItem = {
+const WORKBENCH_NAV_ITEM: NavItem = {
   path: "/knowledge-chat",
-  label: "Knowledge Workbench",
+  label: "工作台",
   icon: Sparkles,
 };
 
 const CARDS_BOARD_NAV_ITEM: NavItem = {
   path: "/cards-board",
-  label: "Knowledge Cards",
+  label: "知识卡片",
   icon: Layers3,
 };
 
@@ -131,8 +100,11 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
   "/profiles": ProfilesPage,
+  "/knowledge-library": KnowledgeLibraryPage,
   "/knowledge-chat": KnowledgeChatPage,
+  "/capture-review": KnowledgeChatPage,
   "/cards-board": KnowledgeCardsBoardPage,
+  "/cards-board/:cardId": KnowledgeCardsBoardPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -146,121 +118,11 @@ function ChatRouteSink() {
   return null;
 }
 
-const BUILTIN_NAV_REST: NavItem[] = [
-  {
-    path: "/sessions",
-    labelKey: "sessions",
-    label: "Sessions",
-    icon: MessageSquare,
-  },
-  {
-    path: "/analytics",
-    labelKey: "analytics",
-    label: "Analytics",
-    icon: BarChart3,
-  },
-  {
-    path: "/models",
-    labelKey: "models",
-    label: "Models",
-    icon: Cpu,
-  },
-  { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
-  { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
-  { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
-  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
-  { path: "/config", labelKey: "config", label: "Config", icon: Settings },
-  { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  {
-    path: "/docs",
-    labelKey: "documentation",
-    label: "Documentation",
-    icon: BookOpen,
-  },
+const KNOWLEDGE_NAV_ITEMS: NavItem[] = [
+  KNOWLEDGE_LIBRARY_NAV_ITEM,
+  WORKBENCH_NAV_ITEM,
+  CARDS_BOARD_NAV_ITEM,
 ];
-
-const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
-  Activity,
-  BarChart3,
-  Clock,
-  Cpu,
-  FileText,
-  KeyRound,
-  MessageSquare,
-  Package,
-  Settings,
-  Puzzle,
-  Sparkles,
-  Terminal,
-  Globe,
-  Database,
-  BookMarked,
-  Layers3,
-  Shield,
-  Users,
-  Wrench,
-  Zap,
-  Heart,
-  Star,
-  Code,
-  Eye,
-};
-
-function resolveIcon(name: string): ComponentType<{ className?: string }> {
-  return ICON_MAP[name] ?? Puzzle;
-}
-
-function buildNavItems(
-  builtIn: NavItem[],
-  manifests: PluginManifest[],
-): NavItem[] {
-  const items = [...builtIn];
-
-  for (const manifest of manifests) {
-    if (manifest.tab.override) continue;
-    if (manifest.tab.hidden) continue;
-
-    const pluginItem: NavItem = {
-      path: manifest.tab.path,
-      label: manifest.label,
-      icon: resolveIcon(manifest.icon),
-    };
-
-    const pos = manifest.tab.position ?? "end";
-    if (pos === "end") {
-      items.push(pluginItem);
-    } else if (pos.startsWith("after:")) {
-      const target = "/" + pos.slice(6);
-      const idx = items.findIndex((i) => i.path === target);
-      items.splice(idx >= 0 ? idx + 1 : items.length, 0, pluginItem);
-    } else if (pos.startsWith("before:")) {
-      const target = "/" + pos.slice(7);
-      const idx = items.findIndex((i) => i.path === target);
-      items.splice(idx >= 0 ? idx : items.length, 0, pluginItem);
-    } else {
-      items.push(pluginItem);
-    }
-  }
-
-  return items;
-}
-
-/** Split merged nav into built-in sidebar entries vs plugin tabs, preserving plugin order hints. */
-function partitionSidebarNav(
-  builtIn: NavItem[],
-  manifests: PluginManifest[],
-): { coreItems: NavItem[]; pluginItems: NavItem[] } {
-  const merged = buildNavItems(builtIn, manifests);
-  const builtinPaths = new Set(builtIn.map((i) => i.path));
-  const coreItems: NavItem[] = [];
-  const pluginItems: NavItem[] = [];
-  for (const item of merged) {
-    if (builtinPaths.has(item.path)) coreItems.push(item);
-    else pluginItems.push(item);
-  }
-  return { coreItems, pluginItems };
-}
 
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
@@ -331,29 +193,20 @@ export default function App() {
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => (
+    window.localStorage.getItem("hermes.sidebarCollapsed") === "true"
+  ));
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const isKnowledgeWorkspaceRoute =
     normalizedPath === "/knowledge-chat" ||
-    normalizedPath === "/cards-board";
+    normalizedPath === "/knowledge-library" ||
+    normalizedPath === "/capture-review" ||
+    normalizedPath === "/cards-board" ||
+    normalizedPath.startsWith("/cards-board/");
   const embeddedChat = isDashboardEmbeddedChatEnabled();
-
-  // `dashboard.show_token_analytics` gates the Analytics nav item.  The
-  // page itself remains reachable by URL (it renders an explanation when
-  // the flag is off — see AnalyticsPage), but hiding the nav entry avoids
-  // surfacing misleading token/cost numbers in the sidebar.  Default off.
-  const [showTokenAnalytics, setShowTokenAnalytics] = useState(false);
-  useEffect(() => {
-    api
-      .getConfig()
-      .then((cfg) => {
-        const dash = (cfg?.dashboard ?? {}) as { show_token_analytics?: unknown };
-        setShowTokenAnalytics(dash.show_token_analytics === true);
-      })
-      .catch(() => setShowTokenAnalytics(false));
-  }, []);
 
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
   // in its manifest.  When one does, `buildRoutes` already swaps the route
@@ -385,26 +238,6 @@ export default function App() {
     [embeddedChat],
   );
 
-  const builtinNav = useMemo(() => {
-    const base = embeddedChat
-      ? [
-          CHAT_NAV_ITEM,
-          KNOWLEDGE_CHAT_NAV_ITEM,
-          CARDS_BOARD_NAV_ITEM,
-          ...BUILTIN_NAV_REST,
-        ]
-      : [
-          KNOWLEDGE_CHAT_NAV_ITEM,
-          CARDS_BOARD_NAV_ITEM,
-          ...BUILTIN_NAV_REST,
-        ];
-    return showTokenAnalytics ? base : base.filter((n) => n.path !== "/analytics");
-  }, [embeddedChat, showTokenAnalytics]);
-
-  const sidebarNav = useMemo(
-    () => partitionSidebarNav(builtinNav, manifests),
-    [builtinNav, manifests],
-  );
   const routes = useMemo(
     () => buildRoutes(builtinRoutes, manifests),
     [builtinRoutes, manifests],
@@ -445,10 +278,14 @@ export default function App() {
     return () => mql.removeEventListener("change", onChange);
   }, []);
 
+  useEffect(() => {
+    window.localStorage.setItem("hermes.sidebarCollapsed", sidebarCollapsed ? "true" : "false");
+  }, [sidebarCollapsed]);
+
   return (
     <div
       data-layout-variant={layoutVariant}
-      className="font-mondwest flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black uppercase text-midground antialiased"
+      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground antialiased"
     >
       <SelectionSwitcher />
       <Backdrop />
@@ -458,8 +295,8 @@ export default function App() {
         className={cn(
           "lg:hidden fixed top-0 left-0 right-0 z-40 h-12",
           "flex items-center gap-2 px-3",
-          "border-b border-current/20",
-          "bg-background-base/90 backdrop-blur-sm",
+          "border-b border-border/80",
+          "bg-background/92 backdrop-blur-md",
         )}
         style={{
           background: "var(--component-header-background)",
@@ -474,14 +311,13 @@ export default function App() {
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
           aria-controls="app-sidebar"
-          className="text-midground/70 hover:text-midground"
+          className="text-muted-foreground hover:text-foreground"
         >
           <Menu />
         </Button>
 
         <Typography
-          className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
-          style={{ mixBlendMode: "plus-lighter" }}
+          className="text-sm font-semibold leading-none tracking-normal text-foreground"
         >
           {t.app.brand}
         </Typography>
@@ -508,11 +344,12 @@ export default function App() {
             aria-label={t.app.navigation}
             className={cn(
               "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
-              "border-r border-current/20",
-              "bg-background-base/95 backdrop-blur-sm",
-              "transition-transform duration-200 ease-out",
+              "border-r border-border/80",
+              "bg-background/95 backdrop-blur-md",
+              "transition-[width,transform] duration-200 ease-out",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0",
+              sidebarCollapsed ? "lg:w-16" : "lg:w-64",
             )}
             style={{
               background: "var(--component-sidebar-background)",
@@ -523,102 +360,67 @@ export default function App() {
             <div
               className={cn(
                 "flex h-14 shrink-0 items-center justify-between gap-2 px-4",
-                "border-b border-current/20",
+                "border-b border-border/80",
+                sidebarCollapsed && "lg:justify-center lg:px-2",
               )}
             >
-              <div className="flex items-center gap-2">
+              <div className={cn("flex items-center gap-2", sidebarCollapsed && "lg:hidden")}>
                 <PluginSlot name="header-left" />
 
                 <Typography
-                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-                  style={{ mixBlendMode: "plus-lighter" }}
+                  className="text-base font-semibold leading-tight tracking-normal text-foreground"
                 >
                   Hermes
                   <br />
-                  Agent
+                  Knowledge
                 </Typography>
               </div>
 
               <Button
                 ghost
                 size="icon"
+                onClick={() => setSidebarCollapsed((value) => !value)}
+                aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+                title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+                className="hidden text-muted-foreground hover:text-foreground lg:inline-flex"
+              >
+                {sidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+              </Button>
+
+              <Button
+                ghost
+                size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className="lg:hidden text-midground/70 hover:text-midground"
+                className="lg:hidden text-muted-foreground hover:text-foreground"
               >
                 <X />
               </Button>
             </div>
 
             <nav
-              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
+              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden py-3"
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
-                {sidebarNav.coreItems.map((item) => (
+                {KNOWLEDGE_NAV_ITEMS.map((item) => (
                   <SidebarNavLink
                     closeMobile={closeMobile}
+                    collapsed={sidebarCollapsed}
                     item={item}
                     key={item.path}
                     t={t}
                   />
                 ))}
               </ul>
-
-              {sidebarNav.pluginItems.length > 0 && (
-                <div
-                  aria-labelledby="hermes-sidebar-plugin-nav-heading"
-                  className="flex flex-col border-t border-current/10 pb-2"
-                  role="group"
-                >
-                  <span
-                    className={cn(
-                      "px-5 pt-2.5 pb-1",
-                      "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
-                    )}
-                    id="hermes-sidebar-plugin-nav-heading"
-                  >
-                    {t.app.pluginNavSection}
-                  </span>
-
-                  <ul className="flex flex-col">
-                    {sidebarNav.pluginItems.map((item) => (
-                      <SidebarNavLink
-                        closeMobile={closeMobile}
-                        item={item}
-                        key={item.path}
-                        t={t}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              )}
             </nav>
-
-            <SidebarSystemActions onNavigate={closeMobile} />
-
-            <div
-              className={cn(
-                "flex shrink-0 items-center justify-between gap-2",
-                "px-3 py-2",
-                "border-t border-current/20",
-              )}
-            >
-              <div className="flex min-w-0 items-center gap-2">
-                <PluginSlot name="header-right" />
-                <ThemeSwitcher dropUp />
-                <LanguageSwitcher />
-              </div>
-            </div>
-
-            <SidebarFooter />
           </aside>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
             <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "px-3 sm:px-6",
+                "px-3 sm:px-6 lg:px-8",
                 isChatRoute
                   ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
                   : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
@@ -684,7 +486,7 @@ export default function App() {
   );
 }
 
-function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
+function SidebarNavLink({ closeMobile, collapsed, item, t }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
 
   const navLabel = labelKey
@@ -697,14 +499,18 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
         to={path}
         end={path === "/sessions"}
         onClick={closeMobile}
+        title={collapsed ? navLabel : undefined}
         className={({ isActive }) =>
           cn(
             "group relative flex items-center gap-3",
-            "px-5 py-2.5",
-            "font-mondwest text-[0.8rem] tracking-[0.12em]",
-            "whitespace-nowrap transition-colors cursor-pointer",
-            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-            isActive ? "text-midground" : "opacity-60 hover:opacity-100",
+            "mx-2 rounded-md px-3 py-2",
+            "text-sm font-medium tracking-normal",
+            "whitespace-nowrap transition cursor-pointer",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
+            isActive
+              ? "bg-primary/10 text-foreground"
+              : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
+            collapsed && "lg:justify-center lg:px-2",
           )
         }
         style={{
@@ -713,136 +519,24 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
       >
         {({ isActive }) => (
           <>
-            <Icon className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{navLabel}</span>
+            <Icon className="h-4 w-4 shrink-0" />
+            <span className={cn("truncate", collapsed && "lg:hidden")}>{navLabel}</span>
 
             <span
               aria-hidden
-              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
+              className="pointer-events-none absolute inset-y-1 left-1 rounded-full bg-primary opacity-0 transition-opacity duration-200 group-hover:opacity-20"
             />
 
             {isActive && (
               <span
                 aria-hidden
-                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                style={{ mixBlendMode: "plus-lighter" }}
+                className="absolute bottom-2 left-0 top-2 w-0.5 rounded-full bg-primary"
               />
             )}
           </>
         )}
       </NavLink>
     </li>
-  );
-}
-
-function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
-  const { t } = useI18n();
-  const navigate = useNavigate();
-  const { activeAction, isBusy, isRunning, pendingAction, runAction } =
-    useSystemActions();
-
-  const items: SystemActionItem[] = [
-    {
-      action: "restart",
-      icon: RotateCw,
-      label: t.status.restartGateway,
-      runningLabel: t.status.restartingGateway,
-      spin: true,
-    },
-    {
-      action: "update",
-      icon: Download,
-      label: t.status.updateHermes,
-      runningLabel: t.status.updatingHermes,
-      spin: false,
-    },
-  ];
-
-  const handleClick = (action: SystemAction) => {
-    if (isBusy) return;
-    void runAction(action);
-    navigate("/sessions");
-    onNavigate();
-  };
-
-  return (
-    <div
-      className={cn(
-        "shrink-0 flex flex-col",
-        "border-t border-current/10",
-        "py-1",
-      )}
-    >
-      <span
-        className={cn(
-          "px-5 pt-0.5 pb-0.5",
-          "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
-        )}
-      >
-        {t.app.system}
-      </span>
-
-      <SidebarStatusStrip />
-
-      <ul className="flex flex-col">
-        {items.map(({ action, icon: Icon, label, runningLabel, spin }) => {
-          const isPending = pendingAction === action;
-          const isActionRunning =
-            activeAction === action && isRunning && !isPending;
-          const busy = isPending || isActionRunning;
-          const displayLabel = isActionRunning ? runningLabel : label;
-          const disabled = isBusy && !busy;
-
-          return (
-            <li key={action}>
-              <ListItem
-                onClick={() => handleClick(action)}
-                disabled={disabled}
-                aria-busy={busy}
-                active={busy}
-                className={cn(
-                  "gap-3 px-5 py-1.5 whitespace-nowrap",
-                  "font-mondwest text-[0.75rem] tracking-[0.1em]",
-                  "transition-opacity",
-                  busy
-                    ? "text-midground opacity-100"
-                    : "opacity-60 hover:opacity-100",
-                  "disabled:opacity-30",
-                )}
-              >
-                {isPending ? (
-                  <Spinner className="shrink-0 text-[0.875rem]" />
-                ) : isActionRunning && spin ? (
-                  <Spinner className="shrink-0 text-[0.875rem]" />
-                ) : (
-                  <Icon
-                    className={cn(
-                      "h-3.5 w-3.5 shrink-0",
-                      isActionRunning && !spin && "animate-pulse",
-                    )}
-                  />
-                )}
-
-                <span className="truncate">{displayLabel}</span>
-
-                <span
-                  aria-hidden
-                  className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
-                />
-
-                {busy && (
-                  <span
-                    aria-hidden
-                    className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                    style={{ mixBlendMode: "plus-lighter" }}
-                  />
-                )}
-              </ListItem>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
   );
 }
 
@@ -855,14 +549,7 @@ interface NavItem {
 
 interface SidebarNavLinkProps {
   closeMobile: () => void;
+  collapsed: boolean;
   item: NavItem;
   t: Translations;
-}
-
-interface SystemActionItem {
-  action: SystemAction;
-  icon: ComponentType<{ className?: string }>;
-  label: string;
-  runningLabel: string;
-  spin: boolean;
 }

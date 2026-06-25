@@ -15,6 +15,13 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
   "/docs": "documentation",
 };
 
+const CUSTOM_TITLES: Record<string, string> = {
+  "/knowledge-library": "知识库",
+  "/knowledge-chat": "工作台",
+  "/capture-review": "Capture Review",
+  "/cards-board": "知识卡片",
+};
+
 export function resolvePageTitle(
   pathname: string,
   t: Translations,
@@ -22,11 +29,18 @@ export function resolvePageTitle(
 ): string {
   const normalized = pathname.replace(/\/$/, "") || "/";
   if (normalized === "/") {
-    return t.app.nav.sessions;
+    return "工作台";
   }
   const plugin = pluginTabs.find((p) => p.path === normalized);
   if (plugin) {
     return plugin.label;
+  }
+  if (normalized.startsWith("/cards-board/")) {
+    return "知识卡片";
+  }
+  const customTitle = CUSTOM_TITLES[normalized];
+  if (customTitle) {
+    return customTitle;
   }
   const key = BUILTIN[normalized];
   if (key) {
