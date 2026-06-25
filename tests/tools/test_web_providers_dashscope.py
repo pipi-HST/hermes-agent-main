@@ -213,12 +213,35 @@ def test_dashscope_provider_extract_uses_responses_web_extractor(monkeypatch):
             "raw_content": "# Samsung phones\nSamsung remained a major smartphone vendor in 2025.",
             "metadata": {
                 "provider": "dashscope",
-                "model": "qwen3.7-max",
+                "model": "qwen3.7-plus",
                 "has_workspace": False,
                 "web_extractor": True,
             },
         }
     ]
+
+
+def test_dashscope_provider_extract_keeps_responses_endpoint_with_workspace(monkeypatch):
+    from plugins.web.dashscope.provider import DashScopeWebSearchProvider
+
+    captured = {}
+
+    def fake_post(url, *, headers, json, timeout):
+        captured.update({"url": url, "headers": headers})
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"output_text": "Workspace extraction works."},
+        )
+
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    monkeypatch.setenv("DASHSCOPE_WORKSPACE_ID", "workspace-test")
+    monkeypatch.setattr("httpx.post", fake_post)
+
+    result = DashScopeWebSearchProvider().extract(["https://example.com/page"])
+
+    assert captured["url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
+    assert captured["headers"]["X-DashScope-WorkSpace"] == "workspace-test"
+    assert result[0]["content"] == "Workspace extraction works."
 
 
 def test_dashscope_web_extract_tool_dispatches_to_provider(monkeypatch):

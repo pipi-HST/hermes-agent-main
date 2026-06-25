@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Iterable, List
 
 from agent.web_search_provider import WebSearchProvider
@@ -133,16 +134,19 @@ class DashScopeWebSearchProvider(WebSearchProvider):
                 for url in urls
             ]
 
-        model = _env_value("DASHSCOPE_WEB_EXTRACT_MODEL", "qwen3.7-max").strip() or "qwen3.7-max"
+        model = _env_value("DASHSCOPE_WEB_EXTRACT_MODEL", "qwen3.7-plus").strip() or "qwen3.7-plus"
         workspace_id = _env_value("DASHSCOPE_WORKSPACE_ID").strip()
         endpoint = _dashscope_responses_endpoint(workspace_id)
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        if workspace_id:
+            headers["X-DashScope-WorkSpace"] = workspace_id
         selected_urls = [str(url or "").strip() for url in urls if str(url or "").strip()]
-        results: List[Dict[str, Any]] = []
-        for url in selected_urls:
+        timeout_seconds = _extract_timeout_seconds()
+
+        def extract_one(url: str) -> Dict[str, Any]:
             payload = {
                 "model": model,
                 "input": (
@@ -158,59 +162,64 @@ class DashScopeWebSearchProvider(WebSearchProvider):
                 "enable_thinking": True,
             }
             try:
-                response = httpx.post(endpoint, headers=headers, json=payload, timeout=_extract_timeout_seconds())
+                response = httpx.post(endpoint, headers=headers, json=payload, timeout=timeout_seconds)
                 response.raise_for_status()
                 data = response.json()
                 content = _dashscope_extracted_text(data)
                 title = _dashscope_extracted_title(data) or url
-                results.append(
-                    {
-                        "url": url,
-                        "title": title,
-                        "content": content,
-                        "raw_content": content,
-                        "metadata": {
-                            "provider": "dashscope",
-                            "model": model,
-                            "has_workspace": bool(workspace_id),
-                            "web_extractor": True,
-                        },
-                    }
-                )
+                return {
+                    "url": url,
+                    "title": title,
+                    "content": content,
+                    "raw_content": content,
+                    "metadata": {
+                        "provider": "dashscope",
+                        "model": model,
+                        "has_workspace": bool(workspace_id),
+                        "web_extractor": True,
+                    },
+                }
             except httpx.HTTPStatusError as exc:
                 logger.warning("DashScope extract HTTP error: %s", exc)
-                results.append(
-                    {
-                        "url": url,
-                        "title": "",
-                        "content": "",
-                        "raw_content": "",
-                        "error": f"DashScope returned HTTP {exc.response.status_code}",
-                    }
-                )
+                return {
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": f"DashScope returned HTTP {exc.response.status_code}",
+                }
             except httpx.RequestError as exc:
                 logger.warning("DashScope extract request error: %s", exc)
-                results.append(
-                    {
-                        "url": url,
-                        "title": "",
-                        "content": "",
-                        "raw_content": "",
-                        "error": f"Could not reach DashScope: {exc}",
-                    }
-                )
+                return {
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": f"Could not reach DashScope: {exc}",
+                }
             except Exception as exc:  # noqa: BLE001
                 logger.warning("DashScope extract parse error: %s", exc)
-                results.append(
-                    {
-                        "url": url,
-                        "title": "",
-                        "content": "",
-                        "raw_content": "",
-                        "error": f"Could not parse DashScope extraction response: {exc}",
-                    }
-                )
-        return results
+                return {
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": f"Could not parse DashScope extraction response: {exc}",
+                }
+
+        if len(selected_urls) <= 1:
+            return [extract_one(url) for url in selected_urls]
+
+        results: list[Dict[str, Any] | None] = [None] * len(selected_urls)
+        max_workers = min(len(selected_urls), _extract_max_workers())
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(extract_one, url): index
+                for index, url in enumerate(selected_urls)
+            }
+            for future in as_completed(futures):
+                results[futures[future]] = future.result()
+        return [result for result in results if result is not None]
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
@@ -251,8 +260,6 @@ def _dashscope_responses_endpoint(workspace_id: str) -> str:
         if configured.endswith("/responses"):
             return configured
         return f"{configured}/responses"
-    if workspace_id:
-        return f"https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/responses"
     return "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
 
 
@@ -281,12 +288,21 @@ def _request_timeout_seconds() -> float:
 
 
 def _extract_timeout_seconds() -> float:
-    raw = _env_value("DASHSCOPE_WEB_EXTRACT_TIMEOUT_SECONDS", "45").strip()
+    raw = _env_value("DASHSCOPE_WEB_EXTRACT_TIMEOUT_SECONDS", "15").strip()
     try:
         value = float(raw)
     except ValueError:
-        value = 45.0
-    return max(5.0, min(value, 120.0))
+        value = 15.0
+    return max(5.0, min(value, 30.0))
+
+
+def _extract_max_workers() -> int:
+    raw = _env_value("DASHSCOPE_WEB_EXTRACT_MAX_WORKERS", "3").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 3
+    return max(1, min(value, 4))
 
 
 def _dashscope_extracted_text(payload: Dict[str, Any]) -> str:
