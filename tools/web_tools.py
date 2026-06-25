@@ -117,8 +117,8 @@ import sys
 
 logger = logging.getLogger(__name__)
 
-SEARCH_ONLY_WEB_BACKENDS = {"brave-free", "dashscope", "ddgs", "searxng"}
-EXTRACT_CAPABLE_WEB_BACKENDS = ("firecrawl", "parallel", "tavily", "exa", "local")
+SEARCH_ONLY_WEB_BACKENDS = {"brave-free", "ddgs", "searxng"}
+EXTRACT_CAPABLE_WEB_BACKENDS = ("firecrawl", "parallel", "tavily", "exa", "dashscope", "local")
 
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
@@ -1025,8 +1025,7 @@ async def web_extract_tool(
             backend = _get_extract_backend()
             _ensure_builtin_web_provider_registered(backend)
 
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
+            # Built-in web providers now live as plugins. The dispatcher is a
             # registry lookup + delegation. Some providers' extract() is
             # async (parallel, firecrawl), others sync (exa, tavily) — we
             # detect coroutine functions and await; sync functions run
@@ -1053,7 +1052,7 @@ async def web_extract_tool(
                                 f"{provider.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "tavily, exa, parallel, or dashscope."
                             ),
                         },
                         ensure_ascii=False,
@@ -1066,7 +1065,7 @@ async def web_extract_tool(
                             "error": (
                                 "No web extract provider configured. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "tavily, exa, parallel, or dashscope."
                             ),
                         },
                         ensure_ascii=False,

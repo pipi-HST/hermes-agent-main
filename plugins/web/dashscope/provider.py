@@ -1,9 +1,4 @@
-"""DashScope/Bailian web search provider.
-
-This provider deliberately exposes search only. DashScope returns search
-source cards and snippets; it is not a general-purpose arbitrary URL
-extraction backend like Firecrawl, Tavily, Exa, or Parallel.
-"""
+"""DashScope/Bailian web search and extraction provider."""
 
 from __future__ import annotations
 
@@ -17,6 +12,7 @@ from agent.web_search_provider import WebSearchProvider
 logger = logging.getLogger(__name__)
 
 _DASHSCOPE_API_SUFFIX = "/services/aigc/text-generation/generation"
+_MAX_EXTRACTED_TEXT_CHARS = 12_000
 
 
 class DashScopeWebSearchProvider(WebSearchProvider):
@@ -37,7 +33,7 @@ class DashScopeWebSearchProvider(WebSearchProvider):
         return True
 
     def supports_extract(self) -> bool:
-        return False
+        return True
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         import httpx
@@ -121,6 +117,101 @@ class DashScopeWebSearchProvider(WebSearchProvider):
             },
         }
 
+    def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
+        import httpx
+
+        api_key = _env_value("DASHSCOPE_API_KEY").strip()
+        if not api_key:
+            return [
+                {
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": "DASHSCOPE_API_KEY is not set",
+                }
+                for url in urls
+            ]
+
+        model = _env_value("DASHSCOPE_WEB_EXTRACT_MODEL", "qwen3.7-max").strip() or "qwen3.7-max"
+        workspace_id = _env_value("DASHSCOPE_WORKSPACE_ID").strip()
+        endpoint = _dashscope_responses_endpoint(workspace_id)
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        selected_urls = [str(url or "").strip() for url in urls if str(url or "").strip()]
+        results: List[Dict[str, Any]] = []
+        for url in selected_urls:
+            payload = {
+                "model": model,
+                "input": (
+                    "请访问下面这个 URL，并提取网页正文中对用户有用的主要内容。"
+                    "尽量保留事实、数字、日期、机构名和原文表述；不要写泛泛介绍。"
+                    "如果无法访问，请明确说明无法访问原因。\n\n"
+                    f"URL: {url}"
+                ),
+                "tools": [
+                    {"type": "web_search"},
+                    {"type": "web_extractor"},
+                ],
+                "enable_thinking": True,
+            }
+            try:
+                response = httpx.post(endpoint, headers=headers, json=payload, timeout=_extract_timeout_seconds())
+                response.raise_for_status()
+                data = response.json()
+                content = _dashscope_extracted_text(data)
+                title = _dashscope_extracted_title(data) or url
+                results.append(
+                    {
+                        "url": url,
+                        "title": title,
+                        "content": content,
+                        "raw_content": content,
+                        "metadata": {
+                            "provider": "dashscope",
+                            "model": model,
+                            "has_workspace": bool(workspace_id),
+                            "web_extractor": True,
+                        },
+                    }
+                )
+            except httpx.HTTPStatusError as exc:
+                logger.warning("DashScope extract HTTP error: %s", exc)
+                results.append(
+                    {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": f"DashScope returned HTTP {exc.response.status_code}",
+                    }
+                )
+            except httpx.RequestError as exc:
+                logger.warning("DashScope extract request error: %s", exc)
+                results.append(
+                    {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": f"Could not reach DashScope: {exc}",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("DashScope extract parse error: %s", exc)
+                results.append(
+                    {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": f"Could not parse DashScope extraction response: {exc}",
+                    }
+                )
+        return results
+
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Alibaba Bailian Web Search",
@@ -154,6 +245,17 @@ def _dashscope_generation_endpoint(workspace_id: str) -> str:
     return f"https://dashscope.aliyuncs.com/api/v1{_DASHSCOPE_API_SUFFIX}"
 
 
+def _dashscope_responses_endpoint(workspace_id: str) -> str:
+    configured = _env_value("DASHSCOPE_RESPONSES_API_URL").strip().rstrip("/")
+    if configured:
+        if configured.endswith("/responses"):
+            return configured
+        return f"{configured}/responses"
+    if workspace_id:
+        return f"https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/responses"
+    return "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
+
+
 def _env_value(name: str, default: str = "") -> str:
     value = os.getenv(name)
     if value is not None:
@@ -176,6 +278,66 @@ def _request_timeout_seconds() -> float:
     except ValueError:
         value = 18.0
     return max(3.0, min(value, 45.0))
+
+
+def _extract_timeout_seconds() -> float:
+    raw = _env_value("DASHSCOPE_WEB_EXTRACT_TIMEOUT_SECONDS", "45").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 45.0
+    return max(5.0, min(value, 120.0))
+
+
+def _dashscope_extracted_text(payload: Dict[str, Any]) -> str:
+    text = payload.get("output_text")
+    if isinstance(text, str) and text.strip():
+        return _clean_multiline_text(text)[:_MAX_EXTRACTED_TEXT_CHARS]
+
+    parts = list(_iter_responses_text_blocks(payload.get("output")))
+    if not parts:
+        fallback = _dashscope_answer_text(payload)
+        if fallback:
+            parts.append(fallback)
+    return _clean_multiline_text("\n\n".join(parts))[:_MAX_EXTRACTED_TEXT_CHARS]
+
+
+def _dashscope_extracted_title(payload: Dict[str, Any]) -> str:
+    for item in _iter_source_like_dicts(payload):
+        title = _first_text(item, "title", "name", "site_name")
+        if title:
+            return title[:180]
+
+    text = _dashscope_extracted_text(payload)
+    for raw_line in text.splitlines():
+        line = raw_line.strip(" #*-:：")
+        if line and not line.startswith("http") and len(line) <= 180:
+            return line
+    return ""
+
+
+def _iter_responses_text_blocks(value: Any) -> Iterable[str]:
+    if isinstance(value, dict):
+        output_text = value.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            yield output_text
+
+        item_type = str(value.get("type") or "").lower()
+        text = value.get("text")
+        if item_type in {"output_text", "summary_text"} and isinstance(text, str) and text.strip():
+            yield text
+
+        content = value.get("content")
+        if isinstance(content, str) and content.strip():
+            yield content
+        else:
+            yield from _iter_responses_text_blocks(content)
+
+        for key in ("output", "summary"):
+            yield from _iter_responses_text_blocks(value.get(key))
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_responses_text_blocks(child)
 
 
 def _normalize_dashscope_search_results(
@@ -268,6 +430,12 @@ def _source_index(item: Dict[str, Any]) -> int | None:
 
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _clean_multiline_text(value: str) -> str:
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[ \t\f\v]+", " ", line).strip() for line in normalized.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
 def _dashscope_answer_text(payload: Dict[str, Any]) -> str:
