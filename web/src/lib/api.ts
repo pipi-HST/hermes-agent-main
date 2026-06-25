@@ -907,7 +907,13 @@ export interface KnowledgeLibrarySelectionChatStreamEvent {
   needs_web?: boolean;
   queries?: string[];
   query?: string;
+  query_count?: number;
   result_count?: number;
+  candidate_count?: number;
+  material_count?: number;
+  opened_pages?: number;
+  extracted_pages?: number;
+  summary_only_pages?: number;
   web_sources?: KnowledgeResearchSource[];
   knowledge_sources?: KnowledgeResearchSource[];
   candidate_sources?: KnowledgeResearchSource[];

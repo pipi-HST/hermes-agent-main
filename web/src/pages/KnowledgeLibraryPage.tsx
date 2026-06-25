@@ -100,16 +100,7 @@ interface ArticleChatMessage {
   };
   researchTrace?: KnowledgeResearchTrace;
   responseMeta?: KnowledgeLibrarySelectionChatResponse["meta"];
-  researchEvents?: ResearchTimelineEvent[];
   warnings?: string[];
-}
-
-interface ResearchTimelineEvent {
-  key: string;
-  label: string;
-  detail?: string;
-  at: string;
-  tone?: "normal" | "warning" | "error" | "success";
 }
 
 const DEFAULT_SELECTION: LibrarySelection = { type: "all", value: "all" };
@@ -926,14 +917,6 @@ export default function KnowledgeLibraryPage() {
         research_trace: pendingTrace,
         web_search_attempted: webResearchMode(requestMode),
       },
-      researchEvents: [
-        {
-          key: `request:${Date.now()}`,
-          label: webResearchMode(requestMode) ? "准备联网检索" : "准备回答",
-          detail: question,
-          at: new Date().toISOString(),
-        },
-      ],
     };
     setChatMessages((messages) => [...messages, userMessage, pendingMessage]);
     setChatQuestion("");
@@ -984,15 +967,7 @@ export default function KnowledgeLibraryPage() {
       };
       setChatMessages((messages) =>
         messages.map((message) =>
-          message.id === assistantId
-            ? {
-                ...assistantMessage,
-                researchEvents: mergeResearchEvents(
-                  message.researchEvents,
-                  researchTimelineEventsFromTrace(response.meta?.research_trace),
-                ),
-              }
-            : message,
+          message.id === assistantId ? assistantMessage : message,
         ),
       );
     } catch (err) {
@@ -1017,15 +992,7 @@ export default function KnowledgeLibraryPage() {
         };
         setChatMessages((messages) =>
           messages.map((message) =>
-            message.id === assistantId
-              ? {
-                  ...assistantMessage,
-                  researchEvents: mergeResearchEvents(
-                    message.researchEvents,
-                    researchTimelineEventsFromTrace(response.meta?.research_trace),
-                  ),
-                }
-              : message,
+            message.id === assistantId ? assistantMessage : message,
           ),
         );
       } catch (fallbackErr) {
@@ -2545,10 +2512,7 @@ function applySelectionChatStreamEvent(
   let warnings = message.warnings || [];
 
   if (event.event === "start") {
-    return {
-      ...message,
-      researchEvents: mergeResearchEvents(message.researchEvents, [researchTimelineEventFromStream(event, trace, mode)].filter(isTimelineEvent)),
-    };
+    return message;
   }
 
   switch (event.type) {
@@ -2563,6 +2527,12 @@ function applySelectionChatStreamEvent(
       trace.query_intent = event.intent_label || trace.query_intent;
       providerStatus.stage = event.needs_web ? "已规划联网查询" : "已规划本地回答";
       content = event.needs_web ? "已规划联网查询，准备检索公开网页..." : "已规划回答路径，准备检索本地材料...";
+      break;
+    case "queries_ready":
+      trace.web_queries = event.queries || trace.web_queries || [];
+      trace.query_count = event.query_count ?? trace.web_queries.length;
+      providerStatus.stage = "正在搜索网页";
+      content = "正在搜索网页...";
       break;
     case "local_search_start":
       providerStatus.stage = "正在检索本地知识库";
@@ -2586,6 +2556,7 @@ function applySelectionChatStreamEvent(
       break;
     case "web_query_done":
       trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.web_sources);
+      trace.candidate_count = event.candidate_count ?? trace.candidate_sources.length;
       providerStatus.stage = event.query ? `已完成搜索：${event.query}` : "网页搜索完成";
       content = `已找到 ${event.result_count ?? event.web_sources?.length ?? 0} 个候选网页，正在筛选来源...`;
       break;
@@ -2597,9 +2568,18 @@ function applySelectionChatStreamEvent(
     case "web_ranked":
       trace.search_quality = event.search_quality || trace.search_quality;
       trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.web_sources);
+      trace.candidate_count = event.candidate_count ?? trace.candidate_count ?? trace.candidate_sources.length;
       trace.rewritten_web_queries = event.rewritten_queries || trace.rewritten_web_queries || [];
       providerStatus.stage = "已筛选候选来源";
       content = "已筛选候选来源，准备整理网页资料...";
+      break;
+    case "materials_selected":
+      trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.web_sources);
+      trace.candidate_count = event.candidate_count ?? trace.candidate_count;
+      trace.material_count = event.material_count ?? trace.material_count;
+      trace.opened_pages = event.opened_pages ?? trace.opened_pages;
+      providerStatus.stage = event.opened_pages ? "正在阅读网页" : "正在整理搜索摘要";
+      content = event.opened_pages ? "正在阅读网页..." : "正在整理搜索摘要...";
       break;
     case "web_classified":
       trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.candidate_sources);
@@ -2627,6 +2607,7 @@ function applySelectionChatStreamEvent(
       break;
     case "web_extract_start":
       trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.web_sources);
+      trace.opened_pages = event.opened_pages ?? trace.opened_pages;
       providerStatus.stage = "正在整理网页资料";
       content = "正在整理网页来源和可用摘要...";
       break;
@@ -2634,6 +2615,11 @@ function applySelectionChatStreamEvent(
       trace.provider_status = event.provider_status || trace.provider_status;
       trace.web_sources = mergeResearchSources(trace.web_sources, event.web_sources);
       trace.evidence_sources = mergeResearchSources(trace.evidence_sources, event.evidence_sources || event.web_sources);
+      trace.candidate_count = event.candidate_count ?? trace.candidate_count;
+      trace.material_count = event.material_count ?? trace.material_count ?? trace.web_sources.length;
+      trace.opened_pages = event.opened_pages ?? trace.opened_pages;
+      trace.extracted_pages = event.extracted_pages ?? trace.extracted_pages;
+      trace.summary_only_pages = event.summary_only_pages ?? trace.summary_only_pages;
       providerStatus.stage = "网页资料整理完成";
       content = "网页资料整理完成，正在组织回答...";
       break;
@@ -2681,7 +2667,6 @@ function applySelectionChatStreamEvent(
       web: trace.evidence_sources || trace.web_sources || [],
     },
     researchTrace: trace,
-    researchEvents: mergeResearchEvents(message.researchEvents, [researchTimelineEventFromStream(event, trace, mode)].filter(isTimelineEvent)),
     responseMeta: {
       ...(message.responseMeta || {}),
       web_queries: trace.web_queries,
@@ -2693,198 +2678,6 @@ function applySelectionChatStreamEvent(
     },
     warnings,
   };
-}
-
-function isTimelineEvent(event: ResearchTimelineEvent | null): event is ResearchTimelineEvent {
-  return Boolean(event);
-}
-
-function mergeResearchEvents(
-  current: ResearchTimelineEvent[] | undefined,
-  incoming: ResearchTimelineEvent[] | undefined,
-): ResearchTimelineEvent[] {
-  const merged = new Map<string, ResearchTimelineEvent>();
-  for (const event of [...(current || []), ...(incoming || [])]) {
-    merged.set(event.key, { ...merged.get(event.key), ...event });
-  }
-  return Array.from(merged.values()).slice(-40);
-}
-
-function researchTimelineEventFromStream(
-  event: KnowledgeLibrarySelectionChatStreamEvent,
-  trace: KnowledgeResearchTrace,
-  mode: KnowledgeResearchMode,
-): ResearchTimelineEvent | null {
-  const at = new Date().toISOString();
-  const type = event.type || event.event;
-  const query = event.query || "";
-  const backend = event.backend || "";
-  const key = [
-    type,
-    query,
-    backend,
-    event.result_count ?? "",
-    event.new_result_count ?? "",
-    event.web_sources?.length ?? "",
-    event.candidate_sources?.length ?? "",
-    event.clue_sources?.length ?? "",
-    event.rejected_sources?.length ?? "",
-  ].join(":");
-  const sourceCount = event.result_count ?? event.web_sources?.length ?? event.candidate_sources?.length ?? event.evidence_sources?.length ?? 0;
-  const sourceDetail = sourceSummary(event.web_sources || event.evidence_sources || event.candidate_sources || []);
-
-  switch (event.event === "start" ? "stream_start" : event.type) {
-    case "stream_start":
-      return {
-        key,
-        label: "已连接实时检索",
-        detail: researchModeLabel(mode),
-        at,
-      };
-    case "planning_start":
-      return {
-        key,
-        label: "开始规划",
-        detail: webResearchMode(mode) ? "准备生成联网查询" : "准备判断回答路径",
-        at,
-      };
-    case "plan":
-      return {
-        key,
-        label: event.needs_web ? "规划联网查询" : "规划本地回答",
-        detail: uniqueStrings(event.queries || []).join(" / ") || event.intent_label || researchStatusLabel(trace.plan_status as string),
-        at,
-      };
-    case "local_search_start":
-      return { key, label: "检索本地知识库", at };
-    case "local_search_done":
-      return {
-        key,
-        label: "本地检索完成",
-        detail: `${event.knowledge_sources?.length ?? 0} 条本地材料`,
-        at,
-        tone: "success",
-      };
-    case "web_search_start":
-      return {
-        key,
-        label: "发起联网搜索",
-        detail: uniqueStrings(event.queries || []).join(" / "),
-        at,
-      };
-    case "web_query_start":
-      return { key, label: "搜索网页", detail: query, at };
-    case "web_query_done":
-      return {
-        key,
-        label: "发现候选网页",
-        detail: `${sourceCount} 个结果${sourceDetail ? ` · ${sourceDetail}` : ""}`,
-        at,
-        tone: "success",
-      };
-    case "web_query_error":
-      return { key, label: "搜索异常", detail: event.error || "部分搜索失败", at, tone: "warning" };
-    case "web_ranked":
-      return {
-        key,
-        label: "筛选候选来源",
-        detail: `${sourceCount} 个候选${sourceDetail ? ` · ${sourceDetail}` : ""}`,
-        at,
-      };
-    case "web_classified":
-      return {
-        key,
-        label: "完成来源分层",
-        detail: `候选 ${event.candidate_sources?.length ?? 0} / 线索 ${event.clue_sources?.length ?? 0} / 未采用 ${
-          event.rejected_sources?.length ?? 0
-        }`,
-        at,
-      };
-    case "web_rewrite_start":
-      return { key, label: "改写查询词", detail: uniqueStrings(event.queries || []).join(" / "), at, tone: "warning" };
-    case "web_fallback_start":
-      return {
-        key,
-        label: "补充检索",
-        detail: [backend, event.reason].filter(Boolean).join(" · "),
-        at,
-        tone: "warning",
-      };
-    case "web_fallback_done":
-      return {
-        key,
-        label: "补充检索完成",
-        detail: `${event.result_count ?? 0} 个结果，新增 ${event.new_result_count ?? 0} 个`,
-        at,
-        tone: "success",
-      };
-    case "web_extract_start":
-      return {
-        key,
-        label: "读取网页正文",
-        detail: sourceDetail || `${sourceCount} 个网页`,
-        at,
-      };
-    case "web_extract_done":
-      return {
-        key,
-        label: "网页资料整理完成",
-        detail: `${sourceCount} 个可用来源${sourceDetail ? ` · ${sourceDetail}` : ""}`,
-        at,
-        tone: "success",
-      };
-    case "web_critic_start":
-      return {
-        key,
-        label: "核验证据",
-        detail: sourceDetail || "检查来源是否支撑回答",
-        at,
-      };
-    case "web_critic_done":
-      return {
-        key,
-        label: "证据核验完成",
-        detail: `采用 ${event.web_sources?.length ?? event.evidence_sources?.length ?? 0} / 未采用 ${event.rejected_sources?.length ?? 0}`,
-        at,
-        tone: event.rejected_sources?.length ? "warning" : "success",
-      };
-    case "synthesis_start":
-      return { key, label: "生成答案", detail: "基于采用来源组织回答", at };
-    case "warnings":
-      return { key, label: "记录警告", detail: uniqueStrings(event.warnings || []).join("；"), at, tone: "warning" };
-    default:
-      if (event.event === "complete") return { key, label: "生成完成", at, tone: "success" };
-      if (event.event === "error") return { key, label: "生成失败", detail: event.message || event.error, at, tone: "error" };
-      return null;
-  }
-}
-
-function researchTimelineEventsFromTrace(trace: KnowledgeResearchTrace | undefined): ResearchTimelineEvent[] {
-  const events = trace?.event_log;
-  if (!Array.isArray(events)) return [];
-  return events
-    .map((event, index): ResearchTimelineEvent | null => {
-      if (!event || typeof event !== "object") return null;
-      const record = event as Record<string, unknown>;
-      const label = typeof record.label === "string" ? record.label : typeof record.type === "string" ? record.type : "";
-      if (!label) return null;
-      return {
-        key: typeof record.key === "string" ? record.key : `trace:${index}:${label}`,
-        label,
-        detail: typeof record.detail === "string" ? record.detail : undefined,
-        at: typeof record.at === "string" ? record.at : new Date().toISOString(),
-      };
-    })
-    .filter(isTimelineEvent);
-}
-
-function sourceSummary(sources: KnowledgeResearchSource[]): string {
-  return uniqueStrings(
-    sources
-      .slice(0, 3)
-      .map((source) => source.domain || (source.url ? hostLabel(source.url) : "") || source.title || "")
-      .filter(Boolean),
-  ).join("、");
 }
 
 function mergeResearchSources(
@@ -3006,11 +2799,23 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
   const clueSources = sourceArray(trace?.clue_sources);
   const rejectedSources = sourceArray(trace?.rejected_sources);
   const webCount = evidenceSources.length;
-  const timelineEvents = mergeResearchEvents(message.researchEvents, researchTimelineEventsFromTrace(trace));
+  const queryCount = numberField(trace?.query_count) || webQueries.length;
+  const candidateCount =
+    numberField(trace?.candidate_count) ||
+    numberField(trace?.source_counts?.candidate) ||
+    candidateSources.length;
+  const readCount =
+    numberField(trace?.opened_pages) ||
+    providerNumber(trace?.provider_status ?? meta?.provider_status, "opened_pages") ||
+    providerNumber(trace?.provider_status ?? meta?.provider_status, "extracted_pages") ||
+    numberField(trace?.extracted_pages);
   const elapsedLabel = researchElapsedLabel(trace, meta);
   const summaryText = researchSummaryText({
+    candidateCount,
     mode: message.mode,
     pending: Boolean(message.pending),
+    queryCount,
+    readCount,
     sourceCount: webCount || knowledgeCount,
     webSearchAttempted,
     elapsedLabel,
@@ -3026,7 +2831,6 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
       candidateSources.length ||
       clueSources.length ||
       rejectedSources.length ||
-      timelineEvents.length ||
       message.warnings?.length,
   );
   if (!shouldRender) return null;
@@ -3040,10 +2844,12 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
           <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         )}
         <div className="min-w-0 flex-1 truncate font-medium text-foreground">{summaryText}</div>
-        <div className="hidden shrink-0 text-[0.68rem] text-muted-foreground sm:block">
+      </div>
+      {message.pending && (currentStage || researchStatusLabel(status) || webStatus) ? (
+        <div className="mt-1 truncate pl-5 text-[0.72rem] text-muted-foreground">
           {currentStage || researchStatusLabel(status) || webStatus}
         </div>
-      </div>
+      ) : null}
       <ResearchCompactSources sources={evidenceSources} />
       <ResearchAuditDetails
         candidateSources={candidateSources}
@@ -3051,7 +2857,6 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
         providerStatus={providerStatus}
         queries={webQueries}
         rejectedSources={rejectedSources}
-        timelineEvents={timelineEvents}
         progress={
           <ResearchProgress
             currentStage={currentStage}
@@ -3102,43 +2907,6 @@ function SourceChip({ source }: { source: KnowledgeResearchSource }) {
     );
   }
   return <span className={className}>{chip}</span>;
-}
-
-function ResearchTimeline({
-  events,
-  pending,
-}: {
-  events: ResearchTimelineEvent[];
-  pending: boolean;
-}) {
-  if (!events.length) return null;
-  return (
-    <div
-      aria-live={pending ? "polite" : "off"}
-      className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded border border-border/70 bg-background/60 px-2 py-1.5"
-    >
-      {events.slice(-12).map((event, index) => (
-        <div key={`${event.key}-${index}`} className="grid grid-cols-[0.75rem_minmax(0,1fr)] gap-1.5">
-          <span
-            className={cn(
-              "mt-1 h-1.5 w-1.5 rounded-full",
-              event.tone === "error"
-                ? "bg-destructive"
-                : event.tone === "warning"
-                  ? "bg-warning"
-                  : event.tone === "success"
-                    ? "bg-primary"
-                    : "bg-muted-foreground/55",
-            )}
-          />
-          <div className="min-w-0">
-            <div className="truncate text-[0.72rem] font-medium text-foreground">{event.label}</div>
-            {event.detail ? <div className="truncate text-[0.68rem] text-muted-foreground">{event.detail}</div> : null}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function ResearchProgress({
@@ -3211,7 +2979,6 @@ function ResearchAuditDetails({
   progress,
   queries,
   rejectedSources,
-  timelineEvents,
   warnings,
 }: {
   candidateSources: KnowledgeResearchSource[];
@@ -3220,10 +2987,9 @@ function ResearchAuditDetails({
   progress: ReactNode;
   queries: string[];
   rejectedSources: KnowledgeResearchSource[];
-  timelineEvents: ResearchTimelineEvent[];
   warnings: string[];
 }) {
-  const hasDetails = queries.length || candidateSources.length || clueSources.length || rejectedSources.length || providerStatus.length || warnings.length || timelineEvents.length;
+  const hasDetails = queries.length || candidateSources.length || clueSources.length || rejectedSources.length || providerStatus.length || warnings.length;
   if (!hasDetails) return null;
   return (
     <details className="mt-1.5">
@@ -3233,7 +2999,6 @@ function ResearchAuditDetails({
       </summary>
       <div className="mt-2 border-t border-border/60 pt-2">
         {progress}
-        <ResearchTimeline events={timelineEvents} pending={false} />
         {queries.length ? (
           <div className="mt-2 space-y-1">
             <div className="font-medium text-foreground">查询词</div>
@@ -3346,6 +3111,15 @@ function traceSourceCount(sources: unknown): number {
   return Array.isArray(sources) ? sources.length : 0;
 }
 
+function numberField(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function providerNumber(providerStatus: unknown, key: string): number {
+  if (!providerStatus || typeof providerStatus !== "object") return 0;
+  return numberField((providerStatus as Record<string, unknown>)[key]);
+}
+
 function sourceArray(sources: unknown): KnowledgeResearchSource[] {
   return Array.isArray(sources) ? sources.filter((source): source is KnowledgeResearchSource => Boolean(source && typeof source === "object")) : [];
 }
@@ -3359,20 +3133,31 @@ function hostLabel(url: string): string {
 }
 
 function researchSummaryText({
+  candidateCount,
   elapsedLabel,
   mode,
   pending,
+  queryCount,
+  readCount,
   sourceCount,
   webSearchAttempted,
 }: {
+  candidateCount: number;
   elapsedLabel: string;
   mode?: KnowledgeResearchMode;
   pending: boolean;
+  queryCount: number;
+  readCount: number;
   sourceCount: number;
   webSearchAttempted: boolean;
 }): string {
   if (pending) {
-    return webResearchMode(mode) ? "联网搜索中" : "正在回答";
+    if (!webResearchMode(mode)) return "正在回答";
+    const parts = ["联网搜索中"];
+    if (queryCount) parts.push(`关键词 ${queryCount}`);
+    if (candidateCount) parts.push(`找到 ${candidateCount} 页`);
+    if (readCount) parts.push(`阅读 ${readCount} 页`);
+    return parts.join(" · ");
   }
   const scope = webSearchAttempted || webResearchMode(mode) ? "联网搜索完成" : researchModeLabel(mode || "current_article_only");
   const parts = [scope];
