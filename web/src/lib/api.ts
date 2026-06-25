@@ -924,6 +924,7 @@ export interface KnowledgeLibrarySelectionChatStreamEvent {
   error?: string;
   message?: string;
   stage?: string;
+  delta?: string;
   response?: KnowledgeLibrarySelectionChatResponse;
 }
 

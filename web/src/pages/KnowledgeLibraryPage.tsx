@@ -2651,8 +2651,20 @@ function applySelectionChatStreamEvent(
       break;
     case "synthesis_start":
       providerStatus.stage = "正在生成答案";
-      content = "正在基于可验证来源整理答案...";
+      if (!trace.answer_streaming) {
+        content = "";
+        trace.answer_streaming = false;
+      }
       break;
+    case "answer_delta": {
+      const delta = event.delta || "";
+      if (!delta) break;
+      const wasStreaming = Boolean(trace.answer_streaming);
+      trace.answer_streaming = true;
+      providerStatus.stage = "正在生成答案";
+      content = `${wasStreaming ? content : ""}${delta}`;
+      break;
+    }
     case "warnings":
       warnings = uniqueStrings([...warnings, ...(event.warnings || [])]);
       break;
@@ -2905,6 +2917,7 @@ function ArticleAssistantAnswer({
     () => [...(message.sources?.knowledge ?? []), ...(message.sources?.web ?? [])],
     [message.sources],
   );
+  const streamingAnswer = Boolean(message.pending && message.researchTrace?.answer_streaming && content.trim());
 
   const copyAnswer = useCallback(async () => {
     if (!content.trim()) return;
@@ -2949,8 +2962,10 @@ function ArticleAssistantAnswer({
       ) : null}
       <div className="[&_a]:break-words [&_pre]:max-w-full">
         <ArticleResearchProcess message={message} />
-        {message.pending ? (
+        {message.pending && !streamingAnswer ? (
           <div className="text-sm leading-6 text-muted-foreground">正在整理回答...</div>
+        ) : message.pending ? (
+          <Markdown content={stripTrailingReferenceSection(content)} sources={citationSources} />
         ) : (
           <Markdown content={stripTrailingReferenceSection(content)} sources={citationSources} />
         )}

@@ -388,6 +388,8 @@ class TestWebServerEndpoints:
                     ],
                 }
             )
+            await event_callback({"type": "answer_delta", "delta": "Coding agent"})
+            await event_callback({"type": "answer_delta", "delta": " 是"})
             return {
                 "status": "success",
                 "chat_preview": "Coding agent 是能自主完成软件工程任务的 AI 系统 [W1]",
@@ -430,9 +432,11 @@ class TestWebServerEndpoints:
             for line in resp.text.splitlines()
             if line.startswith("data: ")
         ]
-        assert [event["event"] for event in events[:4]] == ["start", "progress", "progress", "complete"]
+        assert [event["event"] for event in events[:6]] == ["start", "progress", "progress", "progress", "progress", "complete"]
         assert events[1]["type"] == "plan"
         assert events[2]["web_sources"][0]["title"] == "What Is an AI Coding Agent?"
+        assert events[3] == {"event": "progress", "type": "answer_delta", "delta": "Coding agent"}
+        assert events[4] == {"event": "progress", "type": "answer_delta", "delta": " 是"}
         assert events[-1]["response"]["answer"].startswith("Coding agent 是")
         assert events[-1]["response"]["sources"]["web"][0]["ref"] == "W1"
 
