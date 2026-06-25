@@ -2975,13 +2975,6 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
       ? String((trace.provider_status as Record<string, unknown>).stage || "")
       : "";
   const status = typeof trace?.plan_status === "string" ? trace.plan_status : "";
-  const evidenceStatus =
-    typeof trace?.evidence_status === "string"
-      ? trace.evidence_status
-      : typeof trace?.search_quality?.evidence_status === "string"
-        ? trace.search_quality.evidence_status
-        : "";
-  const answerDepth = typeof trace?.answer_depth === "string" ? trace.answer_depth : "";
   const webSearchAttempted = Boolean(trace?.web_search_attempted ?? meta?.web_search_attempted);
   const webStatus = message.pending && webResearchMode(message.mode) ? "准备中" : webSearchAttempted ? "已发起" : "未发起";
   const knowledgeCount = message.sources?.knowledge?.length ?? traceSourceCount(trace?.knowledge_sources);
@@ -2996,20 +2989,15 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
   const clueSources = sourceArray(trace?.clue_sources);
   const rejectedSources = sourceArray(trace?.rejected_sources);
   const webCount = evidenceSources.length;
-  const primaryEvidenceSources = evidenceSources.filter((source) => source.evidence_role === "primary_evidence");
-  const supportingEvidenceSources = evidenceSources.filter((source) => source.evidence_role === "supporting_evidence");
-  const interpretiveEvidenceSources = evidenceSources.filter((source) => source.evidence_role === "interpretive_evidence");
-  const otherEvidenceSources = evidenceSources.filter(
-    (source) => !["primary_evidence", "supporting_evidence", "interpretive_evidence"].includes(source.evidence_role || ""),
-  );
-  const hasSemanticEvidenceGroups = Boolean(primaryEvidenceSources.length || supportingEvidenceSources.length || interpretiveEvidenceSources.length);
-  const candidateCount = trace?.source_counts?.candidate ?? candidateSources.length;
-  const clueCount = trace?.source_counts?.clue ?? clueSources.length;
-  const rejectedCount = trace?.source_counts?.rejected ?? rejectedSources.length;
-  const independentDomains =
-    trace?.source_counts?.adopted_independent_domains
-      ?? countIndependentDomains(evidenceSources);
   const timelineEvents = mergeResearchEvents(message.researchEvents, researchTimelineEventsFromTrace(trace));
+  const elapsedLabel = researchElapsedLabel(trace, meta);
+  const summaryText = researchSummaryText({
+    mode: message.mode,
+    pending: Boolean(message.pending),
+    sourceCount: webCount || knowledgeCount,
+    webSearchAttempted,
+    elapsedLabel,
+  });
   const shouldRender = Boolean(
     message.mode ||
       status ||
@@ -3027,43 +3015,44 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
   if (!shouldRender) return null;
 
   return (
-    <div className="mb-3 rounded-md border border-border bg-background px-2.5 py-2 text-xs text-muted-foreground">
-      <ResearchProgress
-        currentStage={currentStage}
-        mode={message.mode}
-        pending={Boolean(message.pending)}
-        status={status}
-        webStatus={webStatus}
-      />
-      <ResearchTimeline events={timelineEvents} pending={Boolean(message.pending)} />
-      <EvidenceSummary
-        candidateCount={candidateCount}
-        clueCount={clueCount}
-        evidenceStatus={evidenceStatus}
-        independentDomains={independentDomains}
-        knowledgeCount={knowledgeCount}
-        rejectedCount={rejectedCount}
-        webCount={webCount}
-        answerDepth={answerDepth}
-      />
-      {hasSemanticEvidenceGroups ? (
-        <>
-          <ResearchSourceGroup title="强证据" sources={primaryEvidenceSources} />
-          <ResearchSourceGroup title="辅助证据" sources={supportingEvidenceSources} />
-          <ResearchSourceGroup title="解释材料" sources={interpretiveEvidenceSources} />
-          <ResearchSourceGroup title="采用依据" sources={otherEvidenceSources} />
-        </>
-      ) : (
-        <ResearchSourceGroup title="采用依据" sources={evidenceSources} />
-      )}
+    <div className="mb-3 rounded-md border border-border/80 bg-background/70 px-2.5 py-2 text-xs text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-2">
+        {message.pending ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" /> : <Search className="h-3.5 w-3.5 shrink-0" />}
+        <div className="min-w-0 truncate font-medium text-foreground">{summaryText}</div>
+      </div>
+      <ResearchCompactSources sources={evidenceSources} />
       <ResearchAuditDetails
         candidateSources={candidateSources}
         clueSources={clueSources}
         providerStatus={providerStatus}
         queries={webQueries}
         rejectedSources={rejectedSources}
+        timelineEvents={timelineEvents}
+        progress={
+          <ResearchProgress
+            currentStage={currentStage}
+            mode={message.mode}
+            pending={Boolean(message.pending)}
+            status={status}
+            webStatus={webStatus}
+          />
+        }
         warnings={message.warnings || []}
       />
+    </div>
+  );
+});
+
+const ResearchCompactSources = memo(function ResearchCompactSources({ sources }: { sources: KnowledgeResearchSource[] }) {
+  if (!sources.length) return null;
+  return (
+    <div className="mt-1.5 space-y-1">
+      {sources.slice(0, 3).map((source, index) => (
+        <div key={source.url || source.ref || `${source.title}-${index}`} className="truncate">
+          <span className="text-foreground">{source.ref ? `[${source.ref}] ` : ""}{source.title || source.url || "未命名网页"}</span>
+          {source.url ? <span className="ml-1 text-muted-foreground">· {hostLabel(source.url)}</span> : null}
+        </div>
+      ))}
     </div>
   );
 });
@@ -3143,41 +3132,6 @@ function ResearchProgress({
   );
 }
 
-function EvidenceSummary({
-  candidateCount,
-  clueCount,
-  evidenceStatus,
-  independentDomains,
-  knowledgeCount,
-  rejectedCount,
-  webCount,
-  answerDepth,
-}: {
-  answerDepth: string;
-  candidateCount: number;
-  clueCount: number;
-  evidenceStatus: string;
-  independentDomains: number;
-  knowledgeCount: number;
-  rejectedCount: number;
-  webCount: number;
-}) {
-  return (
-    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 rounded border border-border/70 bg-background/60 px-2 py-1.5">
-      <span>本地 {knowledgeCount}</span>
-      <span className="text-foreground">采用 {webCount}</span>
-      <span>独立来源 {independentDomains}</span>
-      <span>候选 {candidateCount}</span>
-      <span>线索 {clueCount}</span>
-      <span>未采用 {rejectedCount}</span>
-      {evidenceStatus ? (
-        <span className="text-foreground">证据{researchEvidenceStatusLabel(evidenceStatus)}</span>
-      ) : null}
-      {answerDepth ? <span>深度 {researchAnswerDepthLabel(answerDepth)}</span> : null}
-    </div>
-  );
-}
-
 const ResearchSourceGroup = memo(function ResearchSourceGroup({
   title,
   sources,
@@ -3220,23 +3174,29 @@ function ResearchAuditDetails({
   candidateSources,
   clueSources,
   providerStatus,
+  progress,
   queries,
   rejectedSources,
+  timelineEvents,
   warnings,
 }: {
   candidateSources: KnowledgeResearchSource[];
   clueSources: KnowledgeResearchSource[];
   providerStatus: string[];
+  progress: ReactNode;
   queries: string[];
   rejectedSources: KnowledgeResearchSource[];
+  timelineEvents: ResearchTimelineEvent[];
   warnings: string[];
 }) {
-  const hasDetails = queries.length || candidateSources.length || clueSources.length || rejectedSources.length || providerStatus.length || warnings.length;
+  const hasDetails = queries.length || candidateSources.length || clueSources.length || rejectedSources.length || providerStatus.length || warnings.length || timelineEvents.length;
   if (!hasDetails) return null;
   return (
     <details className="mt-2">
-      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">展开检索细节</summary>
-      <div className="mt-2">
+      <summary className="cursor-pointer text-[0.72rem] text-muted-foreground hover:text-foreground">检索详情</summary>
+      <div className="mt-2 border-t border-border/60 pt-2">
+        {progress}
+        <ResearchTimeline events={timelineEvents} pending={false} />
         {queries.length ? (
           <div className="mt-2 space-y-1">
             <div className="font-medium text-foreground">查询词</div>
@@ -3249,8 +3209,8 @@ function ResearchAuditDetails({
             </div>
           </div>
         ) : null}
-        <ResearchSourceGroup title="已发现网页" sources={candidateSources} />
-        <ResearchSourceGroup title="线索来源" sources={clueSources} showReason />
+        <ResearchSourceGroup title="候选网页" sources={candidateSources} />
+        <ResearchSourceGroup title="候选线索" sources={clueSources} showReason />
         <ResearchSourceGroup title="未采用" sources={rejectedSources} showReason />
         {providerStatus.length ? (
           <div className="mt-2 space-y-1">
@@ -3365,13 +3325,48 @@ function hostLabel(url: string): string {
   }
 }
 
-function countIndependentDomains(sources: KnowledgeResearchSource[]): number {
-  const domains = new Set<string>();
-  for (const source of sources) {
-    const domain = source.domain || (source.url ? hostLabel(source.url) : "");
-    if (domain) domains.add(domain);
+function researchSummaryText({
+  elapsedLabel,
+  mode,
+  pending,
+  sourceCount,
+  webSearchAttempted,
+}: {
+  elapsedLabel: string;
+  mode?: KnowledgeResearchMode;
+  pending: boolean;
+  sourceCount: number;
+  webSearchAttempted: boolean;
+}): string {
+  if (pending) {
+    return webResearchMode(mode) ? "联网搜索中" : "正在回答";
   }
-  return domains.size;
+  const scope = webSearchAttempted || webResearchMode(mode) ? "联网搜索完成" : researchModeLabel(mode || "current_article_only");
+  const parts = [scope];
+  if (sourceCount) parts.push(`${sourceCount} 个来源`);
+  if (elapsedLabel) parts.push(elapsedLabel);
+  return parts.join(" · ");
+}
+
+function researchElapsedLabel(
+  trace: KnowledgeResearchTrace | undefined,
+  meta: KnowledgeLibrarySelectionChatResponse["meta"] | undefined,
+): string {
+  const providerStatus = trace?.provider_status ?? meta?.provider_status;
+  const rawElapsed = providerStatus && typeof providerStatus === "object" ? (providerStatus as Record<string, unknown>).search_elapsed_ms : undefined;
+  if (typeof rawElapsed === "number" && rawElapsed > 0) return formatElapsedMs(rawElapsed);
+  const timings = trace?.stage_timings;
+  if (!timings || typeof timings !== "object") return "";
+  const total = ["search_ms", "extract_ms", "synthesis_ms"].reduce((sum, key) => {
+    const value = (timings as Record<string, unknown>)[key];
+    return sum + (typeof value === "number" ? value : 0);
+  }, 0);
+  return total > 0 ? formatElapsedMs(total) : "";
+}
+
+function formatElapsedMs(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  return `${seconds} 秒`;
 }
 
 function researchSourceReasonLabel(reason: string): string {
@@ -3422,19 +3417,6 @@ function researchEvidenceRoleLabel(role: string): string {
   }
 }
 
-function researchAnswerDepthLabel(depth: string): string {
-  switch (depth) {
-    case "brief":
-      return "简洁";
-    case "normal":
-      return "标准";
-    case "detailed":
-      return "详细";
-    default:
-      return depth;
-  }
-}
-
 function researchModeLabel(mode: KnowledgeResearchMode): string {
   switch (mode) {
     case "current_article_only":
@@ -3454,15 +3436,6 @@ function researchStatusLabel(status: string): string {
     planned: "已规划",
     planned_web: "已规划联网",
     skipped_web: "跳过联网",
-  };
-  return labels[status] ?? status;
-}
-
-function researchEvidenceStatusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    sufficient: "充分",
-    limited: "有限",
-    insufficient: "不足",
   };
   return labels[status] ?? status;
 }
