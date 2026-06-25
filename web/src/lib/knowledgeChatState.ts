@@ -14,7 +14,9 @@ export interface KnowledgeMessage {
 
 export interface KnowledgeSourceHint {
   id: string;
+  sourceId?: string;
   label: string;
+  ref?: string;
   url?: string;
   origin: "answer" | "tool";
   excerpt?: string;
@@ -57,7 +59,12 @@ export type KnowledgeChatAction =
       error?: string;
       inlineDiff?: string;
     }
-  | { type: "hydrate_messages"; messages: KnowledgeMessage[] }
+  | {
+      type: "hydrate_messages";
+      messages: KnowledgeMessage[];
+      tools?: ToolEntry[];
+      toolSummaries?: string[];
+    }
   | { type: "clear_messages" }
   | { type: "error"; message: string }
   | { type: "reset_error" };
@@ -241,12 +248,17 @@ export function knowledgeChatReducer(
       const lastAssistant = [...action.messages]
         .reverse()
         .find((message) => message.role === "assistant");
+      const toolSummaries = action.toolSummaries ??
+        (action.tools ?? [])
+          .map((tool) => tool.summary)
+          .filter((summary): summary is string => Boolean(summary));
       return {
         ...state,
         running: false,
         draftAssistant: null,
         messages: action.messages,
-        sourceHints: extractSourceHints(lastAssistant?.text ?? ""),
+        tools: action.tools ?? state.tools,
+        sourceHints: extractSourceHints(lastAssistant?.text ?? "", toolSummaries),
       };
     }
 
@@ -277,8 +289,10 @@ export function extractSourceHints(
   const hints: KnowledgeSourceHint[] = [];
 
   // Structured sources first (highest confidence)
+  collectEnvelopeSources(answerText, "answer", hints);
   collectStructuredSources(answerText, "answer", hints);
   for (const summary of toolSummaries) {
+    collectEnvelopeSources(summary, "tool", hints);
     collectStructuredSources(summary, "tool", hints);
   }
 
@@ -286,12 +300,6 @@ export function extractSourceHints(
   collectSourceLines(answerText, "answer", hints);
   collectLinks(answerText, "answer", hints);
   collectBracketSources(answerText, "answer", hints);
-
-  for (const summary of toolSummaries) {
-    collectSourceLines(summary, "tool", hints);
-    collectLinks(summary, "tool", hints);
-    collectBracketSources(summary, "tool", hints);
-  }
 
   const seen = new Set<string>();
   const deduped: KnowledgeSourceHint[] = [];
@@ -364,6 +372,104 @@ function collectBracketSources(
   for (const match of text.matchAll(citationLine)) {
     hints.push({ id: "", label: `[${match[1]}] ${match[2].trim()}`, origin });
   }
+}
+
+function collectEnvelopeSources(
+  text: string,
+  origin: KnowledgeSourceHint["origin"],
+  hints: KnowledgeSourceHint[],
+) {
+  for (const payload of extractStructuredPayloads(text)) {
+    const sources = Array.isArray(payload.source_map)
+      ? payload.source_map
+      : Array.isArray(payload.sources)
+        ? payload.sources
+        : [];
+    for (const source of sources) {
+      if (!source || typeof source !== "object") continue;
+      const record = source as Record<string, unknown>;
+      const title = stringField(record.title) || stringField(record.label) || stringField(record.id);
+      if (!title) continue;
+      const section = stringField(record.section);
+      const label = section ? `${title} / ${section}` : title;
+      hints.push({
+        id: "",
+        sourceId: stringField(record.id) || stringField(record.url) || undefined,
+        label,
+        ref: stringField(record.ref) || undefined,
+        origin,
+        filePath: stringField(record.path) || undefined,
+        url: stringField(record.url) || undefined,
+        excerpt: stringField(record.excerpt) || undefined,
+        sourceType: stringField(record.type) || undefined,
+      });
+    }
+  }
+}
+
+function extractStructuredPayloads(text: string): Array<Record<string, unknown>> {
+  const payloads: Array<Record<string, unknown>> = [];
+  const marker = "STRUCTURED_AGENT_RESULT_DO_NOT_REWRITE:";
+  const markerIndex = text.indexOf(marker);
+  if (markerIndex >= 0) {
+    const afterMarker = text.slice(markerIndex + marker.length).trim();
+    const parsed = parseJsonObjectPrefix(afterMarker);
+    if (parsed) payloads.push(parsed);
+  }
+
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{")) {
+    const parsed = parseJsonObjectPrefix(trimmed);
+    if (parsed) payloads.push(parsed);
+  }
+  return payloads;
+}
+
+function parseJsonObjectPrefix(text: string): Record<string, unknown> | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let end = -1;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth++;
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+
+  if (end < 0) return null;
+  try {
+    const parsed = JSON.parse(text.slice(0, end));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 /**

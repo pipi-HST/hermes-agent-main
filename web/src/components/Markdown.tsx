@@ -53,6 +53,7 @@ type BlockNode =
   | { type: "code"; lang: string; content: string }
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
+  | { type: "quote"; content: string }
   | { type: "table"; headers: string[]; rows: string[][] }
   | { type: "list"; ordered: boolean; items: string[] }
   | { type: "paragraph"; content: string };
@@ -127,6 +128,17 @@ function parseBlocks(text: string): BlockNode[] {
       continue;
     }
 
+    // Block quote
+    if (/^>\s?/.test(line)) {
+      const quoteLines: string[] = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        quoteLines.push(lines[i].replace(/^>\s?/, ""));
+        i++;
+      }
+      blocks.push({ type: "quote", content: quoteLines.join("\n") });
+      continue;
+    }
+
     // Unordered list
     if (/^[-*+]\s/.test(line)) {
       const items: string[] = [];
@@ -162,6 +174,7 @@ function parseBlocks(text: string): BlockNode[] {
       lines[i].trim() !== "" &&
       !lines[i].match(/^```/) &&
       !lines[i].match(/^#{1,4}\s/) &&
+      !lines[i].match(/^>\s?/) &&
       !lines[i].match(/^[-*+]\s/) &&
       !lines[i].match(/^\d+[.)]\s/) &&
       !lines[i].match(/^[-*_]{3,}\s*$/) &&
@@ -224,6 +237,14 @@ function Block({
           <hr className="border-border" />
           {caret}
         </>
+      );
+
+    case "quote":
+      return (
+        <blockquote className="border-l-2 border-primary/35 bg-primary/5 px-3 py-2 text-sm text-muted-foreground">
+          <InlineContent text={block.content} highlightTerms={highlightTerms} />
+          {caret}
+        </blockquote>
       );
 
     case "table": {
