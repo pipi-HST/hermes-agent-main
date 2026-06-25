@@ -2953,7 +2953,7 @@ function ArticleAssistantAnswer({
           <Markdown content={stripTrailingReferenceSection(content)} />
         )}
       </div>
-      {!message.pending ? <ArticleSourceList content={content} sources={message.sources} warnings={message.warnings} /> : null}
+      {!message.pending ? <ArticleSourceList content={content} sources={message.sources} /> : null}
     </div>
   );
 }
@@ -3242,19 +3242,17 @@ function ResearchAuditDetails({
 function ArticleSourceList({
   content,
   sources,
-  warnings,
 }: {
   content: string;
   sources?: {
     knowledge?: KnowledgeResearchSource[];
     web?: KnowledgeResearchSource[];
   };
-  warnings?: string[];
 }) {
   const citedRefs = sourceRefsFromContent(content);
   const knowledge = (sources?.knowledge ?? []).filter((source) => citedRefs.has((source.ref || "").toUpperCase()));
   const web = (sources?.web ?? []).filter((source) => citedRefs.has((source.ref || "").toUpperCase()));
-  if (!knowledge.length && !web.length && !warnings?.length) return null;
+  if (!knowledge.length && !web.length) return null;
   return (
     <div className="mt-3 rounded-md border border-border bg-background/60 px-2 py-2 text-xs text-muted-foreground">
       {knowledge.length || web.length ? (
@@ -3284,11 +3282,6 @@ function ArticleSourceList({
               </li>
             ))}
           </ul>
-        </div>
-      ) : null}
-      {warnings?.length ? (
-        <div className="mt-2 space-y-1 text-warning">
-          {warnings.map((warning) => <div key={warning}>{warning}</div>)}
         </div>
       ) : null}
     </div>
