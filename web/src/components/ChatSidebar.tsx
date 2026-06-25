@@ -222,17 +222,34 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         );
       } else if (type === "tool.progress") {
         const p = payload as
-          | { name?: string; preview?: string }
+          | { name?: string; preview?: string; stage?: string; status?: string }
           | undefined;
 
         if (!p?.name || !p.preview) {
           return;
         }
 
+        const name = p.name;
+        const preview = p.preview;
+        const stage = p.stage;
+        const status = p.status;
+
         setTools((prev) =>
           prev.map((t) =>
-            t.status === "running" && t.name === p.name
-              ? { ...t, preview: p.preview }
+            t.status === "running" && t.name === name
+              ? {
+                  ...t,
+                  preview,
+                  progressEvents: [
+                    ...(t.progressEvents ?? []),
+                    {
+                      preview,
+                      stage,
+                      status,
+                      at: Date.now(),
+                    },
+                  ].slice(-20),
+                }
               : t,
           ),
         );
