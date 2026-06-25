@@ -64,6 +64,11 @@ web/public/ds-assets/
 .release_notes.md
 mini-swe-agent/
 
+# Local Playwright/smoke artifacts
+.playwright-cli/
+web/.playwright-cli/
+web/output/
+
 # Nix
 .direnv/
 .nix-stamps/
