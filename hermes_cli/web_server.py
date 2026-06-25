@@ -6035,20 +6035,13 @@ async def post_knowledge_library_item_selection_chat(
     try:
         research_bridge = _knowledge_custom_module("bridge.research_bridge", "Research bridge")
         async_answer = getattr(research_bridge, "async_web_assist_answer", None)
-        if not callable(async_answer):
-            async_answer = getattr(research_bridge, "async_light_web_answer", None)
-        if not callable(async_answer):
-            async_answer = getattr(research_bridge, "async_research_answer", None)
         if callable(async_answer):
             result = await async_answer(**research_kwargs)
         else:
-            light_answer = getattr(research_bridge, "web_assist_answer", None)
-            if not callable(light_answer):
-                light_answer = getattr(research_bridge, "light_web_answer", None)
-            if callable(light_answer):
-                result = light_answer(**research_kwargs)
-            else:
-                result = research_bridge.research_answer(**research_kwargs)
+            sync_answer = getattr(research_bridge, "web_assist_answer", None)
+            if not callable(sync_answer):
+                raise HTTPException(status_code=503, detail="Web assist answer is unavailable")
+            result = sync_answer(**research_kwargs)
     except HTTPException:
         raise
     except Exception as exc:
@@ -6077,20 +6070,13 @@ async def post_knowledge_library_item_selection_chat_stream(
             try:
                 research_bridge = _knowledge_custom_module("bridge.research_bridge", "Research bridge")
                 async_answer = getattr(research_bridge, "async_web_assist_answer", None)
-                if not callable(async_answer):
-                    async_answer = getattr(research_bridge, "async_light_web_answer", None)
-                if not callable(async_answer):
-                    async_answer = getattr(research_bridge, "async_research_answer", None)
                 if callable(async_answer):
                     result = await async_answer(**research_kwargs, event_callback=on_event)
                 else:
-                    light_answer = getattr(research_bridge, "web_assist_answer", None)
-                    if not callable(light_answer):
-                        light_answer = getattr(research_bridge, "light_web_answer", None)
-                    if callable(light_answer):
-                        result = await asyncio.to_thread(light_answer, **research_kwargs)
-                    else:
-                        result = await asyncio.to_thread(research_bridge.research_answer, **research_kwargs)
+                    sync_answer = getattr(research_bridge, "web_assist_answer", None)
+                    if not callable(sync_answer):
+                        raise HTTPException(status_code=503, detail="Web assist answer is unavailable")
+                    result = await asyncio.to_thread(sync_answer, **research_kwargs)
                 await queue.put({"event": "complete", "response": _knowledge_library_selection_chat_response(result, body)})
             except HTTPException as exc:
                 await queue.put({"event": "error", "message": exc.detail})

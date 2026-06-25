@@ -271,7 +271,7 @@ class TestWebServerEndpoints:
 
         called = {}
 
-        async def fake_async_research_answer(**kwargs):
+        async def fake_async_web_assist_answer(**kwargs):
             called.update(kwargs)
             return {
                 "status": "success",
@@ -293,8 +293,7 @@ class TestWebServerEndpoints:
                 },
             }
 
-        monkeypatch.setattr(research_bridge, "async_light_web_answer", fake_async_research_answer, raising=False)
-        monkeypatch.setattr(research_bridge, "async_research_answer", fake_async_research_answer)
+        monkeypatch.setattr(research_bridge, "async_web_assist_answer", fake_async_web_assist_answer, raising=False)
 
         resp = self.client.post(
             "/api/knowledge/library/items/capture_draft/draft-chat-1/selection-chat",
@@ -364,7 +363,7 @@ class TestWebServerEndpoints:
 
         import bridge.research_bridge as research_bridge
 
-        async def fake_async_research_answer(**kwargs):
+        async def fake_async_web_assist_answer(**kwargs):
             event_callback = kwargs.get("event_callback")
             assert event_callback is not None
             await event_callback(
@@ -414,8 +413,7 @@ class TestWebServerEndpoints:
                 },
             }
 
-        monkeypatch.setattr(research_bridge, "async_light_web_answer", fake_async_research_answer, raising=False)
-        monkeypatch.setattr(research_bridge, "async_research_answer", fake_async_research_answer)
+        monkeypatch.setattr(research_bridge, "async_web_assist_answer", fake_async_web_assist_answer, raising=False)
 
         resp = self.client.post(
             "/api/knowledge/library/items/capture_draft/draft-stream-1/selection-chat/stream",
@@ -849,12 +847,12 @@ class TestWebServerEndpoints:
         monkeypatch.setenv("HERMES_KNOWLEDGE_DB", str(db_path))
         calls = {}
 
-        def fake_research_answer(**kwargs):
+        def fake_web_assist_answer(**kwargs):
             calls.update(kwargs)
             return {
                 "status": "success",
                 "agent": "research",
-                "intent": "research_answer",
+                "intent": "web_assist_answer",
                 "chat_preview": "这是结合上下文的解释。",
                 "durable_artifacts": [],
                 "source_map": [],
@@ -874,7 +872,7 @@ class TestWebServerEndpoints:
             }
 
         fake_module = types.ModuleType("bridge.research_bridge")
-        fake_module.research_answer = fake_research_answer
+        fake_module.web_assist_answer = fake_web_assist_answer
         monkeypatch.setitem(sys.modules, "bridge.research_bridge", fake_module)
 
         response = self.client.post(
@@ -956,12 +954,12 @@ class TestWebServerEndpoints:
         monkeypatch.setenv("HERMES_KNOWLEDGE_DB", str(db_path))
         calls = {}
 
-        def fake_research_answer(**kwargs):
+        def fake_web_assist_answer(**kwargs):
             calls.update(kwargs)
             return {
                 "status": "success",
                 "agent": "research",
-                "intent": "research_answer",
+                "intent": "web_assist_answer",
                 "chat_preview": "草稿整体回答。",
                 "durable_artifacts": [],
                 "source_map": [],
@@ -976,7 +974,7 @@ class TestWebServerEndpoints:
             }
 
         fake_module = types.ModuleType("bridge.research_bridge")
-        fake_module.research_answer = fake_research_answer
+        fake_module.web_assist_answer = fake_web_assist_answer
         monkeypatch.setitem(sys.modules, "bridge.research_bridge", fake_module)
 
         response = self.client.post(
