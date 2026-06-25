@@ -2950,10 +2950,7 @@ function ArticleAssistantAnswer({
       <div className="[&_a]:break-words [&_pre]:max-w-full">
         <ArticleResearchProcess message={message} />
         {message.pending ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            {content}
-          </div>
+          <div className="text-sm leading-6 text-muted-foreground">正在整理回答...</div>
         ) : (
           <Markdown content={stripTrailingReferenceSection(content)} sources={citationSources} />
         )}
@@ -3020,10 +3017,17 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
   if (!shouldRender) return null;
 
   return (
-    <div className="mb-3 rounded-md border border-border/80 bg-background/70 px-2.5 py-2 text-xs text-muted-foreground">
+    <div className="mb-3 border-b border-border/60 pb-2 text-xs text-muted-foreground">
       <div className="flex min-w-0 items-center gap-2">
-        {message.pending ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" /> : <Search className="h-3.5 w-3.5 shrink-0" />}
-        <div className="min-w-0 truncate font-medium text-foreground">{summaryText}</div>
+        {message.pending ? (
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+        ) : (
+          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <div className="min-w-0 flex-1 truncate font-medium text-foreground">{summaryText}</div>
+        <div className="hidden shrink-0 text-[0.68rem] text-muted-foreground sm:block">
+          {currentStage || researchStatusLabel(status) || webStatus}
+        </div>
       </div>
       <ResearchCompactSources sources={evidenceSources} />
       <ResearchAuditDetails
@@ -3037,7 +3041,6 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
           <ResearchProgress
             currentStage={currentStage}
             mode={message.mode}
-            pending={Boolean(message.pending)}
             status={status}
             webStatus={webStatus}
           />
@@ -3050,11 +3053,18 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
 
 const ResearchCompactSources = memo(function ResearchCompactSources({ sources }: { sources: KnowledgeResearchSource[] }) {
   if (!sources.length) return null;
+  const visibleSources = sources.slice(0, 3);
+  const hiddenCount = Math.max(0, sources.length - visibleSources.length);
   return (
     <div className="mt-1.5 flex flex-wrap gap-1">
-      {sources.slice(0, 3).map((source, index) => (
+      {visibleSources.map((source, index) => (
         <SourceChip key={source.url || source.ref || `${source.title}-${index}`} source={source} />
       ))}
+      {hiddenCount ? (
+        <span className="inline-flex items-center rounded border border-border/70 px-1.5 py-0.5 text-[0.68rem] text-muted-foreground">
+          +{hiddenCount}
+        </span>
+      ) : null}
     </div>
   );
 });
@@ -3068,7 +3078,7 @@ function SourceChip({ source }: { source: KnowledgeResearchSource }) {
       {source.url ? <span className="shrink-0 text-muted-foreground">· {hostLabel(source.url)}</span> : null}
     </>
   );
-  const className = "inline-flex max-w-full items-center gap-1 rounded border border-border bg-background/70 px-1.5 py-0.5 text-[0.68rem] text-foreground";
+  const className = "inline-flex max-w-full items-center gap-1 rounded border border-border/70 bg-background/40 px-1.5 py-0.5 text-[0.68rem] text-foreground";
   if (source.url) {
     return (
       <a href={source.url} target="_blank" rel="noreferrer" className={cn(className, "hover:border-primary/30")}>
@@ -3119,36 +3129,23 @@ function ResearchTimeline({
 function ResearchProgress({
   currentStage,
   mode,
-  pending,
   status,
   webStatus,
 }: {
   currentStage: string;
   mode?: KnowledgeResearchMode;
-  pending: boolean;
   status: string;
   webStatus: string;
 }) {
+  const currentText = currentStage || researchStatusLabel(status) || webStatus;
   return (
-    <div>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 font-medium text-foreground">
-          {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" /> : <Search className="h-3.5 w-3.5" />}
-          检索过程
-        </div>
-        <div className="truncate text-[0.68rem] text-muted-foreground">
-          {mode ? researchModeLabel(mode) : ""}
-        </div>
+    <div className="flex min-w-0 items-center justify-between gap-2 text-[0.72rem]">
+      <div className="min-w-0 truncate">
+        <span className="text-muted-foreground">当前：</span>
+        <span className="text-foreground">{currentText}</span>
       </div>
-      <div className="mt-2 grid grid-cols-5 overflow-hidden rounded border border-border bg-background/70 text-center text-[0.68rem]">
-        {["规划", "本地", "搜网页", "筛来源", "生成"].map((stage) => (
-          <span key={stage} className="border-r border-border/70 px-1 py-1 last:border-r-0">
-            {stage}
-          </span>
-        ))}
-      </div>
-      <div className="mt-1.5 truncate text-[0.72rem] text-muted-foreground">
-        {currentStage || researchStatusLabel(status) || webStatus}
+      <div className="shrink-0 text-muted-foreground">
+        {mode ? researchModeLabel(mode) : ""}
       </div>
     </div>
   );
@@ -3214,8 +3211,11 @@ function ResearchAuditDetails({
   const hasDetails = queries.length || candidateSources.length || clueSources.length || rejectedSources.length || providerStatus.length || warnings.length || timelineEvents.length;
   if (!hasDetails) return null;
   return (
-    <details className="mt-2">
-      <summary className="cursor-pointer text-[0.72rem] text-muted-foreground hover:text-foreground">检索详情</summary>
+    <details className="mt-1.5">
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-[0.72rem] text-muted-foreground hover:text-foreground">
+        详情
+        <ChevronDown className="h-3 w-3" />
+      </summary>
       <div className="mt-2 border-t border-border/60 pt-2">
         {progress}
         <ResearchTimeline events={timelineEvents} pending={false} />
