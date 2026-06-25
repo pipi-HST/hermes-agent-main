@@ -136,6 +136,18 @@ function parseBlocks(text: string): BlockNode[] {
       continue;
     }
 
+    // Streaming output can expose a table header before the separator arrives.
+    // Treat incomplete pipe rows as text so the parser always advances.
+    if (line.startsWith("|")) {
+      const pipeLines: string[] = [];
+      while (i < lines.length && lines[i].startsWith("|")) {
+        pipeLines.push(lines[i]);
+        i++;
+      }
+      blocks.push({ type: "paragraph", content: pipeLines.join("\n") });
+      continue;
+    }
+
     // Horizontal rule
     if (/^[-*_]{3,}\s*$/.test(line)) {
       blocks.push({ type: "hr" });

@@ -934,6 +934,31 @@ export default function KnowledgeLibraryPage() {
         mode: requestMode,
       };
     let sawProgressEvent = false;
+    let answerDeltaBuffer = "";
+    let answerDeltaFlushTimer: ReturnType<typeof window.setTimeout> | null = null;
+    const flushAnswerDeltas = () => {
+      if (answerDeltaFlushTimer) {
+        window.clearTimeout(answerDeltaFlushTimer);
+        answerDeltaFlushTimer = null;
+      }
+      if (!answerDeltaBuffer) return;
+      const delta = answerDeltaBuffer;
+      answerDeltaBuffer = "";
+      const mergedEvent: KnowledgeLibrarySelectionChatStreamEvent = {
+        event: "progress",
+        type: "answer_delta",
+        delta,
+      };
+      setChatMessages((messages) =>
+        messages.map((message) =>
+          message.id === assistantId ? applySelectionChatStreamEvent(message, mergedEvent, requestMode) : message,
+        ),
+      );
+    };
+    const scheduleAnswerDeltaFlush = () => {
+      if (answerDeltaFlushTimer) return;
+      answerDeltaFlushTimer = window.setTimeout(flushAnswerDeltas, 80);
+    };
     const streamController = new AbortController();
     chatStreamAbortRef.current = streamController;
     try {
@@ -945,6 +970,12 @@ export default function KnowledgeLibraryPage() {
           if (event.event === "progress") {
             sawProgressEvent = true;
           }
+          if (event.event === "progress" && event.type === "answer_delta") {
+            answerDeltaBuffer += event.delta || "";
+            scheduleAnswerDeltaFlush();
+            return;
+          }
+          flushAnswerDeltas();
           setChatMessages((messages) =>
             messages.map((message) =>
               message.id === assistantId ? applySelectionChatStreamEvent(message, event, requestMode) : message,
@@ -953,6 +984,7 @@ export default function KnowledgeLibraryPage() {
         },
         streamController.signal,
       );
+      flushAnswerDeltas();
       const assistantMessage: ArticleChatMessage = {
         id: assistantId,
         role: "assistant",
@@ -1012,6 +1044,7 @@ export default function KnowledgeLibraryPage() {
         );
       }
     } finally {
+      flushAnswerDeltas();
       if (chatStreamAbortRef.current === streamController) {
         chatStreamAbortRef.current = null;
       }
@@ -2510,6 +2543,11 @@ function applySelectionChatStreamEvent(
   };
   let content = message.content;
   let warnings = message.warnings || [];
+  const setProgressContent = (nextContent: string) => {
+    if (!trace.answer_streaming) {
+      content = nextContent;
+    }
+  };
 
   if (event.event === "start") {
     return message;
@@ -2518,7 +2556,7 @@ function applySelectionChatStreamEvent(
   switch (event.type) {
     case "planning_start":
       providerStatus.stage = "正在规划检索";
-      content = webResearchMode(mode) ? "正在规划联网检索..." : "正在规划回答路径...";
+      setProgressContent(webResearchMode(mode) ? "正在规划联网检索..." : "正在规划回答路径...");
       break;
     case "plan":
       trace.plan_status = event.plan_status || trace.plan_status;
@@ -2526,44 +2564,44 @@ function applySelectionChatStreamEvent(
       trace.web_queries = event.queries || trace.web_queries || [];
       trace.query_intent = event.intent_label || trace.query_intent;
       providerStatus.stage = event.needs_web ? "已规划联网查询" : "已规划本地回答";
-      content = event.needs_web ? "已规划联网查询，准备检索公开网页..." : "已规划回答路径，准备检索本地材料...";
+      setProgressContent(event.needs_web ? "已规划联网查询，准备检索公开网页..." : "已规划回答路径，准备检索本地材料...");
       break;
     case "queries_ready":
       trace.web_queries = event.queries || trace.web_queries || [];
       trace.query_count = event.query_count ?? trace.web_queries.length;
       providerStatus.stage = "正在搜索网页";
-      content = "正在搜索网页...";
+      setProgressContent("正在搜索网页...");
       break;
     case "local_search_start":
       providerStatus.stage = "正在检索本地知识库";
-      content = "正在检索本地知识库...";
+      setProgressContent("正在检索本地知识库...");
       break;
     case "local_search_done":
       trace.knowledge_sources = mergeResearchSources(trace.knowledge_sources, event.knowledge_sources);
       providerStatus.stage = "本地知识库检索完成";
-      content = "本地知识库检索完成，继续整理证据...";
+      setProgressContent("本地知识库检索完成，继续整理证据...");
       break;
     case "web_search_start":
       trace.web_search_attempted = true;
       trace.web_queries = event.queries || trace.web_queries || [];
       providerStatus.stage = "正在发起联网搜索";
-      content = "正在发起联网搜索...";
+      setProgressContent("正在发起联网搜索...");
       break;
     case "web_query_start":
       trace.web_search_attempted = true;
       providerStatus.stage = event.query ? `正在搜索：${event.query}` : "正在搜索网页";
-      content = event.query ? `正在搜索：${event.query}` : "正在搜索网页...";
+      setProgressContent(event.query ? `正在搜索：${event.query}` : "正在搜索网页...");
       break;
     case "web_query_done":
       trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.web_sources);
       trace.candidate_count = event.candidate_count ?? trace.candidate_sources.length;
       providerStatus.stage = event.query ? `已完成搜索：${event.query}` : "网页搜索完成";
-      content = `已找到 ${event.result_count ?? event.web_sources?.length ?? 0} 个候选网页，正在筛选来源...`;
+      setProgressContent(`已找到 ${event.result_count ?? event.web_sources?.length ?? 0} 个候选网页，正在筛选来源...`);
       break;
     case "web_query_error":
       providerStatus.stage = event.error || "部分搜索失败";
       warnings = uniqueStrings([...warnings, event.error || "部分搜索失败"]);
-      content = "部分搜索失败，正在使用可用结果继续...";
+      setProgressContent("部分搜索失败，正在使用可用结果继续...");
       break;
     case "web_ranked":
       trace.search_quality = event.search_quality || trace.search_quality;
@@ -2571,7 +2609,7 @@ function applySelectionChatStreamEvent(
       trace.candidate_count = event.candidate_count ?? trace.candidate_count ?? trace.candidate_sources.length;
       trace.rewritten_web_queries = event.rewritten_queries || trace.rewritten_web_queries || [];
       providerStatus.stage = "已筛选候选来源";
-      content = "已筛选候选来源，准备整理网页资料...";
+      setProgressContent("已筛选候选来源，准备整理网页资料...");
       break;
     case "materials_selected":
       trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.web_sources);
@@ -2579,37 +2617,37 @@ function applySelectionChatStreamEvent(
       trace.material_count = event.material_count ?? trace.material_count;
       trace.opened_pages = event.opened_pages ?? trace.opened_pages;
       providerStatus.stage = event.opened_pages ? "正在阅读网页" : "正在整理搜索摘要";
-      content = event.opened_pages ? "正在阅读网页..." : "正在整理搜索摘要...";
+      setProgressContent(event.opened_pages ? "正在阅读网页..." : "正在整理搜索摘要...");
       break;
     case "web_classified":
       trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.candidate_sources);
       trace.clue_sources = mergeResearchSources(trace.clue_sources, event.clue_sources);
       trace.rejected_sources = mergeResearchSources(trace.rejected_sources, event.rejected_sources);
       providerStatus.stage = "已完成来源分层";
-      content = "已区分采用依据、线索来源和未采用来源...";
+      setProgressContent("已区分采用依据、线索来源和未采用来源...");
       break;
     case "web_rewrite_start":
       trace.rewritten_web_queries = event.queries || trace.rewritten_web_queries || [];
       providerStatus.stage = "正在改写搜索词";
-      content = "搜索结果质量不足，正在改写搜索词...";
+      setProgressContent("搜索结果质量不足，正在改写搜索词...");
       break;
     case "web_fallback_start":
       providerStatus.stage = event.backend ? `正在补充搜索：${event.backend}` : "正在补充搜索";
       providerStatus.fallback_reason = event.reason || providerStatus.fallback_reason;
-      content = event.backend ? `正在通过 ${event.backend} 补充搜索...` : "正在补充搜索...";
+      setProgressContent(event.backend ? `正在通过 ${event.backend} 补充搜索...` : "正在补充搜索...");
       break;
     case "web_fallback_done":
       trace.search_quality = event.search_quality || trace.search_quality;
       trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.web_sources);
       providerStatus.stage = event.backend ? `补充搜索完成：${event.backend}` : "补充搜索完成";
       providerStatus.fallback_last = event.backend || providerStatus.fallback_last;
-      content = `补充搜索找到 ${event.result_count ?? event.web_sources?.length ?? 0} 个候选网页，继续筛选...`;
+      setProgressContent(`补充搜索找到 ${event.result_count ?? event.web_sources?.length ?? 0} 个候选网页，继续筛选...`);
       break;
     case "web_extract_start":
       trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.web_sources);
       trace.opened_pages = event.opened_pages ?? trace.opened_pages;
       providerStatus.stage = "正在整理网页资料";
-      content = "正在整理网页来源和可用摘要...";
+      setProgressContent("正在整理网页来源和可用摘要...");
       break;
     case "web_extract_done":
       trace.provider_status = event.provider_status || trace.provider_status;
@@ -2621,19 +2659,19 @@ function applySelectionChatStreamEvent(
       trace.extracted_pages = event.extracted_pages ?? trace.extracted_pages;
       trace.summary_only_pages = event.summary_only_pages ?? trace.summary_only_pages;
       providerStatus.stage = "网页资料整理完成";
-      content = "网页资料整理完成，正在组织回答...";
+      setProgressContent("网页资料整理完成，正在组织回答...");
       break;
     case "web_critic_start":
       trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.web_sources);
       providerStatus.stage = "正在核验证据是否支撑回答";
-      content = "正在核验证据是否支撑回答...";
+      setProgressContent("正在核验证据是否支撑回答...");
       break;
     case "web_critic_done":
       trace.web_sources = mergeResearchSources(trace.web_sources, event.web_sources);
       trace.evidence_sources = mergeResearchSources(trace.evidence_sources, event.evidence_sources || event.web_sources);
       trace.rejected_sources = mergeResearchSources(trace.rejected_sources, event.rejected_sources);
       providerStatus.stage = "证据核验完成";
-      content = "证据核验完成，正在组织回答...";
+      setProgressContent("证据核验完成，正在组织回答...");
       break;
     case "synthesis_start":
       providerStatus.stage = "正在生成答案";
@@ -2711,6 +2749,9 @@ function ArticleAssistantAnswer({
     [message.sources],
   );
   const streamingAnswer = Boolean(message.pending && message.researchTrace?.answer_streaming && content.trim());
+  const showPendingPlaceholder = Boolean(
+    message.pending && !streamingAnswer && !message.researchTrace?.web_search_attempted,
+  );
 
   const copyAnswer = useCallback(async () => {
     if (!content.trim()) return;
@@ -2755,11 +2796,9 @@ function ArticleAssistantAnswer({
       ) : null}
       <div className="[&_a]:break-words [&_pre]:max-w-full">
         <ArticleResearchProcess message={message} />
-        {message.pending && !streamingAnswer ? (
+        {showPendingPlaceholder ? (
           <div className="text-sm leading-6 text-muted-foreground">正在整理回答...</div>
-        ) : message.pending ? (
-          <Markdown content={stripTrailingReferenceSection(content)} sources={citationSources} />
-        ) : (
+        ) : message.pending && !streamingAnswer ? null : (
           <Markdown content={stripTrailingReferenceSection(content)} sources={citationSources} />
         )}
       </div>
