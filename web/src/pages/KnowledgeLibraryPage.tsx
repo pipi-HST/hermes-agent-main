@@ -26,6 +26,7 @@ import {
   FolderPlus,
   Inbox,
   Layers3,
+  Link2,
   Loader2,
   MoreHorizontal,
   NotebookPen,
@@ -2900,6 +2901,10 @@ function ArticleAssistantAnswer({
   onSave: (message: ArticleChatMessage, outputType: "local_learning_note" | "knowledge_card") => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const citationSources = useMemo(
+    () => [...(message.sources?.knowledge ?? []), ...(message.sources?.web ?? [])],
+    [message.sources],
+  );
 
   const copyAnswer = useCallback(async () => {
     if (!content.trim()) return;
@@ -2950,7 +2955,7 @@ function ArticleAssistantAnswer({
             {content}
           </div>
         ) : (
-          <Markdown content={stripTrailingReferenceSection(content)} />
+          <Markdown content={stripTrailingReferenceSection(content)} sources={citationSources} />
         )}
       </div>
       {!message.pending ? <ArticleSourceList content={content} sources={message.sources} /> : null}
@@ -3046,16 +3051,33 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
 const ResearchCompactSources = memo(function ResearchCompactSources({ sources }: { sources: KnowledgeResearchSource[] }) {
   if (!sources.length) return null;
   return (
-    <div className="mt-1.5 space-y-1">
+    <div className="mt-1.5 flex flex-wrap gap-1">
       {sources.slice(0, 3).map((source, index) => (
-        <div key={source.url || source.ref || `${source.title}-${index}`} className="truncate">
-          <span className="text-foreground">{source.ref ? `[${source.ref}] ` : ""}{source.title || source.url || "未命名网页"}</span>
-          {source.url ? <span className="ml-1 text-muted-foreground">· {hostLabel(source.url)}</span> : null}
-        </div>
+        <SourceChip key={source.url || source.ref || `${source.title}-${index}`} source={source} />
       ))}
     </div>
   );
 });
+
+function SourceChip({ source }: { source: KnowledgeResearchSource }) {
+  const text = source.title || source.url || source.id || "引用来源";
+  const chip = (
+    <>
+      <Link2 className="h-3 w-3 shrink-0" />
+      <span className="truncate">{text}</span>
+      {source.url ? <span className="shrink-0 text-muted-foreground">· {hostLabel(source.url)}</span> : null}
+    </>
+  );
+  const className = "inline-flex max-w-full items-center gap-1 rounded border border-border bg-background/70 px-1.5 py-0.5 text-[0.68rem] text-foreground";
+  if (source.url) {
+    return (
+      <a href={source.url} target="_blank" rel="noreferrer" className={cn(className, "hover:border-primary/30")}>
+        {chip}
+      </a>
+    );
+  }
+  return <span className={className}>{chip}</span>;
+}
 
 function ResearchTimeline({
   events,
@@ -3252,39 +3274,42 @@ function ArticleSourceList({
   const citedRefs = sourceRefsFromContent(content);
   const knowledge = (sources?.knowledge ?? []).filter((source) => citedRefs.has((source.ref || "").toUpperCase()));
   const web = (sources?.web ?? []).filter((source) => citedRefs.has((source.ref || "").toUpperCase()));
-  if (!knowledge.length && !web.length) return null;
+  const allSources = [...knowledge, ...web];
+  if (!allSources.length) return null;
+  const label = allSources.length > 1 ? `${allSources.length} 个引用来源` : "引用来源";
   return (
-    <div className="mt-3 rounded-md border border-border bg-background/60 px-2 py-2 text-xs text-muted-foreground">
-      {knowledge.length || web.length ? (
-        <div className="font-medium text-foreground">参考来源</div>
-      ) : null}
-      {knowledge.length ? (
-        <div className="mt-1">
-          <div className="font-medium text-foreground">本地知识库</div>
-          <ul className="mt-1 space-y-1">
-            {knowledge.map((source, index) => (
-              <li key={`${source.ref || index}-${source.id || source.title}`}>
-                [{source.ref || `K${index + 1}`}] {source.title || source.id || "未命名来源"}
-                {source.section ? ` / ${source.section}` : ""}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {web.length ? (
-        <div className={knowledge.length ? "mt-2" : ""}>
-          <div className="font-medium text-foreground">联网资料</div>
-          <ul className="mt-1 space-y-1">
-            {web.map((source, index) => (
-              <li key={`${source.ref || index}-${source.url || source.title}`} className="break-words">
-                [{source.ref || `W${index + 1}`}] {source.title || source.url || "未命名网页"}
-                {source.url ? ` ${source.url}` : ""}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-    </div>
+    <details className="mt-3 text-xs text-muted-foreground">
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded border border-border bg-background/60 px-2 py-1.5 font-medium text-foreground hover:border-primary/30">
+        <Link2 className="h-3.5 w-3.5" />
+        {label}
+      </summary>
+      <div className="mt-2 rounded-md border border-border bg-background/60 px-2 py-2">
+        <ul className="space-y-1">
+          {allSources.map((source, index) => (
+            <li key={`${source.ref || index}-${source.url || source.id || source.title}`} className="break-words">
+              <SourceLink source={source} fallbackRef={source.ref || `${index + 1}`} />
+            </li>
+          ))}
+        </ul>
+      </div>
+    </details>
+  );
+}
+
+function SourceLink({ source, fallbackRef }: { source: KnowledgeResearchSource; fallbackRef: string }) {
+  const label = source.title || source.id || source.url || "未命名来源";
+  const suffix = source.section ? ` / ${source.section}` : source.url ? ` · ${hostLabel(source.url)}` : "";
+  if (source.url) {
+    return (
+      <a href={source.url} target="_blank" rel="noreferrer" className="text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary/60">
+        [{source.ref || fallbackRef}] {label}{suffix}
+      </a>
+    );
+  }
+  return (
+    <span>
+      [{source.ref || fallbackRef}] {label}{suffix}
+    </span>
   );
 }
 
@@ -3336,7 +3361,7 @@ function researchSummaryText({
   }
   const scope = webSearchAttempted || webResearchMode(mode) ? "联网搜索完成" : researchModeLabel(mode || "current_article_only");
   const parts = [scope];
-  if (sourceCount) parts.push(`${sourceCount} 个来源`);
+  if (sourceCount) parts.push(`${sourceCount} 个引用来源`);
   if (elapsedLabel) parts.push(elapsedLabel);
   return parts.join(" · ");
 }

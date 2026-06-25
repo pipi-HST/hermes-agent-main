@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
 import type { ConnectionState } from "@/lib/gatewayClient";
-import type { KnowledgeMessage } from "@/lib/knowledgeChatState";
+import type { KnowledgeMessage, KnowledgeSourceHint } from "@/lib/knowledgeChatState";
 import type { KnowledgeResearchMode } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { AnswerOutputType, ComposerAttachment } from "./shared";
@@ -34,6 +34,7 @@ export function GatewayChat({
   messages,
   researchMode,
   running,
+  sourceHints,
   transcriptRef,
   uploading,
   onInputChange,
@@ -54,6 +55,7 @@ export function GatewayChat({
   messages: KnowledgeMessage[];
   researchMode: KnowledgeResearchMode;
   running: boolean;
+  sourceHints: KnowledgeSourceHint[];
   transcriptRef: React.RefObject<HTMLDivElement | null>;
   uploading: boolean;
   onInputChange: (value: string) => void;
@@ -65,6 +67,10 @@ export function GatewayChat({
   onUploadFiles: (files: FileList | File[]) => void;
 }) {
   const inputDisabled = running || uploading || connection !== "open";
+  const latestAssistantId = React.useMemo(
+    () => [...messages].reverse().find((message) => message.role === "assistant")?.id ?? "",
+    [messages],
+  );
 
   return (
     <>
@@ -81,6 +87,7 @@ export function GatewayChat({
                 key={message.id}
                 message={message}
                 onSaveAnswer={onSaveAnswer}
+                sourceHints={message.id === latestAssistantId ? sourceHints : []}
               />
             ))}
             {draftAssistant && (
@@ -254,14 +261,28 @@ function EmptyState({ onPick }: { onPick: (text: string) => void }) {
 function TranscriptMessage({
   message,
   onSaveAnswer,
+  sourceHints = [],
   streaming,
 }: {
   message: KnowledgeMessage;
   onSaveAnswer?: (message: KnowledgeMessage, outputType: AnswerOutputType) => void;
+  sourceHints?: KnowledgeSourceHint[];
   streaming?: boolean;
 }) {
   const isUser = message.role === "user";
   const [copied, setCopied] = React.useState(false);
+  const markdownSources = React.useMemo(
+    () => sourceHints.map((source) => ({
+      ref: source.ref,
+      type: source.sourceType,
+      id: source.sourceId || source.id,
+      title: source.label,
+      url: source.url,
+      path: source.filePath,
+      section: "",
+    })),
+    [sourceHints],
+  );
 
   const copyAnswer = React.useCallback(async () => {
     if (!message.text.trim()) return;
@@ -324,6 +345,7 @@ function TranscriptMessage({
         ) : (
           <Markdown
             content={stripTrailingSourceSection(message.text)}
+            sources={markdownSources}
             streaming={streaming}
           />
         )}

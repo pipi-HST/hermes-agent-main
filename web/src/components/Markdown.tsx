@@ -1,4 +1,15 @@
+import { ExternalLink } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
+
+export interface MarkdownSource {
+  ref?: string;
+  type?: string;
+  id?: string;
+  title?: string;
+  url?: string;
+  path?: string;
+  section?: string;
+}
 
 /**
  * Lightweight markdown renderer for LLM output.
@@ -12,13 +23,16 @@ import { useMemo, type ReactNode } from "react";
 export function Markdown({
   content,
   highlightTerms,
+  sources,
   streaming,
 }: {
   content: string;
   highlightTerms?: string[];
+  sources?: MarkdownSource[];
   streaming?: boolean;
 }) {
   const blocks = useMemo(() => parseBlocks(content), [content]);
+  const sourceMap = useMemo(() => buildSourceMap(sources), [sources]);
   const caret = streaming ? <StreamingCaret /> : null;
 
   return (
@@ -28,6 +42,7 @@ export function Markdown({
           key={i}
           block={block}
           highlightTerms={highlightTerms}
+          sourceMap={sourceMap}
           caret={caret && i === blocks.length - 1 ? caret : null}
         />
       ))}
@@ -198,10 +213,12 @@ function parseBlocks(text: string): BlockNode[] {
 function Block({
   block,
   highlightTerms,
+  sourceMap,
   caret,
 }: {
   block: BlockNode;
   highlightTerms?: string[];
+  sourceMap: Map<string, MarkdownSource>;
   caret?: ReactNode;
 }) {
   switch (block.type) {
@@ -225,7 +242,7 @@ function Block({
       };
       return (
         <Tag className={sizes[Tag]}>
-          <InlineContent text={block.content} highlightTerms={highlightTerms} />
+          <InlineContent text={block.content} highlightTerms={highlightTerms} sourceMap={sourceMap} />
           {caret}
         </Tag>
       );
@@ -242,7 +259,7 @@ function Block({
     case "quote":
       return (
         <blockquote className="border-l-2 border-primary/35 bg-primary/5 px-3 py-2 text-sm text-muted-foreground">
-          <InlineContent text={block.content} highlightTerms={highlightTerms} />
+          <InlineContent text={block.content} highlightTerms={highlightTerms} sourceMap={sourceMap} />
           {caret}
         </blockquote>
       );
@@ -259,7 +276,7 @@ function Block({
                     key={ci}
                     className="border border-border bg-secondary/40 px-2.5 py-1.5 text-left font-semibold"
                   >
-                    <InlineContent text={h} highlightTerms={highlightTerms} />
+                    <InlineContent text={h} highlightTerms={highlightTerms} sourceMap={sourceMap} />
                   </th>
                 ))}
               </tr>
@@ -275,6 +292,7 @@ function Block({
                       <InlineContent
                         text={row[ci] ?? ""}
                         highlightTerms={highlightTerms}
+                        sourceMap={sourceMap}
                       />
                     </td>
                   ))}
@@ -296,7 +314,7 @@ function Block({
         >
           {block.items.map((item, i) => (
             <li key={i}>
-              <InlineContent text={item} highlightTerms={highlightTerms} />
+              <InlineContent text={item} highlightTerms={highlightTerms} sourceMap={sourceMap} />
               {i === last ? caret : null}
             </li>
           ))}
@@ -307,7 +325,7 @@ function Block({
     case "paragraph":
       return (
         <p>
-          <InlineContent text={block.content} highlightTerms={highlightTerms} />
+          <InlineContent text={block.content} highlightTerms={highlightTerms} sourceMap={sourceMap} />
           {caret}
         </p>
       );
@@ -324,13 +342,14 @@ type InlineNode =
   | { type: "bold"; content: string }
   | { type: "italic"; content: string }
   | { type: "link"; text: string; href: string }
+  | { type: "citation"; ref: string }
   | { type: "br" };
 
 function parseInline(text: string): InlineNode[] {
   const nodes: InlineNode[] = [];
-  // Pattern priority: code > link > bold > italic > bare URL > line break
+  // Pattern priority: code > link > citation > bold > italic > bare URL > line break
   const pattern =
-    /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/g;
+    /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\[([KW]\d+)\])|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/gi;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -346,15 +365,18 @@ function parseInline(text: string): InlineNode[] {
       // [text](url) link
       nodes.push({ type: "link", text: match[3], href: match[4] });
     } else if (match[5]) {
-      // **bold**
-      nodes.push({ type: "bold", content: match[6] });
+      // [W1]/[K1] citation refs
+      nodes.push({ type: "citation", ref: match[6].toUpperCase() });
     } else if (match[7]) {
-      // *italic*
-      nodes.push({ type: "italic", content: match[8] });
+      // **bold**
+      nodes.push({ type: "bold", content: match[8] });
     } else if (match[9]) {
+      // *italic*
+      nodes.push({ type: "italic", content: match[10] });
+    } else if (match[11]) {
       // Bare URL
-      nodes.push({ type: "link", text: match[9], href: match[9] });
-    } else if (match[10]) {
+      nodes.push({ type: "link", text: match[11], href: match[11] });
+    } else if (match[12]) {
       // Line break within paragraph
       nodes.push({ type: "br" });
     }
@@ -372,9 +394,11 @@ function parseInline(text: string): InlineNode[] {
 function InlineContent({
   text,
   highlightTerms,
+  sourceMap,
 }: {
   text: string;
   highlightTerms?: string[];
+  sourceMap: Map<string, MarkdownSource>;
 }) {
   const nodes = useMemo(() => parseInline(text), [text]);
 
@@ -411,6 +435,8 @@ function InlineContent({
                 <HighlightedText text={node.content} terms={highlightTerms} />
               </em>
             );
+          case "citation":
+            return <CitationControl key={i} refId={node.ref} source={sourceMap.get(node.ref)} />;
           case "link":
             return (
               <a
@@ -429,6 +455,43 @@ function InlineContent({
       })}
     </>
   );
+}
+
+function CitationControl({ refId, source }: { refId: string; source?: MarkdownSource }) {
+  const label = source?.title || source?.section || source?.id || refId;
+  const href = source?.url || source?.path || "";
+  const title = href ? `${label} ${href}` : label;
+  const className = "mx-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded border border-primary/25 bg-primary/5 px-1 align-[0.08em] text-[0.68rem] font-medium text-primary hover:border-primary/45 hover:bg-primary/10";
+
+  if (href) {
+    return (
+      <a
+        href={href}
+        target={source?.url ? "_blank" : undefined}
+        rel={source?.url ? "noreferrer" : undefined}
+        className={className}
+        title={title}
+        aria-label={`打开引用来源 ${label}`}
+      >
+        <ExternalLink className="h-3 w-3" aria-hidden />
+      </a>
+    );
+  }
+
+  return (
+    <span className={className} title={title} aria-label={`引用来源 ${label}`}>
+      {refId}
+    </span>
+  );
+}
+
+function buildSourceMap(sources?: MarkdownSource[]): Map<string, MarkdownSource> {
+  const map = new Map<string, MarkdownSource>();
+  for (const source of sources || []) {
+    const ref = (source.ref || "").trim().toUpperCase();
+    if (ref) map.set(ref, source);
+  }
+  return map;
 }
 
 /** Highlight search terms within a plain text string. */

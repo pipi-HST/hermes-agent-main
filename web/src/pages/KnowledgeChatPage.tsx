@@ -1428,6 +1428,7 @@ export default function KnowledgeChatPage() {
               messages={state.messages}
               researchMode={researchMode}
               running={state.running}
+              sourceHints={state.sourceHints}
               transcriptRef={transcriptRef}
               uploading={uploading}
               onInputChange={setInput}
