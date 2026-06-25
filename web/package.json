@@ -9,6 +9,8 @@
     "prebuild": "npm run sync-assets",
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "check:research-progress": "node scripts/check-research-progress-ui-contract.mjs",
+    "smoke:research-progress": "node scripts/smoke-research-progress-live.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -44,6 +46,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "playwright": "^1.61.0",
     "three": "^0.180.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.56.1",

@@ -49,7 +49,7 @@ export type KnowledgeChatAction =
       warning?: string;
     }
   | { type: "tool_start"; toolId: string; name: string; context?: string }
-  | { type: "tool_progress"; name?: string; toolId?: string; preview: string }
+  | { type: "tool_progress"; name?: string; toolId?: string; preview: string; stage?: string; status?: string }
   | {
       type: "tool_complete";
       toolId: string;
@@ -190,7 +190,17 @@ export function knowledgeChatReducer(
             : action.name
               ? tool.name === action.name && tool.status === "running"
               : false;
-          return sameTool ? { ...tool, preview: action.preview } : tool;
+          if (!sameTool) return tool;
+          const progressEvents = [
+            ...(tool.progressEvents ?? []),
+            {
+              preview: action.preview,
+              stage: action.stage,
+              status: action.status,
+              at: Date.now(),
+            },
+          ].slice(-20);
+          return { ...tool, preview: action.preview, progressEvents };
         }),
       };
 

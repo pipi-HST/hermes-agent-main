@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Search,
   Zap,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -35,6 +36,14 @@ export interface ToolEntry {
   startedAt: number;
   completedAt?: number;
   turnIndex?: number;
+  progressEvents?: ToolProgressEvent[];
+}
+
+export interface ToolProgressEvent {
+  preview: string;
+  stage?: string;
+  status?: string;
+  at: number;
 }
 
 const STATUS_TONE: Record<ToolEntry["status"], string> = {
@@ -52,20 +61,24 @@ const BULLET_TONE: Record<ToolEntry["status"], string> = {
 const TICK_MS = 500;
 
 export function ToolCall({ tool }: { tool: ToolEntry }) {
+  const isResearchTool = tool.name === "research_with_web";
+  const hasProgressEvents = !!tool.progressEvents?.length;
+
   // `open` is derived: errors default-expanded, everything else collapsed.
   // `null` means "follow the default"; any explicit bool is the user's override.
   // This lets a running tool flip to expanded automatically when it errors,
   // without mirroring state in an effect.
   const [userOverride, setUserOverride] = useState<boolean | null>(null);
-  const open = userOverride ?? tool.status === "error";
+  const open = userOverride ?? (tool.status === "error" || (isResearchTool && (tool.status === "running" || hasProgressEvents)));
 
-  // Tick `now` while the tool is running so the elapsed label updates live.
+  // Tick only while the running tool is expanded; collapsed rows do not need
+  // sub-second elapsed updates.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (tool.status !== "running") return;
+    if (tool.status !== "running" || !open) return;
     const id = window.setInterval(() => setNow(() => Date.now()), TICK_MS);
     return () => window.clearInterval(id);
-  }, [tool.status]);
+  }, [open, tool.status]);
 
   // Historical tools (hydrated from session.resume) signal missing timestamps
   // with `startedAt === 0`; we hide the elapsed badge for those rather than
@@ -80,10 +93,12 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
     tool.preview ||
     tool.summary ||
     tool.error ||
-    tool.inline_diff
+    tool.inline_diff ||
+    hasProgressEvents
   );
 
   const Chevron = open ? ChevronDown : ChevronRight;
+  const ToolIcon = isResearchTool ? Search : Zap;
 
   return (
     <div
@@ -101,9 +116,11 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
           <span className="w-3 shrink-0" />
         )}
 
-        <Zap className={`h-3 w-3 shrink-0 ${BULLET_TONE[tool.status]}`} />
+        <ToolIcon className={`h-3 w-3 shrink-0 ${BULLET_TONE[tool.status]}`} />
 
-        <span className="font-mono font-medium shrink-0">{tool.name}</span>
+        <span className="font-mono font-medium shrink-0">
+          {isResearchTool ? "检索过程" : tool.name}
+        </span>
 
         <span className="font-mono text-muted-foreground/80 truncate min-w-0 flex-1">
           {tool.context ?? ""}
@@ -145,6 +162,39 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
               <span className="inline-block w-1.5 h-3 align-middle bg-foreground/40 ml-0.5 animate-pulse" />
             </Section>
           )}
+
+          {tool.progressEvents?.length ? (
+            <Section label={isResearchTool ? "steps" : "progress"}>
+              <div className="space-y-1.5">
+                {tool.progressEvents.slice(-10).map((event, index) => (
+                  <div
+                    key={`${event.at}-${event.stage ?? ""}-${index}`}
+                    className="grid grid-cols-[0.7rem_minmax(0,1fr)] gap-2"
+                  >
+                    <span
+                      className={`mt-1.5 h-1.5 w-1.5 rounded-full ${
+                        event.status === "warning"
+                          ? "bg-warning"
+                          : event.status === "completed"
+                            ? "bg-primary/75"
+                            : "bg-muted-foreground/50"
+                      }`}
+                    />
+                    <div className="min-w-0">
+                      <div className="whitespace-pre-wrap text-foreground/85">
+                        {event.preview}
+                      </div>
+                      {event.stage ? (
+                        <div className="mt-0.5 text-[0.65rem] text-muted-foreground/70">
+                          {event.stage}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Section>
+          ) : null}
 
           {tool.inline_diff && (
             <Section label="diff">
