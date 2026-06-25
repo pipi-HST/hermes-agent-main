@@ -2836,7 +2836,7 @@ function researchTimelineEventFromStream(
         tone: event.rejected_sources?.length ? "warning" : "success",
       };
     case "synthesis_start":
-      return { key, label: "生成答案", detail: "基于已核验来源组织回答", at };
+      return { key, label: "生成答案", detail: "基于采用来源组织回答", at };
     case "warnings":
       return { key, label: "记录警告", detail: uniqueStrings(event.warnings || []).join("；"), at, tone: "warning" };
     default:
@@ -3411,6 +3411,8 @@ function researchEvidenceRoleLabel(role: string): string {
       return "辅助证据";
     case "interpretive_evidence":
       return "解释材料";
+    case "light_web_material":
+      return "采用材料";
     case "clue":
       return "线索";
     case "reject":

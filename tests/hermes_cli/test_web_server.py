@@ -293,6 +293,7 @@ class TestWebServerEndpoints:
                 },
             }
 
+        monkeypatch.setattr(research_bridge, "async_light_web_answer", fake_async_research_answer, raising=False)
         monkeypatch.setattr(research_bridge, "async_research_answer", fake_async_research_answer)
 
         resp = self.client.post(
@@ -413,6 +414,7 @@ class TestWebServerEndpoints:
                 },
             }
 
+        monkeypatch.setattr(research_bridge, "async_light_web_answer", fake_async_research_answer, raising=False)
         monkeypatch.setattr(research_bridge, "async_research_answer", fake_async_research_answer)
 
         resp = self.client.post(

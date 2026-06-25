@@ -11,7 +11,10 @@ HERMES_CUSTOM = os.environ.get("HERMES_CUSTOM_ROOT", "/Users/pipi/hermes-custom"
 if HERMES_CUSTOM not in sys.path:
     sys.path.insert(0, HERMES_CUSTOM)
 
-from bridge.research_bridge import async_research_answer
+try:
+    from bridge.research_bridge import async_light_web_answer as _async_research_entry
+except ImportError:  # pragma: no cover - compatibility with older hermes-custom checkouts
+    from bridge.research_bridge import async_research_answer as _async_research_entry
 from bridge.result_envelope import envelope_json
 from tools.hermes_custom_envelope import envelope_error_json
 from tools.registry import registry
@@ -22,9 +25,9 @@ RESEARCH_WITH_WEB_SCHEMA = {
         "Hermes Knowledge 研究工具：结合当前文章、个人知识库和公开网页证据回答研究问题。"
         "是否调用本工具由主模型根据用户意图和可用上下文判断；mode 由用户显式选择、"
         "调用方结构化参数或研究 planner 决定。不要把私人文章全文发给搜索引擎；"
-        "工具会通过 planner 生成受限 web_search query。"
+        "工具会通过 planner 生成受限 web_search query，并使用轻量联网答疑链路。"
         "回答必须保留 [K1]/[K2] 本地知识库引用和 [W1]/[W2] 联网来源引用，"
-        "不能把搜索结果当作未经验证的事实。"
+        "代码负责引用合法性和预算边界，语义取舍由回答模型在候选材料内完成。"
     ),
     "parameters": {
         "type": "object",
@@ -62,7 +65,7 @@ def _handler(args: dict, **kw) -> str:
     try:
         progress_callback = kw.get("tool_progress_callback")
         result = _run_research_coro(
-            async_research_answer(
+            _async_research_entry(
                 query=args.get("query", ""),
                 mode=args.get("mode", "local_web"),
                 article_context=args.get("article_context") or None,
