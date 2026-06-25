@@ -1,4 +1,5 @@
 import { useGpuTier } from "@nous-research/ui/hooks/use-gpu-tier";
+import type { CSSProperties } from "react";
 
 /**
  * Replicates the visual layer stack of `<Overlays dark />` from
@@ -9,11 +10,10 @@ import { useGpuTier } from "@nous-research/ui/hooks/use-gpu-tier";
  * and the warm vignette both read theme-switchable CSS custom properties so
  * `ThemeProvider` can repaint the stack without remounting.
  *
- *   z-1   bg = `var(--background-base)`, mix-blend-mode: difference
- *   z-2   filler-bg jpeg, inverted, opacity 0.033, difference
- *   z-99  warm top-left vignette (`var(--warm-glow)`), opacity 0.22, lighten
- *   z-101 noise grain (SVG, ~55% opacity × `--noise-opacity-mul`,
- *         color-dodge) — gated on GPU tier
+ *   z-1   bg = `var(--background-base)`, theme-controlled blend mode
+ *   z-2   filler-bg jpeg, theme-controlled filter/opacity/blend
+ *   z-99  warm top-left vignette (`var(--warm-glow)`)
+ *   z-101 noise grain, theme-controlled opacity/blend — gated on GPU tier
  *
  * `useGpuTier` returns 0 when WebGL is unavailable, the renderer is a
  * software rasterizer (SwiftShader/llvmpipe), or the user has
@@ -29,10 +29,13 @@ export function Backdrop() {
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 z-[1]"
-        style={{
-          backgroundColor: "var(--background-base)",
-          mixBlendMode: "difference",
-        }}
+        style={
+          {
+            backgroundColor: "var(--background-base)",
+            mixBlendMode:
+              "var(--component-backdrop-base-blend-mode, difference)",
+          } as unknown as CSSProperties
+        }
       />
 
       <div
@@ -51,39 +54,48 @@ export function Backdrop() {
             backgroundSize: "var(--component-backdrop-background-size, cover)",
             backgroundPosition:
               "var(--component-backdrop-background-position, center)",
-          } as unknown as React.CSSProperties
+          } as unknown as CSSProperties
         }
       >
         <img
           alt=""
-          className="h-[150dvh] w-auto min-w-[100dvw] object-cover object-top-left invert theme-default-filler"
+          className="h-[150dvh] w-auto min-w-[100dvw] object-cover object-top-left theme-default-filler"
           fetchPriority="low"
           src="/ds-assets/filler-bg0.jpg"
+          style={{
+            filter: "var(--component-backdrop-filler-filter, invert(1))",
+          }}
         />
       </div>
 
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 z-[99]"
-        style={{
-          background:
-            "radial-gradient(ellipse at 0% 0%, transparent 60%, var(--warm-glow) 100%)",
-          mixBlendMode: "lighten",
-          opacity: 0.22,
-        }}
+        style={
+          {
+            background:
+              "radial-gradient(ellipse at 0% 0%, transparent 60%, var(--warm-glow) 100%)",
+            mixBlendMode: "var(--component-backdrop-glow-blend-mode, lighten)",
+            opacity: "var(--component-backdrop-glow-opacity, 0.22)",
+          } as unknown as CSSProperties
+        }
       />
 
       {gpuTier > 0 && (
         <div
           aria-hidden
           className="pointer-events-none fixed inset-0 z-[101]"
-          style={{
-            backgroundImage:
-              "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' fill='%23eaeaea' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E\")",
-            backgroundSize: "512px 512px",
-            mixBlendMode: "color-dodge",
-            opacity: "calc(0.55 * var(--noise-opacity-mul, 1))",
-          }}
+          style={
+            {
+              backgroundImage:
+                "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' fill='%23eaeaea' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E\")",
+              backgroundSize: "512px 512px",
+              mixBlendMode:
+                "var(--component-backdrop-noise-blend-mode, color-dodge)",
+              opacity:
+                "var(--component-backdrop-noise-opacity, calc(0.55 * var(--noise-opacity-mul, 1)))",
+            } as unknown as CSSProperties
+          }
         />
       )}
     </>

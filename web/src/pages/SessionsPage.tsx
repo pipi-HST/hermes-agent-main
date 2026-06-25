@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
+  KnowledgeAutomationBoundary,
   SessionInfo,
   SessionMessage,
   SessionSearchResult,
@@ -59,6 +60,152 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     whatsapp: { icon: Globe, color: "text-success" },
     cron: { icon: Clock, color: "text-warning" },
   };
+
+const READ_WRITE_LABELS: Record<string, string> = {
+  readonly: "Read only",
+  state_write: "State write",
+  vault_write: "Vault write",
+  external_write: "External write",
+  mixed: "Mixed write",
+};
+
+const KIND_LABELS: Record<string, string> = {
+  cron: "Cron",
+  launchagent: "LaunchAgent",
+  gateway_ticker: "Gateway ticker",
+  tool: "Tool",
+  watcher: "Watcher",
+  repair: "Repair",
+};
+
+function AutomationBoundariesTable({
+  items,
+}: {
+  items: KnowledgeAutomationBoundary[];
+}) {
+  if (items.length === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-5 w-5 text-muted-foreground" />
+          <CardTitle className="text-base">Automation Boundaries</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[920px] border-collapse text-left text-xs">
+            <thead className="border-b border-border text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+              <tr>
+                <th className="py-2 pr-3 font-medium">Surface</th>
+                <th className="py-2 pr-3 font-medium">Auto</th>
+                <th className="py-2 pr-3 font-medium">Runtime</th>
+                <th className="py-2 pr-3 font-medium">Writes</th>
+                <th className="py-2 pr-3 font-medium">Next run</th>
+                <th className="py-2 pr-3 font-medium">Tables / paths</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {items.map((item) => (
+                <tr key={item.id} className="align-top">
+                  <td className="py-3 pr-3">
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-foreground">
+                          {item.name}
+                        </span>
+                        <Badge tone="outline" className="text-[10px]">
+                          {KIND_LABELS[item.kind] ?? item.kind}
+                        </Badge>
+                      </div>
+                      <span className="max-w-[280px] text-muted-foreground">
+                        {item.description}
+                      </span>
+                      {item.toolsets.length > 0 && (
+                        <span className="font-mono-ui text-[10px] text-muted-foreground/80">
+                          {item.toolsets.join(", ")}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="py-3 pr-3">
+                    <Badge
+                      tone={item.enabled ? "success" : "outline"}
+                      className="text-[10px]"
+                    >
+                      {item.enabled ? "Enabled" : "Disabled"}
+                    </Badge>
+                  </td>
+                  <td className="py-3 pr-3">
+                    <div className="flex flex-col gap-1">
+                      <Badge
+                        tone={
+                          item.runtime_status === "running"
+                            ? "success"
+                            : item.runtime_status === "disabled"
+                              ? "outline"
+                              : "warning"
+                        }
+                        className="text-[10px]"
+                      >
+                        {item.runtime_status || "unknown"}
+                      </Badge>
+                      {item.pid ? (
+                        <span className="font-mono-ui text-[10px] text-muted-foreground">
+                          pid {item.pid}
+                        </span>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td className="py-3 pr-3">
+                    <div className="flex flex-col gap-1">
+                      <Badge
+                        tone={
+                          item.risk_level === "high"
+                            ? "destructive"
+                            : item.risk_level === "medium"
+                              ? "warning"
+                              : "outline"
+                        }
+                        className="text-[10px]"
+                      >
+                        {READ_WRITE_LABELS[item.read_write] ?? item.read_write}
+                      </Badge>
+                      <span className="text-[10px] text-muted-foreground">
+                        risk: {item.risk_level}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="py-3 pr-3 font-mono-ui text-[10px] text-muted-foreground">
+                    {item.next_run_at || "—"}
+                  </td>
+                  <td className="py-3 pr-3">
+                    <div className="flex max-w-[320px] flex-col gap-1 font-mono-ui text-[10px] text-muted-foreground">
+                      {item.writes_tables.length > 0 && (
+                        <span>tables: {item.writes_tables.join(", ")}</span>
+                      )}
+                      {item.writes_paths.length > 0 && (
+                        <span className="break-all">
+                          paths: {item.writes_paths.join(", ")}
+                        </span>
+                      )}
+                      {item.source_path && (
+                        <span className="break-all opacity-70">
+                          source: {item.source_path}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
@@ -424,6 +571,9 @@ export default function SessionsPage() {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [automationBoundaries, setAutomationBoundaries] = useState<
+    KnowledgeAutomationBoundary[]
+  >([]);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
@@ -509,6 +659,10 @@ export default function SessionsPage() {
         .getSessions(50)
         .then((r) => setOverviewSessions(r.sessions))
         .catch(() => {});
+      api
+        .getKnowledgeAutomationBoundaries()
+        .then((r) => setAutomationBoundaries(r.items))
+        .catch(() => setAutomationBoundaries([]));
     };
     loadOverview();
     const id = setInterval(loadOverview, 5000);
@@ -730,6 +884,8 @@ export default function SessionsPage() {
       {platformEntries.length > 0 && status && (
         <PlatformsCard platforms={platformEntries} />
       )}
+
+      <AutomationBoundariesTable items={automationBoundaries} />
 
       {recentSessions.length > 0 && (
         <Card>

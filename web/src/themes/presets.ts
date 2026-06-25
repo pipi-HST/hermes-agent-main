@@ -24,13 +24,13 @@ const SYSTEM_MONO =
 const DEFAULT_TYPOGRAPHY: ThemeTypography = {
   fontSans: SYSTEM_SANS,
   fontMono: SYSTEM_MONO,
-  baseSize: "15px",
-  lineHeight: "1.55",
+  baseSize: "16px",
+  lineHeight: "1.6",
   letterSpacing: "0",
 };
 
 const DEFAULT_LAYOUT: ThemeLayout = {
-  radius: "0.5rem",
+  radius: "0.75rem",
   density: "comfortable",
 };
 
@@ -40,8 +40,52 @@ const DEFAULT_LAYOUT: ThemeLayout = {
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
+  label: "Hermes Paper",
+  description: "Light paper workspace for reading and knowledge work",
+  palette: {
+    background: { hex: "#f6f7f4", alpha: 1 },
+    midground: { hex: "#17211d", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(47, 111, 95, 0.08)",
+    noiseOpacity: 0.12,
+  },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: DEFAULT_LAYOUT,
+  componentStyles: {
+    backdrop: {
+      baseBlendMode: "normal",
+      fillerBlendMode: "normal",
+      fillerOpacity: "0",
+      fillerFilter: "none",
+      glowBlendMode: "normal",
+      glowOpacity: "0.45",
+      noiseBlendMode: "multiply",
+      noiseOpacity: "0.045",
+    },
+    header: {
+      background: "rgba(246, 247, 244, 0.92)",
+    },
+    sidebar: {
+      background: "rgba(250, 251, 248, 0.94)",
+    },
+  },
+  colorOverrides: {
+    primary: "#2f6f5f",
+    primaryForeground: "#ffffff",
+    mutedForeground: "#68746f",
+    border: "#d7ddd7",
+    input: "#d7ddd7",
+    ring: "#2f6f5f",
+    destructive: "#b42318",
+    success: "#278052",
+    warning: "#a45f16",
+  },
+};
+
+export const hermesTealTheme: DashboardTheme = {
+  name: "hermes-teal",
   label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  description: "Classic dark teal — the legacy Hermes look",
   palette: {
     background: { hex: "#041c1c", alpha: 1 },
     midground: { hex: "#ffe6cb", alpha: 1 },
@@ -50,7 +94,22 @@ export const defaultTheme: DashboardTheme = {
     noiseOpacity: 1,
   },
   typography: DEFAULT_TYPOGRAPHY,
-  layout: DEFAULT_LAYOUT,
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.5rem",
+  },
+  componentStyles: {
+    backdrop: {
+      baseBlendMode: "difference",
+      fillerBlendMode: "difference",
+      fillerOpacity: "0.033",
+      fillerFilter: "invert(1)",
+      glowBlendMode: "lighten",
+      glowOpacity: "0.22",
+      noiseBlendMode: "color-dodge",
+      noiseOpacity: "calc(0.55 * var(--noise-opacity-mul, 1))",
+    },
+  },
 };
 
 export const midnightTheme: DashboardTheme = {
@@ -190,8 +249,8 @@ export const roseTheme: DashboardTheme = {
  */
 export const defaultLargeTheme: DashboardTheme = {
   name: "default-large",
-  label: "Hermes Teal (Large)",
-  description: "Hermes Teal with bigger fonts and roomier spacing",
+  label: "Hermes Paper (Large)",
+  description: "Hermes Paper with bigger fonts and roomier spacing",
   palette: defaultTheme.palette,
   typography: {
     ...DEFAULT_TYPOGRAPHY,
@@ -202,11 +261,14 @@ export const defaultLargeTheme: DashboardTheme = {
     ...DEFAULT_LAYOUT,
     density: "spacious",
   },
+  componentStyles: defaultTheme.componentStyles,
+  colorOverrides: defaultTheme.colorOverrides,
 };
 
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
+  "hermes-teal": hermesTealTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

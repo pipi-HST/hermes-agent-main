@@ -56,7 +56,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
       <Button
         ghost
         onClick={() => setOpen((o) => !o)}
-        className="px-2 py-1 normal-case tracking-normal font-normal text-xs text-muted-foreground hover:text-foreground"
+        className="px-2 py-1 text-xs font-normal normal-case tracking-normal text-muted-foreground hover:text-foreground"
         title={t.theme?.switchTheme ?? "Switch theme"}
         aria-label={t.theme?.switchTheme ?? "Switch theme"}
         aria-expanded={open}
@@ -65,10 +65,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
         <span className="inline-flex items-center gap-1.5">
           <Palette className="h-3.5 w-3.5" />
 
-          <Typography
-            mondwest
-            className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
-          >
+          <Typography className="hidden text-xs tracking-normal sm:inline">
             {label}
           </Typography>
         </span>
@@ -81,15 +78,12 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
           className={cn(
             "absolute z-50 min-w-[240px]",
             dropUp ? "left-0 bottom-full mb-1" : "right-0 top-full mt-1",
-            "border border-current/20 bg-background-base/95 backdrop-blur-sm",
-            "shadow-[0_12px_32px_-8px_rgba(0,0,0,0.6)]",
+            "overflow-hidden rounded-lg border border-border/80 bg-background/95 backdrop-blur-md",
+            "shadow-[0_18px_50px_-24px_rgba(24,40,35,0.34)]",
           )}
         >
-          <div className="border-b border-current/20 px-3 py-2">
-            <Typography
-              mondwest
-              className="text-[0.65rem] tracking-[0.15em] uppercase text-midground/70"
-            >
+          <div className="border-b border-border/80 px-3 py-2">
+            <Typography className="text-xs font-medium tracking-normal text-muted-foreground">
               {t.theme?.title ?? "Theme"}
             </Typography>
           </div>
@@ -117,14 +111,11 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
                 )}
 
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <Typography
-                    mondwest
-                    className="truncate text-[0.75rem] tracking-wide uppercase"
-                  >
+                  <Typography className="truncate text-sm font-medium tracking-normal text-foreground">
                     {th.label}
                   </Typography>
                   {th.description && (
-                    <Typography className="truncate text-[0.65rem] normal-case tracking-normal text-midground/50">
+                    <Typography className="truncate text-xs normal-case tracking-normal text-muted-foreground">
                       {th.description}
                     </Typography>
                   )}
@@ -132,7 +123,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
 
                 <Check
                   className={cn(
-                    "h-3 w-3 shrink-0 text-midground",
+                    "h-3.5 w-3.5 shrink-0 text-primary",
                     isActive ? "opacity-100" : "opacity-0",
                   )}
                 />
@@ -150,7 +141,7 @@ function ThemeSwatch({ theme }: { theme: DashboardTheme }) {
   return (
     <div
       aria-hidden
-      className="flex h-4 w-9 shrink-0 overflow-hidden border border-current/20"
+      className="flex h-4 w-9 shrink-0 overflow-hidden rounded-sm border border-border"
     >
       <span className="flex-1" style={{ background: background.hex }} />
       <span className="flex-1" style={{ background: midground.hex }} />
@@ -163,7 +154,7 @@ function PlaceholderSwatch() {
   return (
     <div
       aria-hidden
-      className="h-4 w-9 shrink-0 border border-dashed border-current/20"
+      className="h-4 w-9 shrink-0 rounded-sm border border-dashed border-border"
     />
   );
 }
