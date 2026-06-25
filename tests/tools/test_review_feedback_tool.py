@@ -72,14 +72,14 @@ def test_review_feedback_handler_allows_latest_item_feedback(monkeypatch):
     assert result["meta"]["updated"] is True
 
 
-def test_review_feedback_registered_in_personal_assistant_toolset():
+def test_review_feedback_registered_in_knowledge_review_toolset():
     import tools.review_feedback_tool  # noqa: F401
     from tools.registry import registry
 
     entry = registry.get_entry("review_feedback")
 
     assert entry is not None
-    assert entry.toolset == "personal-assistant"
+    assert entry.toolset == "knowledge-review"
     assert "outcome" in entry.schema["parameters"]["required"]
     assert "item_id" not in entry.schema["parameters"]["required"]
     assert entry.schema["parameters"]["properties"]["outcome"]["enum"] == [

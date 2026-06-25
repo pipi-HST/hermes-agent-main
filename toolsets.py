@@ -529,6 +529,12 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "knowledge-review": {
+        "description": "Knowledge review only - daily review and follow-up feedback",
+        "tools": ["daily_review", "review_feedback", "review_followup"],
+        "includes": [],
+    },
+
 
     "hermes-qqbot": {
         "description": "QQBot toolset - QQ messaging via Official Bot API v2 (full access)",

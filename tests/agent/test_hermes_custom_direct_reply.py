@@ -133,6 +133,34 @@ def test_direct_reply_extracts_rag_answer_for_weixin():
     )
 
 
+def test_direct_reply_extracts_knowledge_tool_reply_for_tui_workbench():
+    content = _rag_tool_content(
+        "继续展开的正文\n\n📎 来源\n[1] AI文章",
+        [{"title": "AI文章", "path": "captures/ai.md"}],
+    )
+
+    assert (
+        direct_reply_from_tool_result_content(
+            "continue_rag_answer",
+            content,
+            platform="tui",
+        )
+        == "继续展开的正文\n\n📎 来源\n[1] AI文章"
+    )
+
+
+def test_direct_reply_does_not_apply_weixin_limit_to_tui_workbench():
+    content = _tool_content("字" * 1600)
+
+    reply = direct_reply_from_tool_result_content(
+        "continue_rag_answer",
+        content,
+        platform="tui",
+    )
+
+    assert reply == "字" * 1600
+
+
 def test_envelope_adapter_mentions_media_attachment_for_user_requested_artifacts():
     from bridge.result_envelope import artifact_ref, envelope_json, success_envelope
 

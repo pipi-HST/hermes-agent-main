@@ -15,8 +15,9 @@ from tools.registry import registry
 COMMIT_CAPTURE_DRAFT_SCHEMA = {
     "name": "commit_capture_draft",
     "description": (
-        "用户明确满意并要求“存库”“归档”“就这样”“可以”时调用。"
-        "把最近或指定草稿写入 Obsidian raw/ 和 captures/，并加入正式知识库。"
+        "只在用户已经看到待审草稿后，又用一条独立消息明确确认“确认存库/存库/入库/就这样”时调用。"
+        "如果用户在同一条消息里说“提取并入库/整理后存库”，仍应先调用 capture_content 生成待审草稿，"
+        "不要在同一轮继续调用本工具。把最近或指定草稿写入 Obsidian _archive/raw/ 和 captures/，并加入正式知识库。"
     ),
     "parameters": {
         "type": "object",
@@ -24,6 +25,10 @@ COMMIT_CAPTURE_DRAFT_SCHEMA = {
             "draft_id": {
                 "type": "string",
                 "description": "要入库的草稿编号（可选，不填则提交最近未入库草稿）",
+            },
+            "confirmation": {
+                "type": "string",
+                "description": "用户最新一条独立确认消息原文，例如“确认存库”。不要传生成草稿那条消息里的整理要求。",
             },
         },
         "required": [],
@@ -33,7 +38,10 @@ COMMIT_CAPTURE_DRAFT_SCHEMA = {
 
 def _handler(args: dict, **kw) -> str:
     try:
-        result = commit_capture_draft(args.get("draft_id", ""))
+        result = commit_capture_draft(
+            args.get("draft_id", ""),
+            confirmation=args.get("confirmation", ""),
+        )
         return envelope_json(result)
     except Exception as exc:
         return envelope_error_json(agent="capture", intent="commit_capture_draft", exc=exc)

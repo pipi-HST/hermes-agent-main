@@ -21,6 +21,8 @@ SYNTHESIZE_GARDEN_SCHEMA = {
         "它不会直接写入最终知识卡片；用户确认“确认卡片/存入知识卡片”后，"
         "再调用 commit_garden_draft。用户提出修改意见时调用 revise_garden_draft。"
         "可指定 capture_ids 直接合成；question_id 仅用于高级 Theme 候选流。"
+        "用户刚确认 Capture 草稿入库后要生成卡片时，必须使用 commit_capture_draft "
+        "返回的 capture_id/committed_capture_id，不要使用 draft_id。"
         "如果工具返回失败，不要减少 capture_ids 后静默重试；应明确告诉用户合成失败，"
         "并保留原始材料范围，等待用户确认是否缩小范围。"
     ),

@@ -37,14 +37,14 @@ def test_review_followup_handler_passes_question(monkeypatch):
     assert "刚刚讲过" in result["chat_preview"]
 
 
-def test_review_followup_registered_in_personal_assistant_toolset():
+def test_review_followup_registered_in_knowledge_review_toolset():
     import tools.review_followup_tool  # noqa: F401
     from tools.registry import registry
 
     entry = registry.get_entry("review_followup")
 
     assert entry is not None
-    assert entry.toolset == "personal-assistant"
+    assert entry.toolset == "knowledge-review"
     assert "daily_review" in entry.schema["description"]
     assert "search_my_notes" in entry.schema["description"]
     assert "对比" in entry.schema["description"]

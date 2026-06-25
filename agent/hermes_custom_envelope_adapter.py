@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 WEIXIN_DIRECT_REPLY_LIMIT = 1500
 SOURCE_FOOTER_TOOL_NAMES = {"search_my_notes", "review_followup"}
+DIRECT_REPLY_PLATFORMS = {"weixin", "tui", "dashboard", "web"}
 DIRECT_REPLY_TOOL_NAMES = {
     "capture_content",
     "revise_capture_draft",
@@ -81,7 +82,7 @@ def direct_reply_from_tool_result_content(
     WeChat, returning them directly avoids a second model pass that can
     summarize or hide the actual draft page.
     """
-    if (platform or "").lower() != "weixin":
+    if (platform or "").lower() not in DIRECT_REPLY_PLATFORMS:
         return None
     mirrored_send_reply = _mirrored_send_message_empty_reply(tool_name, content)
     if mirrored_send_reply is not None:
@@ -98,7 +99,9 @@ def direct_reply_from_tool_result_content(
         paths = _local_file_artifact_paths(structured)
         if paths:
             return _reply_with_media_artifacts(reply, paths)
-    return _clip_reply(reply)
+    if (platform or "").lower() == "weixin":
+        return _clip_reply(reply)
+    return reply
 
 
 def _mirrored_send_message_empty_reply(tool_name: str, content: Any) -> Optional[str]:

@@ -52,7 +52,7 @@ def _handler(args: dict, **kw) -> str:
 
 registry.register(
     name="review_feedback",
-    toolset="personal-assistant",
+    toolset="knowledge-review",
     schema=REVIEW_FEEDBACK_SCHEMA,
     handler=_handler,
     emoji="🧠",

@@ -271,3 +271,8 @@ class TestKnowledgeProductToolsets:
         tools = set(resolve_toolset("knowledge-advanced"))
 
         assert {"generate_canvas", "theme_scan", "theme_candidates"}.issubset(tools)
+
+    def test_knowledge_review_groups_daily_review_tools(self):
+        tools = set(resolve_toolset("knowledge-review"))
+
+        assert {"daily_review", "review_feedback", "review_followup"}.issubset(tools)

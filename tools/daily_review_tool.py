@@ -35,7 +35,7 @@ def _handler(args: dict, **kw) -> str:
 
 registry.register(
     name="daily_review",
-    toolset="personal-assistant",
+    toolset="knowledge-review",
     schema=REVIEW_SCHEMA,
     handler=_handler,
     emoji="📖",
