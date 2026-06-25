@@ -72,8 +72,8 @@ class DDGSWebSearchProvider(WebSearchProvider):
 
         try:
             web_results = []
-            with DDGS() as client:
-                for i, hit in enumerate(client.text(query, max_results=safe_limit)):
+            with DDGS(timeout=8) as client:
+                for i, hit in enumerate(client.text(query, max_results=safe_limit, backend="html")):
                     if i >= safe_limit:
                         break
                     url = str(hit.get("href") or hit.get("url") or "")

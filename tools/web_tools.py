@@ -117,12 +117,30 @@ import sys
 
 logger = logging.getLogger(__name__)
 
+SEARCH_ONLY_WEB_BACKENDS = {"brave-free", "dashscope", "ddgs", "searxng"}
+EXTRACT_CAPABLE_WEB_BACKENDS = ("firecrawl", "parallel", "tavily", "exa", "local")
+
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
 def _has_env(name: str) -> bool:
-    val = os.getenv(name)
+    val = _get_env_value(name)
     return bool(val and val.strip())
+
+
+def _get_env_value(name: str, default: str = "") -> str:
+    val = os.getenv(name)
+    if val is not None:
+        return val
+    try:
+        from hermes_cli.config import get_env_value
+
+        configured = get_env_value(name)
+        if configured is not None:
+            return configured
+    except Exception:
+        pass
+    return default
 
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
@@ -140,7 +158,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "local", "dashscope", "searxng", "brave-free", "ddgs"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -153,6 +171,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("dashscope", _has_env("DASHSCOPE_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
@@ -199,13 +218,35 @@ def _get_capability_backend(capability: str) -> str:
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
     if specific and _is_backend_available(specific):
         return specific
+    configured_shared = (cfg.get("backend") or "").lower().strip()
+    if capability == "extract":
+        if configured_shared:
+            return _get_backend()
+        return _get_available_extract_backend()
     return _get_backend()
+
+
+def _get_available_extract_backend() -> str:
+    """Return an auto-detected backend that can actually extract page content."""
+    for backend in EXTRACT_CAPABLE_WEB_BACKENDS:
+        if _is_backend_available(backend):
+            return backend
+    return ""
 
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
     if backend == "exa":
         return _has_env("EXA_API_KEY")
+    if backend == "dashscope":
+        return _has_env("DASHSCOPE_API_KEY")
+    if backend == "local":
+        try:
+            import trafilatura  # noqa: F401
+
+            return True
+        except ImportError:
+            return False
     if backend == "parallel":
         return _has_env("PARALLEL_API_KEY")
     if backend == "firecrawl":
@@ -235,6 +276,66 @@ def _ddgs_package_importable() -> bool:
     except ImportError:
         return False
 
+
+def _ensure_builtin_web_provider_registered(backend: str) -> None:
+    """Register bundled search providers when a lightweight dashboard path skipped plugin loading."""
+    backend = (backend or "").strip().lower()
+    if backend not in {
+        "brave-free",
+        "dashscope",
+        "ddgs",
+        "exa",
+        "firecrawl",
+        "local",
+        "parallel",
+        "searxng",
+        "tavily",
+    }:
+        return
+    try:
+        from agent.web_search_registry import get_provider, register_provider
+
+        if get_provider(backend) is not None:
+            return
+        if backend == "brave-free":
+            from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+
+            register_provider(BraveFreeWebSearchProvider())
+        elif backend == "dashscope":
+            from plugins.web.dashscope.provider import DashScopeWebSearchProvider
+
+            register_provider(DashScopeWebSearchProvider())
+        elif backend == "ddgs":
+            from plugins.web.ddgs.provider import DDGSWebSearchProvider
+
+            register_provider(DDGSWebSearchProvider())
+        elif backend == "exa":
+            from plugins.web.exa.provider import ExaWebSearchProvider
+
+            register_provider(ExaWebSearchProvider())
+        elif backend == "firecrawl":
+            from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
+
+            register_provider(FirecrawlWebSearchProvider())
+        elif backend == "local":
+            from plugins.web.local_extract.provider import LocalExtractWebProvider
+
+            register_provider(LocalExtractWebProvider())
+        elif backend == "parallel":
+            from plugins.web.parallel.provider import ParallelWebSearchProvider
+
+            register_provider(ParallelWebSearchProvider())
+        elif backend == "searxng":
+            from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+            register_provider(SearXNGWebSearchProvider())
+        elif backend == "tavily":
+            from plugins.web.tavily.provider import TavilyWebSearchProvider
+
+            register_provider(TavilyWebSearchProvider())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not register bundled web provider %s: %s", backend, exc)
+
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -261,6 +362,10 @@ def _web_requires_env() -> list[str]:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "DASHSCOPE_WORKSPACE_ID",
+        "BRAVE_SEARCH_API_KEY",
+        "SEARXNG_URL",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
@@ -799,6 +904,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         )
 
         backend = _get_search_backend()
+        _ensure_builtin_web_provider_registered(backend)
         provider = _wsp_get_provider(backend) if backend else None
         if provider is None or not provider.supports_search():
             # Fall back to availability-walked active provider when the
@@ -917,6 +1023,7 @@ async def web_extract_tool(
             results = []
         else:
             backend = _get_extract_backend()
+            _ensure_builtin_web_provider_registered(backend)
 
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
             # tavily, firecrawl) now live as plugins. The dispatcher is a
@@ -1172,6 +1279,7 @@ async def web_crawl_tool(
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
         backend = _get_backend()
+        _ensure_builtin_web_provider_registered(backend)
 
         # Tavily (and any future plugin advertising supports_crawl=True)
         # dispatches through agent.web_search_registry. The crawl response
@@ -1357,11 +1465,11 @@ async def web_crawl_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "dashscope", "searxng", "brave-free", "ddgs"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "dashscope", "searxng", "brave-free", "ddgs")
     )
 
 

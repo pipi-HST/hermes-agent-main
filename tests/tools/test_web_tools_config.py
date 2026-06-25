@@ -9,6 +9,7 @@ Coverage:
 """
 
 import importlib
+import asyncio
 import json
 import os
 import sys
@@ -174,8 +175,7 @@ class TestFirecrawlClientConfig:
             assert tools.web_tools.check_auxiliary_model() is False
             assert tools.web_tools.check_auxiliary_model() is True
 
-    @pytest.mark.asyncio
-    async def test_summarizer_re_resolves_backend_after_initial_unavailable_state(self):
+    def test_summarizer_re_resolves_backend_after_initial_unavailable_state(self):
         """Summarization should pick up a backend that becomes available later in-process."""
         import tools.web_tools
 
@@ -192,10 +192,12 @@ class TestFirecrawlClientConfig:
             new=AsyncMock(return_value=response),
         ) as mock_async_call:
             assert tools.web_tools.check_auxiliary_model() is False
-            result = await tools.web_tools._call_summarizer_llm(
-                "Some content worth summarizing",
-                "Source: https://example.com\n\n",
-                None,
+            result = asyncio.run(
+                tools.web_tools._call_summarizer_llm(
+                    "Some content worth summarizing",
+                    "Source: https://example.com\n\n",
+                    None,
+                )
             )
 
         assert result == "summary text"
@@ -386,7 +388,8 @@ class TestBackendSelection:
     def test_fallback_no_keys_defaults_to_firecrawl(self):
         """No keys, no config → 'firecrawl' (will fail at client init)."""
         from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}):
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False):
             assert _get_backend() == "firecrawl"
 
     def test_invalid_config_falls_through_to_fallback(self):
@@ -603,7 +606,8 @@ class TestCheckWebApiKey:
 
     def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key
-        assert check_web_api_key() is False
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False):
+            assert check_web_api_key() is False
 
     def test_both_keys_returns_true(self):
         with patch.dict(os.environ, {
@@ -646,3 +650,159 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+    assert "BRAVE_SEARCH_API_KEY" in _web_requires_env()
+    assert "SEARXNG_URL" in _web_requires_env()
+
+
+def test_auto_extract_backend_skips_search_only_ddgs(monkeypatch):
+    from tools import web_tools
+
+    monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+    for key in (
+        "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_URL",
+        "PARALLEL_API_KEY",
+        "TAVILY_API_KEY",
+        "EXA_API_KEY",
+        "SEARXNG_URL",
+        "BRAVE_SEARCH_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+    monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
+    monkeypatch.setattr(web_tools, "_is_backend_available", lambda backend: False)
+
+    assert web_tools._get_search_backend() == "ddgs"
+    assert web_tools._get_extract_backend() == ""
+
+
+def test_auto_extract_backend_prefers_extract_capable_provider(monkeypatch):
+    from tools import web_tools
+
+    monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+    monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+    monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+    monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
+    monkeypatch.setenv("EXA_API_KEY", "exa-test")
+
+    assert web_tools._get_search_backend() == "exa"
+    assert web_tools._get_extract_backend() == "exa"
+
+
+def test_web_search_registers_brave_when_plugins_were_not_loaded(monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from agent.web_search_registry import _reset_for_tests
+    from tools import web_tools
+
+    _reset_for_tests()
+    monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"search_backend": "brave-free"})
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+
+    def fake_get(*_args, **_kwargs):
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "web": {
+                    "results": [
+                        {
+                            "title": "Brave result",
+                            "url": "https://example.com/brave",
+                            "description": "from Brave",
+                        }
+                    ]
+                }
+            },
+        )
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    try:
+        result = json.loads(web_tools.web_search_tool("公募基金是什么意思", limit=1))
+    finally:
+        _reset_for_tests()
+
+    assert result["success"] is True
+    assert result["data"]["web"][0]["title"] == "Brave result"
+
+
+def test_web_extract_registers_tavily_when_plugins_were_not_loaded(monkeypatch):
+    import asyncio
+    import json
+
+    from agent.web_search_registry import _reset_for_tests
+    from plugins.web.tavily import provider as tavily_provider
+    from tools import web_tools
+
+    _reset_for_tests()
+    monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"extract_backend": "tavily"})
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+    monkeypatch.setattr(
+        tavily_provider,
+        "_tavily_request",
+        lambda endpoint, payload: {
+            "results": [
+                {
+                    "url": payload["urls"][0],
+                    "title": "Tavily page",
+                    "raw_content": "Tavily extracted content",
+                }
+            ]
+        },
+    )
+    try:
+        result = json.loads(
+            asyncio.run(
+                web_tools.web_extract_tool(
+                    ["https://example.com/tavily"],
+                    use_llm_processing=False,
+                )
+            )
+        )
+    finally:
+        _reset_for_tests()
+
+    assert result["results"][0]["title"] == "Tavily page"
+    assert result["results"][0]["content"] == "Tavily extracted content"
+
+
+def test_web_extract_registers_exa_when_plugins_were_not_loaded(monkeypatch):
+    import asyncio
+    import json
+
+    from agent.web_search_registry import _reset_for_tests
+    from plugins.web.exa.provider import ExaWebSearchProvider
+    from tools import web_tools
+
+    _reset_for_tests()
+    monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"extract_backend": "exa"})
+    monkeypatch.setenv("EXA_API_KEY", "exa-test")
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+    monkeypatch.setattr(
+        ExaWebSearchProvider,
+        "extract",
+        lambda self, urls, **_kwargs: [
+            {
+                "url": urls[0],
+                "title": "Exa page",
+                "content": "Exa extracted content",
+                "raw_content": "Exa extracted content",
+            }
+        ],
+    )
+    try:
+        result = json.loads(
+            asyncio.run(
+                web_tools.web_extract_tool(
+                    ["https://example.com/exa"],
+                    use_llm_processing=False,
+                )
+            )
+        )
+    finally:
+        _reset_for_tests()
+
+    assert result["results"][0]["title"] == "Exa page"
+    assert result["results"][0]["content"] == "Exa extracted content"
