@@ -26,7 +26,6 @@ import {
   FolderPlus,
   Inbox,
   Layers3,
-  Link2,
   Loader2,
   MoreHorizontal,
   NotebookPen,
@@ -65,6 +64,7 @@ import {
   type EditableCaptureStatus,
 } from "@/pages/knowledge-chat/EditableCaptureWorkbench";
 import { Markdown } from "@/components/Markdown";
+import { KnowledgeAnswerView } from "@/components/KnowledgeAnswerView";
 
 type LibrarySelection =
   | { type: "all"; value: "all" }
@@ -120,6 +120,8 @@ const KNOWLEDGE_AI_FOCUS_WIDTH_KEY = "hermes.knowledgeLibrary.aiFocusWidth";
 const DEFAULT_KNOWLEDGE_LEFT_WIDTH = 360;
 const DEFAULT_KNOWLEDGE_AI_WIDTH = 380;
 const DEFAULT_KNOWLEDGE_AI_FOCUS_WIDTH = 520;
+const MAX_SELECTION_SEARCH_CHARS = 1000;
+const SELECTION_TOO_LONG_MESSAGE = "选区超过 1000 字，当前不支持基于超长选区检索。请缩短选区后再试。";
 
 export default function KnowledgeLibraryPage() {
   const navigate = useNavigate();
@@ -894,6 +896,10 @@ export default function KnowledgeLibraryPage() {
     const requestMode = override?.mode ?? articleResearchMode;
     if (!question) return;
     const context = selectionContext;
+    if ((context?.selectedText || "").trim().length > MAX_SELECTION_SEARCH_CHARS) {
+      setChatError(SELECTION_TOO_LONG_MESSAGE);
+      return;
+    }
     const assistantId = `assistant-${Date.now()}`;
     const pendingTrace = pendingResearchTrace(question, requestMode);
     const userMessage: ArticleChatMessage = {
@@ -1095,6 +1101,35 @@ export default function KnowledgeLibraryPage() {
       setSavingArticleAnswerId("");
     }
   }, [chatMessages, chatQuestion, detail, navigate, refreshAll]);
+
+  const openKnowledgeSource = useCallback((source: KnowledgeResearchSource) => {
+    const rawKind = String(source.item_kind || "").trim();
+    const kind = rawKind === "capture_draft" ? "capture_draft" : rawKind === "capture" ? "capture" : "";
+    const itemId = String(source.item_id || "").trim();
+    if (!kind || !itemId) {
+      setNotice("这个知识库来源暂时缺少可打开的本地文件信息。");
+      return;
+    }
+    if (!confirmLeaveCurrentWork()) return;
+    const existing = allItems.find((item) => item.kind === kind && item.id === itemId) || null;
+    const folder = existing?.folder_path || "Inbox";
+    if (existing?.folder_path) {
+      setSelection({ type: "folder", value: folder });
+      setExpandedFolders((current) => new Set(current).add(folder));
+    } else {
+      setSelection(DEFAULT_SELECTION);
+    }
+    setStatusFilter("all");
+    setSelectedKey(`${kind}:${itemId}`);
+    setWorkbenchMode("browse");
+    switchMode("files");
+    void loadDetail((existing || {
+      id: itemId,
+      kind,
+      title: source.title || itemId,
+      folder_path: folder,
+    }) as KnowledgeLibraryItem);
+  }, [allItems, confirmLeaveCurrentWork, loadDetail, switchMode]);
 
   const canPublishDetail = detail?.kind === "capture_draft" && !committing && !saving && !deleting;
   const canGenerateCard = detail?.kind === "capture" && !cardGenerating && !saving && !deleting;
@@ -1420,13 +1455,13 @@ export default function KnowledgeLibraryPage() {
 	                researchMode={articleResearchMode}
 	                question={chatQuestion}
 	                savingAnswerId={savingArticleAnswerId}
-	                selectionContext={selectionContext}
 	                onAsk={() => void askArticleAi()}
 	                onClose={() => setAiPanelMode("collapsed")}
                     onPanelModeChange={setAiPanelMode}
 	                onQuestionChange={setChatQuestion}
 	                onResearchModeChange={setArticleResearchMode}
 	                onRefreshWeb={refreshArticleAiWithWeb}
+	                onOpenSource={openKnowledgeSource}
 	                onSaveAnswer={saveArticleAiAnswer}
 	              />
                     <CollapsedAIPanelRail
@@ -2285,13 +2320,13 @@ function ArticleAIPanel({
   researchMode,
   question,
   savingAnswerId,
-  selectionContext,
   onAsk,
   onClose,
   onPanelModeChange,
   onQuestionChange,
   onResearchModeChange,
   onRefreshWeb,
+  onOpenSource,
   onSaveAnswer,
 }: {
   chatError: string;
@@ -2302,24 +2337,22 @@ function ArticleAIPanel({
   researchMode: KnowledgeResearchMode;
   question: string;
   savingAnswerId: string;
-  selectionContext: ArticleSelectionContext | null;
   onAsk: () => void;
   onClose: () => void;
   onPanelModeChange: (mode: ArticleAIPanelMode) => void;
   onQuestionChange: (value: string) => void;
   onResearchModeChange: (mode: KnowledgeResearchMode) => void;
   onRefreshWeb: () => void;
+  onOpenSource: (source: KnowledgeResearchSource) => void;
   onSaveAnswer: (message: ArticleChatMessage, outputType: "local_learning_note" | "knowledge_card") => void;
 }) {
-  const selectedLength = selectionContext?.selectedText.length ?? 0;
   const hasPendingAssistant = messages.some((message) => message.role === "assistant" && message.pending);
   return (
-    <aside className="hidden min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background 2xl:flex">
-      <div className="shrink-0 border-b border-border p-3">
+    <aside className="hidden min-h-0 flex-col overflow-hidden rounded-lg border border-border/80 bg-background 2xl:flex">
+      <div className="shrink-0 border-b border-border/70 px-3 py-2.5">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold">AI 对话</h2>
-            <p className="mt-0.5 truncate text-xs text-muted-foreground">当前文件：{detail.title || "未命名文件"}</p>
+            <h2 className="truncate text-sm font-semibold" title={detail.title || "未命名文件"}>AI 对话</h2>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <button
@@ -2342,55 +2375,44 @@ function ArticleAIPanel({
             </button>
           </div>
         </div>
-        <div className="mt-3 rounded-md border border-border bg-background/65 px-3 py-2 text-xs text-muted-foreground">
-          {selectedLength ? `已选中 ${selectedLength} 字` : "未选择文本，将基于当前文章提问"}
-          {selectionContext?.headingPath.length ? (
-            <div className="mt-1 truncate">位置：{selectionContext.headingPath.join(" / ")}</div>
-          ) : null}
-        </div>
         <ResearchModeControl
           disabled={loading}
           mode={researchMode}
           onChange={onResearchModeChange}
         />
-        <button
-          type="button"
-          onClick={onRefreshWeb}
-          disabled={loading || !messages.some((message) => message.role === "user") && !question.trim()}
-          className="mt-2 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-border bg-background/65 px-2 text-xs text-muted-foreground transition hover:border-primary/35 hover:text-foreground disabled:opacity-45"
-        >
-          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-          重新联网检索
-        </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5">
         {messages.length ? (
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             {messages.map((message) => (
               <div
                 key={message.id}
                 className={cn(
                   "rounded-md border px-3 py-2 text-sm leading-6",
                   message.role === "user"
-                    ? "border-primary/25 bg-primary/8"
-                    : "border-border bg-background/65",
+                    ? "border-primary/15 bg-primary/5"
+                    : "border-border/75 bg-background/45",
                 )}
               >
-                {message.selectionPreview ? (
-                  <div className="mb-1 rounded border border-border bg-background/60 px-2 py-1 text-xs text-muted-foreground">
-                    选区：{message.selectionPreview}
-                  </div>
-                ) : null}
                 {message.role === "assistant" ? (
                   <ArticleAssistantAnswer
                     content={message.content}
                     message={message}
+                    onOpenSource={onOpenSource}
+                    onRefreshWeb={onRefreshWeb}
                     saving={savingAnswerId === message.id}
                     onSave={onSaveAnswer}
                   />
                 ) : (
-                  <div className="whitespace-pre-wrap break-words">{message.content}</div>
+                  <>
+                    <div className="whitespace-pre-wrap break-words">{message.content}</div>
+                    {message.selectionPreview ? (
+                      <div className="mt-1 truncate text-xs text-muted-foreground">
+                        选区：{message.selectionPreview}
+                      </div>
+                    ) : null}
+                  </>
                 )}
               </div>
             ))}
@@ -2469,9 +2491,9 @@ function CollapsedAIPanelRail({
 
 const ARTICLE_RESEARCH_MODES: Array<{ label: string; mode: KnowledgeResearchMode }> = [
   { label: "当前文章", mode: "current_article_only" },
-  { label: "仅知识库", mode: "local_only" },
-  { label: "知识库+联网搜索", mode: "local_web" },
-  { label: "联网搜索", mode: "web_only" },
+  { label: "知识库", mode: "local_only" },
+  { label: "知识库+联网", mode: "local_web" },
+  { label: "联网", mode: "web_only" },
 ];
 
 function ResearchModeControl({
@@ -2484,7 +2506,7 @@ function ResearchModeControl({
   onChange: (mode: KnowledgeResearchMode) => void;
 }) {
   return (
-    <div className="mt-2 grid grid-cols-2 gap-1 rounded-md border border-border bg-background/70 p-1">
+    <div className="mt-2 flex min-w-0 items-center gap-1 overflow-x-auto border-t border-border/60 pt-2">
       {ARTICLE_RESEARCH_MODES.map((item) => (
         <button
           key={item.mode}
@@ -2492,10 +2514,10 @@ function ResearchModeControl({
           disabled={disabled}
           onClick={() => onChange(item.mode)}
           className={cn(
-            "rounded px-2 py-1 text-xs font-medium transition",
+            "shrink-0 rounded px-1.5 py-0.5 text-xs font-medium transition",
             mode === item.mode
-              ? "bg-primary text-primary-foreground"
-              : "text-muted-foreground hover:bg-background/90 hover:text-foreground",
+              ? "bg-primary/10 text-foreground"
+              : "text-muted-foreground hover:text-foreground",
             disabled && "opacity-45",
           )}
         >
@@ -2735,19 +2757,19 @@ function mergeResearchSources(
 function ArticleAssistantAnswer({
   content,
   message,
+  onOpenSource,
+  onRefreshWeb,
   saving,
   onSave,
 }: {
   content: string;
   message: ArticleChatMessage;
+  onOpenSource: (source: KnowledgeResearchSource) => void;
+  onRefreshWeb: () => void;
   saving: boolean;
   onSave: (message: ArticleChatMessage, outputType: "local_learning_note" | "knowledge_card") => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const citationSources = useMemo(
-    () => [...(message.sources?.knowledge ?? []), ...(message.sources?.web ?? [])],
-    [message.sources],
-  );
   const streamingAnswer = Boolean(message.pending && message.researchTrace?.answer_streaming && content.trim());
   const showPendingPlaceholder = Boolean(
     message.pending && !streamingAnswer && !message.researchTrace?.web_search_attempted,
@@ -2762,12 +2784,25 @@ function ArticleAssistantAnswer({
 
   return (
     <div className="min-w-0">
+      <div className="[&_a]:break-words [&_pre]:max-w-full">
+        <ArticleResearchProcess message={message} />
+        {showPendingPlaceholder ? (
+          <div className="text-sm leading-6 text-muted-foreground">正在整理回答...</div>
+        ) : message.pending && !streamingAnswer ? null : (
+          <KnowledgeAnswerView
+            content={content}
+            onSourceOpen={(source) => onOpenSource(source as KnowledgeResearchSource)}
+            sources={message.sources}
+            streaming={message.pending}
+          />
+        )}
+      </div>
       {!message.pending ? (
-        <div className="mb-2 flex flex-wrap justify-end gap-1">
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <button
             type="button"
             onClick={() => void copyAnswer()}
-            className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground transition hover:border-primary/30 hover:text-foreground"
+            className="inline-flex items-center gap-1 transition hover:text-foreground"
             title="复制回答"
             aria-label="复制回答"
           >
@@ -2778,7 +2813,7 @@ function ArticleAssistantAnswer({
             type="button"
             onClick={() => onSave(message, "local_learning_note")}
             disabled={saving}
-            className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground transition hover:border-primary/30 hover:text-foreground disabled:opacity-45"
+            className="inline-flex items-center gap-1 transition hover:text-foreground disabled:opacity-45"
           >
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <NotebookPen className="h-3.5 w-3.5" />}
             存笔记
@@ -2787,22 +2822,21 @@ function ArticleAssistantAnswer({
             type="button"
             onClick={() => onSave(message, "knowledge_card")}
             disabled={saving}
-            className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground transition hover:border-primary/30 hover:text-foreground disabled:opacity-45"
+            className="inline-flex items-center gap-1 transition hover:text-foreground disabled:opacity-45"
           >
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers3 className="h-3.5 w-3.5" />}
             做卡片
           </button>
+          <button
+            type="button"
+            onClick={onRefreshWeb}
+            className="inline-flex items-center gap-1 transition hover:text-foreground"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            重新联网检索
+          </button>
         </div>
       ) : null}
-      <div className="[&_a]:break-words [&_pre]:max-w-full">
-        <ArticleResearchProcess message={message} />
-        {showPendingPlaceholder ? (
-          <div className="text-sm leading-6 text-muted-foreground">正在整理回答...</div>
-        ) : message.pending && !streamingAnswer ? null : (
-          <Markdown content={stripTrailingReferenceSection(content)} sources={citationSources} />
-        )}
-      </div>
-      {!message.pending ? <ArticleSourceList content={content} sources={message.sources} /> : null}
     </div>
   );
 }
@@ -2875,21 +2909,20 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
   if (!shouldRender) return null;
 
   return (
-    <div className="mb-3 border-b border-border/60 pb-2 text-xs text-muted-foreground">
+    <div className="mb-2 border-b border-border/50 pb-2 text-xs text-muted-foreground">
       <div className="flex min-w-0 items-center gap-2">
         {message.pending ? (
-          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+          <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary/70" />
         ) : (
-          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <Search className="h-3 w-3 shrink-0 text-muted-foreground" />
         )}
         <div className="min-w-0 flex-1 truncate font-medium text-foreground">{summaryText}</div>
       </div>
       {message.pending && (currentStage || researchStatusLabel(status) || webStatus) ? (
-        <div className="mt-1 truncate pl-5 text-[0.72rem] text-muted-foreground">
+        <div className="mt-0.5 truncate pl-5 text-[0.72rem] text-muted-foreground">
           {currentStage || researchStatusLabel(status) || webStatus}
         </div>
       ) : null}
-      <ResearchCompactSources sources={evidenceSources} />
       <ResearchAuditDetails
         candidateSources={candidateSources}
         clueSources={clueSources}
@@ -2909,44 +2942,6 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
     </div>
   );
 });
-
-const ResearchCompactSources = memo(function ResearchCompactSources({ sources }: { sources: KnowledgeResearchSource[] }) {
-  if (!sources.length) return null;
-  const visibleSources = sources.slice(0, 3);
-  const hiddenCount = Math.max(0, sources.length - visibleSources.length);
-  return (
-    <div className="mt-1.5 flex flex-wrap gap-1">
-      {visibleSources.map((source, index) => (
-        <SourceChip key={source.url || source.ref || `${source.title}-${index}`} source={source} />
-      ))}
-      {hiddenCount ? (
-        <span className="inline-flex items-center rounded border border-border/70 px-1.5 py-0.5 text-[0.68rem] text-muted-foreground">
-          +{hiddenCount}
-        </span>
-      ) : null}
-    </div>
-  );
-});
-
-function SourceChip({ source }: { source: KnowledgeResearchSource }) {
-  const text = source.title || source.url || source.id || "引用来源";
-  const chip = (
-    <>
-      <Link2 className="h-3 w-3 shrink-0" />
-      <span className="truncate">{text}</span>
-      {source.url ? <span className="shrink-0 text-muted-foreground">· {hostLabel(source.url)}</span> : null}
-    </>
-  );
-  const className = "inline-flex max-w-full items-center gap-1 rounded border border-border/70 bg-background/40 px-1.5 py-0.5 text-[0.68rem] text-foreground";
-  if (source.url) {
-    return (
-      <a href={source.url} target="_blank" rel="noreferrer" className={cn(className, "hover:border-primary/30")}>
-        {chip}
-      </a>
-    );
-  }
-  return <span className={className}>{chip}</span>;
-}
 
 function ResearchProgress({
   currentStage,
@@ -3032,11 +3027,11 @@ function ResearchAuditDetails({
   if (!hasDetails) return null;
   return (
     <details className="mt-1.5">
-      <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-[0.72rem] text-muted-foreground hover:text-foreground">
-        详情
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-[0.72rem] text-muted-foreground transition hover:text-foreground">
+        检索详情
         <ChevronDown className="h-3 w-3" />
       </summary>
-      <div className="mt-2 border-t border-border/60 pt-2">
+      <div className="mt-2 border-t border-border/50 pt-2">
         {progress}
         {queries.length ? (
           <div className="mt-2 space-y-1">
@@ -3077,64 +3072,6 @@ function ResearchAuditDetails({
         ) : null}
       </div>
     </details>
-  );
-}
-
-function ArticleSourceList({
-  content,
-  sources,
-}: {
-  content: string;
-  sources?: {
-    knowledge?: KnowledgeResearchSource[];
-    web?: KnowledgeResearchSource[];
-  };
-}) {
-  const citedRefs = sourceRefsFromContent(content);
-  const knowledge = (sources?.knowledge ?? []).filter((source) => citedRefs.has((source.ref || "").toUpperCase()));
-  const web = (sources?.web ?? []).filter((source) => citedRefs.has((source.ref || "").toUpperCase()));
-  const allSources = [...knowledge, ...web];
-  if (!allSources.length) return null;
-  const label = allSources.length > 1 ? `${allSources.length} 个引用来源` : "引用来源";
-  return (
-    <details className="mt-3 text-xs text-muted-foreground">
-      <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded border border-border bg-background/60 px-2 py-1.5 font-medium text-foreground hover:border-primary/30">
-        <Link2 className="h-3.5 w-3.5" />
-        {label}
-      </summary>
-      <div className="mt-2 rounded-md border border-border bg-background/60 px-2 py-2">
-        <ul className="space-y-1">
-          {allSources.map((source, index) => (
-            <li key={`${source.ref || index}-${source.url || source.id || source.title}`} className="break-words">
-              <SourceLink source={source} fallbackRef={source.ref || `${index + 1}`} />
-            </li>
-          ))}
-        </ul>
-      </div>
-    </details>
-  );
-}
-
-function SourceLink({ source, fallbackRef }: { source: KnowledgeResearchSource; fallbackRef: string }) {
-  const label = source.title || source.id || source.url || "未命名来源";
-  const suffix = source.section ? ` / ${source.section}` : source.url ? ` · ${hostLabel(source.url)}` : "";
-  if (source.url) {
-    return (
-      <a href={source.url} target="_blank" rel="noreferrer" className="text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary/60">
-        [{source.ref || fallbackRef}] {label}{suffix}
-      </a>
-    );
-  }
-  return (
-    <span>
-      [{source.ref || fallbackRef}] {label}{suffix}
-    </span>
-  );
-}
-
-function sourceRefsFromContent(content: string): Set<string> {
-  return new Set(
-    Array.from(content.matchAll(/\[([KW]\d+)\]/gi)).map((match) => match[1].toUpperCase()),
   );
 }
 
@@ -3279,7 +3216,7 @@ function researchModeLabel(mode: KnowledgeResearchMode): string {
     case "current_article_only":
       return "当前文章";
     case "local_only":
-      return "仅知识库";
+      return "知识库";
     case "local_web":
       return "知识库+联网";
     case "web_only":
@@ -3345,13 +3282,6 @@ function providerStatusValue(value: unknown): string {
     }
   }
   return "已记录";
-}
-
-function stripTrailingReferenceSection(content: string): string {
-  const lines = content.split(/\r?\n/);
-  const index = lines.findIndex((line) => /^#{0,6}\s*(参考来源|来源)\s*[:：]?\s*$/.test(line.trim()));
-  if (index < 0) return content;
-  return lines.slice(0, index).join("\n").trimEnd();
 }
 
 function FilterButton({

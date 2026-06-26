@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import queue
+import re
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -14,6 +16,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlencode, quote, urlparse
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -1530,6 +1533,345 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
     return f"{text}{suffix}" if text else None
 
 
+def _tool_source_payload(name: str, result: str) -> dict[str, object]:
+    try:
+        data = json.loads(result)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    if name == "web_search":
+        web_sources = _web_search_sources(data)
+        if not web_sources:
+            return {}
+        return {"source_map": web_sources, "web_sources": web_sources}
+
+    if name == "web_extract":
+        web_sources = _web_extract_sources(data)
+        if not web_sources:
+            return {}
+        return {"source_map": web_sources, "web_sources": web_sources}
+
+    if name not in {"research_with_web", "search_my_notes"}:
+        return {}
+
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    source_map = _dict_list(data.get("source_map"))
+    knowledge_sources = _dict_list(meta.get("knowledge_sources")) or _source_map_sources(source_map, "knowledge")
+    if knowledge_sources:
+        knowledge_sources = _enrich_gateway_knowledge_sources(knowledge_sources)
+        source_map = _replace_knowledge_sources(source_map, knowledge_sources)
+    research_trace = meta.get("research_trace") if isinstance(meta.get("research_trace"), dict) else None
+    answer_text = str(meta.get("answer") or "").strip()
+    preview_text = str(data.get("chat_preview") or "").strip()
+    retrieved_web_sources = _dict_list(meta.get("retrieved_web_sources"))
+    web_sources = _dict_list(meta.get("web_sources")) or _source_map_sources(source_map, "web")
+    if not web_sources:
+        web_sources = _web_sources_from_retrieved(
+            retrieved_web_sources,
+            answer_text or preview_text,
+        )
+        if web_sources:
+            source_map = _append_missing_sources(source_map, web_sources)
+    else:
+        missing_web_refs = {
+            ref
+            for ref in _citation_refs(answer_text or preview_text)
+            if ref.startswith("W")
+        } - {str(source.get("ref") or "").strip().upper() for source in web_sources}
+        if missing_web_refs:
+            promoted = [
+                source
+                for source in _web_sources_from_retrieved(retrieved_web_sources, answer_text or preview_text)
+                if str(source.get("ref") or "").strip().upper() in missing_web_refs
+            ]
+            if promoted:
+                web_sources = _append_missing_sources(web_sources, promoted)
+                source_map = _append_missing_sources(source_map, promoted)
+    if web_sources:
+        source_map = _append_missing_sources(source_map, web_sources)
+
+    payload: dict[str, object] = {}
+    if source_map:
+        payload["source_map"] = source_map
+    if knowledge_sources:
+        payload["knowledge_sources"] = knowledge_sources
+    if web_sources:
+        payload["web_sources"] = web_sources
+    if retrieved_web_sources:
+        payload["retrieved_web_sources"] = retrieved_web_sources
+    if research_trace:
+        payload["research_trace"] = research_trace
+    if answer_text:
+        payload["answer_text"] = answer_text
+    return payload
+
+
+def _dict_list(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _web_search_sources(data: dict) -> list[dict]:
+    container = data.get("data") if isinstance(data.get("data"), dict) else data
+    web_results = _dict_list(container.get("web") if isinstance(container, dict) else None)
+    sources: list[dict] = []
+    for item in web_results:
+        url = str(item.get("url") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not url or not title:
+            continue
+        sources.append(
+            {
+                "ref": f"W{len(sources) + 1}",
+                "type": "web",
+                "title": title,
+                "url": url,
+                "excerpt": str(item.get("description") or "").strip(),
+                "domain": _source_domain(url),
+            }
+        )
+    return sources
+
+
+def _web_extract_sources(data: dict) -> list[dict]:
+    results = _dict_list(data.get("results"))
+    if not results and isinstance(data.get("data"), dict):
+        results = _dict_list(data["data"].get("results"))
+
+    sources: list[dict] = []
+    for item in results:
+        if item.get("error"):
+            continue
+        url = str(item.get("url") or "").strip()
+        title = str(item.get("title") or "").strip() or url
+        content = str(item.get("content") or "").strip()
+        if not url or not content:
+            continue
+        sources.append(
+            {
+                "ref": f"W{len(sources) + 1}",
+                "type": "web",
+                "title": title,
+                "url": url,
+                "excerpt": content[:240],
+                "domain": _source_domain(url),
+            }
+        )
+    return sources
+
+
+def _web_sources_from_retrieved(sources: list[dict], answer_text: str) -> list[dict]:
+    normalized: list[dict] = []
+    seen = set()
+    for index, item in enumerate(sources):
+        url = str(item.get("url") or "").strip()
+        title = str(item.get("title") or "").strip() or url
+        if not url or not title:
+            continue
+        key = url.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ref = str(item.get("ref") or "").strip().upper() or f"W{index + 1}"
+        normalized.append(
+            {
+                "ref": ref,
+                "type": "web",
+                "title": title,
+                "url": url,
+                "excerpt": str(item.get("excerpt") or item.get("description") or "").strip(),
+                "domain": str(item.get("domain") or "").strip() or _source_domain(url),
+            }
+        )
+
+    cited_refs = _citation_refs(answer_text)
+    if not cited_refs:
+        return normalized
+    order = {ref: index for index, ref in enumerate(cited_refs)}
+    return sorted(
+        normalized,
+        key=lambda source: (order.get(str(source.get("ref") or "").upper(), 10_000), normalized.index(source)),
+    )
+
+
+def _append_missing_sources(source_map: list[dict], sources: list[dict]) -> list[dict]:
+    if not sources:
+        return source_map
+    existing = {
+        (
+            str(source.get("ref") or "").upper(),
+            str(source.get("url") or "").strip().lower(),
+        )
+        for source in source_map
+    }
+    merged = list(source_map)
+    for source in sources:
+        key = (
+            str(source.get("ref") or "").upper(),
+            str(source.get("url") or "").strip().lower(),
+        )
+        if key in existing:
+            continue
+        existing.add(key)
+        merged.append(source)
+    return merged
+
+
+def _citation_refs(text: str) -> list[str]:
+    refs: list[str] = []
+    seen = set()
+    for match in re.finditer(r"\[([KW]?\d+)\]", text or "", re.IGNORECASE):
+        ref = match.group(1).upper()
+        if ref in seen:
+            continue
+        seen.add(ref)
+        refs.append(ref)
+    return refs
+
+
+def _source_domain(url: str) -> str:
+    try:
+        return urlparse(url).netloc.removeprefix("www.")
+    except Exception:
+        return ""
+
+
+def _source_map_sources(source_map: list[dict], source_kind: str) -> list[dict]:
+    sources: list[dict] = []
+    for source in source_map:
+        source_type = str(source.get("type") or "").lower()
+        url = str(source.get("url") or "").strip()
+        ref = str(source.get("ref") or "").upper()
+        is_web = source_type == "web" or bool(url) or ref.startswith("W")
+        if source_kind == "web":
+            if is_web:
+                sources.append(source)
+        elif not is_web:
+            sources.append(source)
+    return sources
+
+
+def _replace_knowledge_sources(source_map: list[dict], knowledge_sources: list[dict]) -> list[dict]:
+    if not source_map or not knowledge_sources:
+        return source_map
+    knowledge_iter = iter(knowledge_sources)
+    replaced: list[dict] = []
+    for source in source_map:
+        source_type = str(source.get("type") or "").lower()
+        url = str(source.get("url") or "").strip()
+        ref = str(source.get("ref") or "").upper()
+        is_web = source_type == "web" or bool(url) or ref.startswith("W")
+        if is_web:
+            replaced.append(source)
+            continue
+        replaced.append(next(knowledge_iter, source))
+    return replaced
+
+
+def _enrich_gateway_knowledge_sources(sources: list[dict]) -> list[dict]:
+    config = _load_knowledge_config()
+    if not config:
+        return sources
+    db_path, vault_path = config
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return sources
+    try:
+        return [_enrich_gateway_knowledge_source(conn, vault_path, source) for source in sources]
+    except Exception as exc:
+        logger.debug("failed to enrich gateway knowledge sources: %s", exc)
+        return sources
+    finally:
+        conn.close()
+
+
+def _load_knowledge_config() -> tuple[Path, Path] | None:
+    custom_root = Path(os.environ.get("HERMES_CUSTOM_ROOT") or Path.home() / "hermes-custom")
+    if str(custom_root) not in sys.path:
+        sys.path.insert(0, str(custom_root))
+    try:
+        from agents.capture_agent import load_config
+
+        config = load_config(str(custom_root / "config.yaml"))
+    except Exception as exc:
+        logger.debug("failed to load Hermes knowledge config: %s", exc)
+        return None
+    db_path = Path(str(getattr(config, "db_path", "") or custom_root / "data" / "captures.db")).expanduser()
+    vault_path = Path(str(getattr(config, "vault_path", "") or Path.home() / "Obsidian" / "hermes-vault")).expanduser()
+    return db_path, vault_path
+
+
+def _enrich_gateway_knowledge_source(
+    conn: sqlite3.Connection,
+    vault_path: Path,
+    source: dict,
+) -> dict:
+    enriched = dict(source)
+    enriched["type"] = enriched.get("type") or "knowledge"
+    source_id = str(enriched.get("id") or enriched.get("item_id") or "").strip()
+    source_path = str(enriched.get("file_path") or enriched.get("path") or "").strip()
+    row = None
+    if source_id:
+        row = conn.execute("SELECT id, file_path FROM captures WHERE id = ?", (source_id,)).fetchone()
+    if row is None and source_path:
+        row = conn.execute(
+            "SELECT id, file_path FROM captures WHERE file_path = ? OR raw_path = ?",
+            (source_path, source_path),
+        ).fetchone()
+    if row is None and source_id and len(source_id) >= 6:
+        rows = conn.execute(
+            "SELECT id, file_path FROM captures WHERE id LIKE ? ORDER BY updated_at DESC LIMIT 2",
+            (f"{source_id}%",),
+        ).fetchall()
+        if len(rows) == 1:
+            row = rows[0]
+    if row is not None:
+        item_id = str(row["id"] or "")
+        file_path = str(row["file_path"] or source_path)
+        enriched.update(
+            {
+                "item_kind": "capture",
+                "item_id": item_id,
+                "file_path": file_path,
+                "path": source_path or file_path,
+                "open_url": _knowledge_source_open_url("capture", item_id),
+            }
+        )
+        if file_path:
+            enriched["obsidian_url"] = _knowledge_obsidian_url(vault_path, file_path)
+        return enriched
+
+    if source_id:
+        draft = conn.execute("SELECT id FROM capture_drafts WHERE id = ?", (source_id,)).fetchone()
+        if draft is not None:
+            item_id = str(draft["id"] or "")
+            enriched.update(
+                {
+                    "item_kind": "capture_draft",
+                    "item_id": item_id,
+                    "open_url": _knowledge_source_open_url("capture_draft", item_id),
+                }
+            )
+    return enriched
+
+
+def _knowledge_source_open_url(kind: str, item_id: str) -> str:
+    return "/knowledge-library?" + urlencode({"kind": kind, "item": item_id})
+
+
+def _knowledge_obsidian_url(vault_path: Path, file_path: str) -> str:
+    file_ref = file_path.removesuffix(".md")
+    return "obsidian://open?" + urlencode(
+        {"vault": vault_path.name, "file": file_ref},
+        quote_via=quote,
+    )
+
+
 def _research_with_web_summary(data: dict, suffix: str) -> str:
     meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
     trace = meta.get("research_trace") if isinstance(meta.get("research_trace"), dict) else {}
@@ -1620,6 +1962,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
                 payload["todos"] = data.get("todos")
         except Exception:
             pass
+    payload.update(_tool_source_payload(name, result))
     try:
         from agent.display import render_edit_diff_with_delta
 
@@ -2210,6 +2553,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             item = {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
             if content_text.strip():
                 item["text"] = content_text
+                item.update(_tool_source_payload(name, content_text))
             messages.append(item)
             continue
         if not content_text.strip():
@@ -2646,6 +2990,40 @@ def _(rid, params: dict) -> dict:
         ]
     )
     return _ok(rid, {"output": "\n".join(lines)})
+
+
+@method("session.set_toolsets")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    if session.get("running"):
+        return _err(rid, 4090, "session is running")
+    try:
+        enabled_toolsets = _normalize_session_toolsets(params.get("enabled_toolsets"))
+    except ValueError as exc:
+        return _err(rid, 4019, str(exc))
+    if session.get("enabled_toolsets_override") == enabled_toolsets:
+        agent = session.get("agent")
+        return _ok(rid, _session_info(agent) if agent is not None else {})
+
+    sid = str(params.get("session_id") or "")
+    tokens = _set_session_context(session["session_key"])
+    try:
+        agent = _make_agent(
+            sid,
+            session["session_key"],
+            session_id=session["session_key"],
+            enabled_toolsets=enabled_toolsets,
+        )
+    finally:
+        _clear_session_context(tokens)
+    session["agent"] = agent
+    session["enabled_toolsets_override"] = enabled_toolsets
+    info = _session_info(agent)
+    _emit("session.info", sid, info)
+    _restart_slash_worker(session)
+    return _ok(rid, info)
 
 
 @method("session.history")

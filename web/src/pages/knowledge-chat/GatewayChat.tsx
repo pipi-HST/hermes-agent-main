@@ -10,9 +10,9 @@ import {
   Paperclip,
   X,
 } from "lucide-react";
-import { Markdown } from "@/components/Markdown";
+import { KnowledgeAnswerView, type KnowledgeAnswerSource } from "@/components/KnowledgeAnswerView";
 import type { ConnectionState } from "@/lib/gatewayClient";
-import type { KnowledgeMessage, KnowledgeSourceHint } from "@/lib/knowledgeChatState";
+import { isKnowledgeSourceHint, type KnowledgeMessage, type KnowledgeSourceHint } from "@/lib/knowledgeChatState";
 import type { KnowledgeResearchMode } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { AnswerOutputType, ComposerAttachment } from "./shared";
@@ -34,7 +34,6 @@ export function GatewayChat({
   messages,
   researchMode,
   running,
-  sourceHints,
   transcriptRef,
   uploading,
   onInputChange,
@@ -42,6 +41,7 @@ export function GatewayChat({
   onResearchModeChange,
   onRemoveAttachment,
   onSaveAnswer,
+  onSourceOpen,
   onSubmit,
   onUploadFiles,
 }: {
@@ -55,7 +55,6 @@ export function GatewayChat({
   messages: KnowledgeMessage[];
   researchMode: KnowledgeResearchMode;
   running: boolean;
-  sourceHints: KnowledgeSourceHint[];
   transcriptRef: React.RefObject<HTMLDivElement | null>;
   uploading: boolean;
   onInputChange: (value: string) => void;
@@ -63,14 +62,11 @@ export function GatewayChat({
   onResearchModeChange: (mode: KnowledgeResearchMode) => void;
   onRemoveAttachment: (id: string) => void;
   onSaveAnswer: (message: KnowledgeMessage, outputType: AnswerOutputType) => void;
+  onSourceOpen?: (source: KnowledgeAnswerSource) => void;
   onSubmit: () => void;
   onUploadFiles: (files: FileList | File[]) => void;
 }) {
   const inputDisabled = running || uploading || connection !== "open";
-  const latestAssistantId = React.useMemo(
-    () => [...messages].reverse().find((message) => message.role === "assistant")?.id ?? "",
-    [messages],
-  );
 
   return (
     <>
@@ -87,11 +83,12 @@ export function GatewayChat({
                 key={message.id}
                 message={message}
                 onSaveAnswer={onSaveAnswer}
-                sourceHints={message.id === latestAssistantId ? sourceHints : []}
+                onSourceOpen={onSourceOpen}
+                sourceHints={message.sourceHints ?? []}
               />
             ))}
             {draftAssistant && (
-              <TranscriptMessage message={draftAssistant} streaming />
+              <TranscriptMessage message={draftAssistant} onSourceOpen={onSourceOpen} streaming />
             )}
           </div>
         )}
@@ -261,26 +258,31 @@ function EmptyState({ onPick }: { onPick: (text: string) => void }) {
 function TranscriptMessage({
   message,
   onSaveAnswer,
+  onSourceOpen,
   sourceHints = [],
   streaming,
 }: {
   message: KnowledgeMessage;
   onSaveAnswer?: (message: KnowledgeMessage, outputType: AnswerOutputType) => void;
+  onSourceOpen?: (source: KnowledgeAnswerSource) => void;
   sourceHints?: KnowledgeSourceHint[];
   streaming?: boolean;
 }) {
   const isUser = message.role === "user";
   const [copied, setCopied] = React.useState(false);
-  const markdownSources = React.useMemo(
-    () => sourceHints.map((source) => ({
-      ref: source.ref,
-      type: source.sourceType,
-      id: source.sourceId || source.id,
-      title: source.label,
-      url: source.url,
-      path: source.filePath,
-      section: "",
-    })),
+  const answerSources = React.useMemo(
+    () => sourceHints.reduce<{ knowledge: KnowledgeAnswerSource[]; web: KnowledgeAnswerSource[] }>(
+      (groups, source, index) => {
+        const answerSource = answerSourceFromHint(source, index);
+        if (isKnowledgeSourceHint(source)) {
+          groups.knowledge.push(answerSource);
+        } else {
+          groups.web.push(answerSource);
+        }
+        return groups;
+      },
+      { knowledge: [], web: [] },
+    ),
     [sourceHints],
   );
 
@@ -343,9 +345,10 @@ function TranscriptMessage({
             {message.text}
           </p>
         ) : (
-          <Markdown
-            content={stripTrailingSourceSection(message.text)}
-            sources={markdownSources}
+          <KnowledgeAnswerView
+            content={message.text}
+            onSourceOpen={onSourceOpen}
+            sources={answerSources}
             streaming={streaming}
           />
         )}
@@ -383,26 +386,50 @@ function AttachmentChip({
   );
 }
 
-function stripTrailingSourceSection(text: string): string {
-  const lines = text.split("\n");
-  let cutIndex = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-    if (
-      /^#{0,3}\s*(参考来源|来源|引用|references?)\s*[:：]?$/i.test(trimmed)
-    ) {
-      cutIndex = i;
-    }
-  }
-
-  if (cutIndex < 0) return text;
-  while (cutIndex > 0 && lines[cutIndex - 1].trim() === "") cutIndex--;
-  return lines.slice(0, cutIndex).join("\n");
-}
-
 function formatFileSize(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function answerSourceFromHint(source: KnowledgeSourceHint, index: number): KnowledgeAnswerSource {
+  const isKnowledge = isKnowledgeSourceHint(source);
+  const type = source.sourceType || (isKnowledge ? "knowledge" : "web");
+  const itemKind = source.itemKind || inferredItemKind(type);
+  const itemId = source.itemId || (itemKind ? source.sourceId || "" : "");
+  return {
+    ref: source.ref || inferredRef(type, index),
+    type,
+    id: source.sourceId || source.id,
+    item_kind: itemKind || undefined,
+    item_id: itemId || undefined,
+    title: source.label,
+    url: isKnowledge ? undefined : source.url,
+    path: source.path || source.filePath,
+    file_path: source.filePath,
+    open_url: source.openUrl || inferredOpenUrl(itemKind, itemId),
+    obsidian_url: source.obsidianUrl,
+    section: "",
+    domain: source.domain,
+  };
+}
+
+function inferredItemKind(sourceType: string): string {
+  const normalized = sourceType.toLowerCase();
+  if (normalized === "capture" || normalized === "capture_note" || normalized === "capture_section") return "capture";
+  if (normalized === "capture_draft") return "capture_draft";
+  return "";
+}
+
+function inferredOpenUrl(itemKind: string, itemId: string): string | undefined {
+  return itemKind && itemId
+    ? `/knowledge-library?kind=${encodeURIComponent(itemKind)}&item=${encodeURIComponent(itemId)}`
+    : undefined;
+}
+
+function inferredRef(sourceType: string, index: number): string | undefined {
+  const normalized = sourceType.toLowerCase();
+  if (normalized === "web") return `W${index + 1}`;
+  if (normalized === "knowledge" || normalized.startsWith("capture")) return `${index + 1}`;
+  return undefined;
 }

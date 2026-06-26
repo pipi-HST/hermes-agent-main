@@ -1,13 +1,17 @@
-import { ExternalLink } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 
 export interface MarkdownSource {
   ref?: string;
   type?: string;
   id?: string;
+  item_kind?: string;
+  item_id?: string;
   title?: string;
   url?: string;
   path?: string;
+  file_path?: string;
+  open_url?: string;
+  obsidian_url?: string;
   section?: string;
 }
 
@@ -23,11 +27,13 @@ export interface MarkdownSource {
 export function Markdown({
   content,
   highlightTerms,
+  onSourceOpen,
   sources,
   streaming,
 }: {
   content: string;
   highlightTerms?: string[];
+  onSourceOpen?: (source: MarkdownSource) => void;
   sources?: MarkdownSource[];
   streaming?: boolean;
 }) {
@@ -42,6 +48,7 @@ export function Markdown({
           key={i}
           block={block}
           highlightTerms={highlightTerms}
+          onSourceOpen={onSourceOpen}
           sourceMap={sourceMap}
           caret={caret && i === blocks.length - 1 ? caret : null}
         />
@@ -225,11 +232,13 @@ function parseBlocks(text: string): BlockNode[] {
 function Block({
   block,
   highlightTerms,
+  onSourceOpen,
   sourceMap,
   caret,
 }: {
   block: BlockNode;
   highlightTerms?: string[];
+  onSourceOpen?: (source: MarkdownSource) => void;
   sourceMap: Map<string, MarkdownSource>;
   caret?: ReactNode;
 }) {
@@ -254,7 +263,7 @@ function Block({
       };
       return (
         <Tag className={sizes[Tag]}>
-          <InlineContent text={block.content} highlightTerms={highlightTerms} sourceMap={sourceMap} />
+          <InlineContent text={block.content} highlightTerms={highlightTerms} onSourceOpen={onSourceOpen} sourceMap={sourceMap} />
           {caret}
         </Tag>
       );
@@ -271,7 +280,7 @@ function Block({
     case "quote":
       return (
         <blockquote className="border-l-2 border-primary/35 bg-primary/5 px-3 py-2 text-sm text-muted-foreground">
-          <InlineContent text={block.content} highlightTerms={highlightTerms} sourceMap={sourceMap} />
+          <InlineContent text={block.content} highlightTerms={highlightTerms} onSourceOpen={onSourceOpen} sourceMap={sourceMap} />
           {caret}
         </blockquote>
       );
@@ -288,7 +297,7 @@ function Block({
                     key={ci}
                     className="border border-border bg-secondary/40 px-2.5 py-1.5 text-left font-semibold"
                   >
-                    <InlineContent text={h} highlightTerms={highlightTerms} sourceMap={sourceMap} />
+                    <InlineContent text={h} highlightTerms={highlightTerms} onSourceOpen={onSourceOpen} sourceMap={sourceMap} />
                   </th>
                 ))}
               </tr>
@@ -304,6 +313,7 @@ function Block({
                       <InlineContent
                         text={row[ci] ?? ""}
                         highlightTerms={highlightTerms}
+                        onSourceOpen={onSourceOpen}
                         sourceMap={sourceMap}
                       />
                     </td>
@@ -326,7 +336,7 @@ function Block({
         >
           {block.items.map((item, i) => (
             <li key={i}>
-              <InlineContent text={item} highlightTerms={highlightTerms} sourceMap={sourceMap} />
+              <InlineContent text={item} highlightTerms={highlightTerms} onSourceOpen={onSourceOpen} sourceMap={sourceMap} />
               {i === last ? caret : null}
             </li>
           ))}
@@ -337,7 +347,7 @@ function Block({
     case "paragraph":
       return (
         <p>
-          <InlineContent text={block.content} highlightTerms={highlightTerms} sourceMap={sourceMap} />
+          <InlineContent text={block.content} highlightTerms={highlightTerms} onSourceOpen={onSourceOpen} sourceMap={sourceMap} />
           {caret}
         </p>
       );
@@ -361,7 +371,7 @@ function parseInline(text: string): InlineNode[] {
   const nodes: InlineNode[] = [];
   // Pattern priority: code > link > citation > bold > italic > bare URL > line break
   const pattern =
-    /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\[([KW]\d+)\])|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/gi;
+    /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\[([KW]?\d+)\])|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/gi;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -406,10 +416,12 @@ function parseInline(text: string): InlineNode[] {
 function InlineContent({
   text,
   highlightTerms,
+  onSourceOpen,
   sourceMap,
 }: {
   text: string;
   highlightTerms?: string[];
+  onSourceOpen?: (source: MarkdownSource) => void;
   sourceMap: Map<string, MarkdownSource>;
 }) {
   const nodes = useMemo(() => parseInline(text), [text]);
@@ -448,7 +460,7 @@ function InlineContent({
               </em>
             );
           case "citation":
-            return <CitationControl key={i} refId={node.ref} source={sourceMap.get(node.ref)} />;
+            return <CitationControl key={i} onSourceOpen={onSourceOpen} refId={node.ref} source={sourceMap.get(node.ref)} />;
           case "link":
             return (
               <a
@@ -469,10 +481,34 @@ function InlineContent({
   );
 }
 
-function CitationControl({ refId, source }: { refId: string; source?: MarkdownSource }) {
+function CitationControl({
+  onSourceOpen,
+  refId,
+  source,
+}: {
+  onSourceOpen?: (source: MarkdownSource) => void;
+  refId: string;
+  source?: MarkdownSource;
+}) {
   const label = source?.title || source?.section || source?.id || refId;
-  const href = source?.url || source?.path || "";
-  const title = href ? `${label} ${href}` : label;
+  const href = source?.url || "";
+  const isKnowledgeSource = Boolean(
+    source && (
+      (source.type || "").toLowerCase() === "knowledge" ||
+      (source.type || "").toLowerCase().startsWith("capture") ||
+      source.item_kind ||
+      refId.toUpperCase().startsWith("K")
+    ),
+  );
+  const canOpenKnowledge = Boolean(source && isKnowledgeSource && !href && onSourceOpen);
+  if (!source && /^\d+$/.test(refId)) {
+    return <>{`[${refId}]`}</>;
+  }
+  const title = href
+    ? `${label} ${href}`
+    : canOpenKnowledge
+      ? `打开知识库来源 ${label}`
+      : label;
   const className = "mx-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded border border-primary/25 bg-primary/5 px-1 align-[0.08em] text-[0.68rem] font-medium text-primary hover:border-primary/45 hover:bg-primary/10";
 
   if (href) {
@@ -485,16 +521,25 @@ function CitationControl({ refId, source }: { refId: string; source?: MarkdownSo
         title={title}
         aria-label={`打开引用来源 ${label}`}
       >
-        <ExternalLink className="h-3 w-3" aria-hidden />
+        {refId}
       </a>
     );
   }
+  if (source && canOpenKnowledge) {
+    return (
+      <button
+        type="button"
+        className={className}
+        title={title}
+        aria-label={`打开知识库来源 ${label}`}
+        onClick={() => onSourceOpen?.(source)}
+      >
+        {refId}
+      </button>
+    );
+  }
 
-  return (
-    <span className={className} title={title} aria-label={`引用来源 ${label}`}>
-      {refId}
-    </span>
-  );
+  return <>{`[${refId}]`}</>;
 }
 
 function buildSourceMap(sources?: MarkdownSource[]): Map<string, MarkdownSource> {

@@ -523,6 +523,37 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "knowledge-local": {
+        "description": "Hermes Knowledge workbench local-only RAG tools",
+        "tools": [
+            "capture_content", "revise_capture_draft", "commit_capture_draft",
+            "show_capture_draft", "refine_capture", "search_my_notes",
+            "continue_rag_answer",
+            "start_reading_session", "discuss_reading", "show_reading_session",
+            "summarize_reading_session", "commit_reading_artifact",
+            "save_answer_to_knowledge", "graph_report", "synthesize_garden",
+            "revise_garden_draft", "commit_garden_draft", "daily_review",
+            "review_feedback", "review_followup", "audit_library", "agent_run_status",
+            "send_message",
+        ],
+        "includes": [],
+    },
+
+    "knowledge-web-research": {
+        "description": "Hermes Knowledge workbench structured web research tools",
+        "tools": [
+            "capture_content", "revise_capture_draft", "commit_capture_draft",
+            "show_capture_draft", "refine_capture", "research_with_web",
+            "start_reading_session", "discuss_reading", "show_reading_session",
+            "summarize_reading_session", "commit_reading_artifact",
+            "save_answer_to_knowledge", "graph_report", "synthesize_garden",
+            "revise_garden_draft", "commit_garden_draft", "daily_review",
+            "review_feedback", "review_followup", "audit_library", "agent_run_status",
+            "send_message",
+        ],
+        "includes": [],
+    },
+
     "knowledge-advanced": {
         "description": "Advanced/internal knowledge maintenance and visualization tools",
         "tools": ["theme_scan", "theme_candidates", "generate_canvas"],

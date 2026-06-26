@@ -90,6 +90,7 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+MAX_SELECTION_SEARCH_CHARS = 1000
 
 # In-browser terminal Chat tab (/chat, /api/pty, …). Off unless
 # ``hermes dashboard --tui`` or HERMES_DASHBOARD_TUI=1. The JSON-RPC sidecar
@@ -5958,6 +5959,7 @@ def _knowledge_library_selection_research_kwargs(
     question = body.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="question is required")
+    _validate_selection_search_length(body.selected_text)
     kind = (kind or "").strip()
     item = _knowledge_library_selection_item(kind, item_id)
     return {
@@ -5985,6 +5987,110 @@ def _knowledge_library_selection_research_kwargs(
     }
 
 
+def _validate_selection_search_length(selected_text: str) -> None:
+    if len((selected_text or "").strip()) > MAX_SELECTION_SEARCH_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail="选区超过 1000 字，当前不支持基于超长选区检索。请缩短选区后再试。",
+        )
+
+
+def _knowledge_obsidian_url(vault_path: Path, file_path: str) -> str:
+    file_ref = file_path.removesuffix(".md")
+    return (
+        "obsidian://open?"
+        + urllib.parse.urlencode(
+            {
+                "vault": vault_path.name,
+                "file": file_ref,
+            },
+            quote_via=urllib.parse.quote,
+        )
+    )
+
+
+def _knowledge_source_open_url(kind: str, item_id: str) -> str:
+    return (
+        "/knowledge-library?"
+        + urllib.parse.urlencode(
+            {
+                "kind": kind,
+                "item": item_id,
+            }
+        )
+    )
+
+
+def _enrich_knowledge_source(
+    conn: sqlite3.Connection,
+    vault_path: Path,
+    source: dict[str, Any],
+) -> dict[str, Any]:
+    enriched = dict(source)
+    enriched["type"] = enriched.get("type") or "knowledge"
+    source_id = str(enriched.get("id") or "").strip()
+    source_path = str(enriched.get("file_path") or enriched.get("path") or "").strip()
+    row = None
+    if source_id:
+        row = conn.execute("SELECT id, file_path FROM captures WHERE id = ?", (source_id,)).fetchone()
+    if row is None and source_path:
+        row = conn.execute(
+            "SELECT id, file_path FROM captures WHERE file_path = ? OR raw_path = ?",
+            (source_path, source_path),
+        ).fetchone()
+    if row is None and source_id and len(source_id) >= 6:
+        rows = conn.execute(
+            "SELECT id, file_path FROM captures WHERE id LIKE ? ORDER BY updated_at DESC LIMIT 2",
+            (f"{source_id}%",),
+        ).fetchall()
+        if len(rows) == 1:
+            row = rows[0]
+    if row is not None:
+        item_id = str(row["id"] or "")
+        file_path = str(row["file_path"] or source_path)
+        enriched.update(
+            {
+                "item_kind": "capture",
+                "item_id": item_id,
+                "file_path": file_path,
+                "path": source_path or file_path,
+                "open_url": _knowledge_source_open_url("capture", item_id),
+            }
+        )
+        if file_path:
+            enriched["obsidian_url"] = _knowledge_obsidian_url(vault_path, file_path)
+        return enriched
+
+    if source_id:
+        draft = conn.execute("SELECT id FROM capture_drafts WHERE id = ?", (source_id,)).fetchone()
+        if draft is not None:
+            item_id = str(draft["id"] or "")
+            enriched.update(
+                {
+                    "item_kind": "capture_draft",
+                    "item_id": item_id,
+                    "open_url": _knowledge_source_open_url("capture_draft", item_id),
+                }
+            )
+    return enriched
+
+
+def _enrich_knowledge_sources(sources: Any) -> list[dict[str, Any]]:
+    if not isinstance(sources, list):
+        return []
+    vault_path = _knowledge_vault_path()
+    try:
+        with _knowledge_conn() as conn:
+            return [
+                _enrich_knowledge_source(conn, vault_path, source)
+                for source in sources
+                if isinstance(source, dict)
+            ]
+    except Exception:
+        _log.exception("failed to enrich knowledge sources")
+        return [dict(source) for source in sources if isinstance(source, dict)]
+
+
 def _knowledge_library_selection_chat_response(
     result: dict[str, Any],
     body: _KnowledgeLibrarySelectionChatBody,
@@ -5994,6 +6100,7 @@ def _knowledge_library_selection_chat_response(
     if selected_text:
         citations.append({"label": "当前选区", "excerpt": _clip_text(selected_text, 220)})
     meta = result.get("meta") if isinstance(result, dict) else {}
+    knowledge_sources = _enrich_knowledge_sources(meta.get("knowledge_sources"))
     return {
         "ok": True,
         "answer": result.get("chat_preview") or meta.get("answer") or "",
@@ -6003,7 +6110,7 @@ def _knowledge_library_selection_chat_response(
         "plan": meta.get("research_plan") if isinstance(meta.get("research_plan"), dict) else {},
         "plan_status": meta.get("plan_status") or "",
         "sources": {
-            "knowledge": meta.get("knowledge_sources") if isinstance(meta.get("knowledge_sources"), list) else [],
+            "knowledge": knowledge_sources,
             "web": meta.get("web_sources") if isinstance(meta.get("web_sources"), list) else [],
         },
         "warnings": result.get("warnings") if isinstance(result.get("warnings"), list) else [],
@@ -6058,7 +6165,6 @@ async def post_knowledge_library_item_selection_chat_stream(
     body: _KnowledgeLibrarySelectionChatBody,
 ):
     _require_token(request)
-    research_kwargs = _knowledge_library_selection_research_kwargs(kind, item_id, body)
 
     async def event_stream():
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -6068,6 +6174,7 @@ async def post_knowledge_library_item_selection_chat_stream(
 
         async def run_research() -> None:
             try:
+                research_kwargs = _knowledge_library_selection_research_kwargs(kind, item_id, body)
                 research_bridge = _knowledge_custom_module("bridge.research_bridge", "Research bridge")
                 async_answer = getattr(research_bridge, "async_web_assist_answer", None)
                 if callable(async_answer):

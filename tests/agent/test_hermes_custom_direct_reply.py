@@ -161,6 +161,122 @@ def test_direct_reply_does_not_apply_weixin_limit_to_tui_workbench():
     assert reply == "字" * 1600
 
 
+def test_direct_reply_uses_full_rag_answer_for_tui_workbench():
+    structured = {
+        "status": "success",
+        "agent": "rag",
+        "intent": "search_knowledge_base",
+        "durable_artifacts": [],
+        "source_map": [{"title": "AI文章", "path": "captures/ai.md"}],
+        "next_actions": [],
+        "warnings": [],
+        "errors": [],
+        "meta": {"answer": "完整 RAG 回答第二段不会被 chat_preview 截断 [1]"},
+    }
+    content = (
+        "USER_VISIBLE_REPLY:\n"
+        "短回答（已省略后续内容，回复“继续展开”可查看更多。）\n\n"
+        "STRUCTURED_AGENT_RESULT_DO_NOT_REWRITE:\n"
+        f"{json.dumps(structured, ensure_ascii=False)}\n\n"
+        "Return USER_VISIBLE_REPLY as-is as the chat response; do not summarize or shorten it."
+    )
+
+    reply = direct_reply_from_tool_result_content(
+        "search_my_notes",
+        content,
+        platform="tui",
+    )
+
+    assert reply == "完整 RAG 回答第二段不会被 chat_preview 截断 [1]"
+
+
+def test_direct_reply_uses_full_research_answer_for_tui_workbench():
+    structured = {
+        "status": "success",
+        "agent": "research",
+        "intent": "research_answer",
+        "durable_artifacts": [],
+        "source_map": [{"ref": "W1", "title": "网页", "url": "https://example.com"}],
+        "next_actions": [],
+        "warnings": [],
+        "errors": [],
+        "meta": {"answer": "完整联网研究回答，不使用短 preview [W1]"},
+    }
+    content = (
+        "USER_VISIBLE_REPLY:\n"
+        "短 preview\n\n"
+        "STRUCTURED_AGENT_RESULT_DO_NOT_REWRITE:\n"
+        f"{json.dumps(structured, ensure_ascii=False)}\n\n"
+        "Return USER_VISIBLE_REPLY as-is as the chat response; do not summarize or shorten it."
+    )
+
+    reply = direct_reply_from_tool_result_content(
+        "research_with_web",
+        content,
+        platform="tui",
+    )
+
+    assert reply == "完整联网研究回答，不使用短 preview [W1]"
+
+
+def test_direct_reply_keeps_weixin_rag_preview_short():
+    structured = {
+        "status": "success",
+        "agent": "rag",
+        "intent": "search_knowledge_base",
+        "durable_artifacts": [],
+        "source_map": [],
+        "next_actions": [],
+        "warnings": [],
+        "errors": [],
+        "meta": {"answer": "完整 RAG 回答"},
+    }
+    content = (
+        "USER_VISIBLE_REPLY:\n"
+        "短回答\n\n"
+        "STRUCTURED_AGENT_RESULT_DO_NOT_REWRITE:\n"
+        f"{json.dumps(structured, ensure_ascii=False)}\n\n"
+        "Return USER_VISIBLE_REPLY as-is as the chat response; do not summarize or shorten it."
+    )
+
+    reply = direct_reply_from_tool_result_content(
+        "search_my_notes",
+        content,
+        platform="weixin",
+    )
+
+    assert reply == "短回答"
+
+
+def test_direct_reply_keeps_weixin_research_preview_short():
+    structured = {
+        "status": "success",
+        "agent": "research",
+        "intent": "research_answer",
+        "durable_artifacts": [],
+        "source_map": [],
+        "next_actions": [],
+        "warnings": [],
+        "errors": [],
+        "meta": {"answer": "完整联网研究回答"},
+    }
+    content = (
+        "USER_VISIBLE_REPLY:\n"
+        "短 preview\n\n"
+        "STRUCTURED_AGENT_RESULT_DO_NOT_REWRITE:\n"
+        f"{json.dumps(structured, ensure_ascii=False)}\n\n"
+        "Return USER_VISIBLE_REPLY as-is as the chat response; do not summarize or shorten it."
+    )
+
+    reply = direct_reply_from_tool_result_content(
+        "research_with_web",
+        content,
+        platform="weixin",
+    )
+
+    assert reply == "短 preview"
+
+
 def test_envelope_adapter_mentions_media_attachment_for_user_requested_artifacts():
     from bridge.result_envelope import artifact_ref, envelope_json, success_envelope
 

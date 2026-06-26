@@ -817,8 +817,13 @@ export interface KnowledgeResearchSource {
   ref?: string;
   type?: string;
   id?: string;
+  item_kind?: KnowledgeLibraryItemKind;
+  item_id?: string;
   title?: string;
   path?: string;
+  file_path?: string;
+  open_url?: string;
+  obsidian_url?: string;
   url?: string;
   domain?: string;
   search_backend?: string;

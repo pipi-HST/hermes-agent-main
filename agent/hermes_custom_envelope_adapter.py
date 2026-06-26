@@ -15,6 +15,7 @@ DIRECT_REPLY_TOOL_NAMES = {
     "show_capture_draft",
     "commit_capture_draft",
     "save_answer_to_knowledge",
+    "research_with_web",
     "search_my_notes",
     "continue_rag_answer",
     "generate_canvas",
@@ -101,7 +102,20 @@ def direct_reply_from_tool_result_content(
             return _reply_with_media_artifacts(reply, paths)
     if (platform or "").lower() == "weixin":
         return _clip_reply(reply)
+    full_answer = _structured_full_answer(structured)
+    if full_answer and tool_name in {"research_with_web", "search_my_notes", "continue_rag_answer"}:
+        return full_answer
     return reply
+
+
+def _structured_full_answer(structured: Optional[dict]) -> str:
+    if not isinstance(structured, dict):
+        return ""
+    meta = structured.get("meta")
+    if not isinstance(meta, dict):
+        return ""
+    answer = meta.get("answer")
+    return answer.strip() if isinstance(answer, str) else ""
 
 
 def _mirrored_send_message_empty_reply(tool_name: str, content: Any) -> Optional[str]:

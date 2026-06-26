@@ -56,6 +56,22 @@ class TestResolveToolset:
         tools = resolve_toolset("web")
         assert set(tools) == {"web_search", "web_extract"}
 
+    def test_knowledge_local_toolset_excludes_web_research_tools(self):
+        tools = set(resolve_toolset("knowledge-local"))
+        assert "search_my_notes" in tools
+        assert "continue_rag_answer" in tools
+        assert "research_with_web" not in tools
+        assert "web_search" not in tools
+        assert "web_extract" not in tools
+
+    def test_knowledge_web_research_toolset_excludes_raw_web_tools(self):
+        tools = set(resolve_toolset("knowledge-web-research"))
+        assert "research_with_web" in tools
+        assert "search_my_notes" not in tools
+        assert "web_search" not in tools
+        assert "web_extract" not in tools
+        assert "save_answer_to_knowledge" in tools
+
     def test_composite_toolset(self):
         tools = resolve_toolset("debugging")
         assert "terminal" in tools

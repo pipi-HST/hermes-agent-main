@@ -151,6 +151,21 @@ class TestWebServerEndpoints:
         assert data["mime_type"] == "text/markdown"
         assert data["size"] == len(text.encode())
 
+    def test_knowledge_obsidian_url_uses_percent_encoded_spaces(self):
+        import hermes_cli.web_server as ws
+
+        url = ws._knowledge_obsidian_url(
+            Path("/Users/pipi/Obsidian/hermes-vault"),
+            "captures/Subagent 的三岔路-2026-06-17-6de5161b.md",
+        )
+
+        assert url == (
+            "obsidian://open?"
+            "vault=hermes-vault&"
+            "file=captures%2FSubagent%20%E7%9A%84%E4%B8%89%E5%B2%94%E8%B7%AF-2026-06-17-6de5161b"
+        )
+        assert "+" not in url
+
     def test_knowledge_capture_drafts_api_returns_reviewable_drafts(self, monkeypatch, tmp_path):
         import sqlite3
         import hermes_cli.web_server as ws
@@ -299,7 +314,7 @@ class TestWebServerEndpoints:
             "/api/knowledge/library/items/capture_draft/draft-chat-1/selection-chat",
             json={
                 "question": "苹果现在的市值多少",
-                "selected_text": "苹果",
+                "selected_text": "苹" * 1000,
                 "mode": "web_only",
             },
         )
@@ -310,7 +325,53 @@ class TestWebServerEndpoints:
         assert data["mode"] == "web_only"
         assert data["sources"]["web"][0]["ref"] == "W1"
         assert called["mode"] == "web_only"
-        assert called["selection_context"]["selected_text"] == "苹果"
+        assert called["selection_context"]["selected_text"] == "苹" * 1000
+
+    def test_knowledge_library_selection_chat_rejects_overlong_selection_before_research(self, monkeypatch):
+        calls = {"count": 0}
+
+        async def fake_async_web_assist_answer(**_kwargs):
+            calls["count"] += 1
+            return {"status": "success", "chat_preview": "不应调用", "warnings": [], "meta": {}}
+
+        fake_module = types.ModuleType("bridge.research_bridge")
+        fake_module.async_web_assist_answer = fake_async_web_assist_answer
+        monkeypatch.setitem(sys.modules, "bridge.research_bridge", fake_module)
+
+        response = self.client.post(
+            "/api/knowledge/library/items/capture/missing/selection-chat",
+            json={
+                "question": "这两个有什么区别",
+                "selected_text": "选" * 1001,
+                "mode": "local_web",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "选区超过 1000 字，当前不支持基于超长选区检索。请缩短选区后再试。"
+        assert calls["count"] == 0
+
+        stream_response = self.client.post(
+            "/api/knowledge/library/items/capture/missing/selection-chat/stream",
+            json={
+                "question": "这两个有什么区别",
+                "selected_text": "选" * 1001,
+                "mode": "local_web",
+            },
+        )
+
+        assert stream_response.status_code == 200
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in stream_response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert events[0] == {"event": "start", "mode": "local_web"}
+        assert events[1] == {
+            "event": "error",
+            "message": "选区超过 1000 字，当前不支持基于超长选区检索。请缩短选区后再试。",
+        }
+        assert calls["count"] == 0
 
     def test_knowledge_library_selection_chat_streams_progress_before_final_answer(self, monkeypatch, tmp_path):
         import sqlite3

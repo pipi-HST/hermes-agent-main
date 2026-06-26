@@ -20,6 +20,7 @@ import {
 } from "@/lib/api";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import {
+  extractFullAnswerText,
   extractSourceHints,
   initialKnowledgeChatState,
   knowledgeChatReducer,
@@ -83,6 +84,11 @@ interface ToolCompletePayload {
   summary?: string;
   error?: string;
   inline_diff?: string;
+  answer_text?: string;
+  knowledge_sources?: Array<Record<string, unknown>>;
+  source_map?: Array<Record<string, unknown>>;
+  web_sources?: Array<Record<string, unknown>>;
+  retrieved_web_sources?: Array<Record<string, unknown>>;
 }
 
 interface ErrorPayload {
@@ -96,11 +102,22 @@ interface GatewayResumeMessage {
   name?: string;
   context?: string;
   tool_name?: string;
+  source_map?: Array<Record<string, unknown>>;
+  knowledge_sources?: Array<Record<string, unknown>>;
+  web_sources?: Array<Record<string, unknown>>;
+  retrieved_web_sources?: Array<Record<string, unknown>>;
+  research_trace?: Record<string, unknown>;
+  answer_text?: string;
 }
 
 interface GatewayResumeResponse {
   session_id: string;
   resumed?: string;
+  messages?: GatewayResumeMessage[];
+}
+
+interface GatewayHistoryResponse {
+  count?: number;
   messages?: GatewayResumeMessage[];
 }
 
@@ -111,7 +128,17 @@ interface GatewayAppendLocalMessagesResponse {
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif", ".avif"]);
 const WORKBENCH_CACHE_KEY = "hermes-knowledge-workbench-cache-v1";
 const WORKBENCH_LAST_SESSION_KEY = "hermes-knowledge-workbench-last-session-v1";
-const KNOWLEDGE_TOOLSETS = ["knowledge-research"];
+const PROMPT_SUBMIT_TIMEOUT_MS = 300_000;
+const HISTORY_RECONCILE_INTERVAL_MS = 2_000;
+const HISTORY_RECONCILE_MAX_MS = 90_000;
+const HISTORY_RECONCILE_IDLE_MS = 3_000;
+const KNOWLEDGE_TOOLSETS = ["knowledge-web-research"];
+const KNOWLEDGE_TOOLSETS_BY_MODE: Record<KnowledgeResearchMode, string[]> = {
+  current_article_only: ["knowledge-local"],
+  local_only: ["knowledge-local"],
+  local_web: ["knowledge-web-research"],
+  web_only: ["knowledge-web-research"],
+};
 const CHAT_SIDEBAR_WIDTH_KEY = "hermes.knowledgeChat.sidebarWidth";
 const CHAT_INSPECTOR_WIDTH_KEY = "hermes.knowledgeChat.inspectorWidth";
 const DEFAULT_CHAT_SIDEBAR_WIDTH = 280;
@@ -152,6 +179,10 @@ export default function KnowledgeChatPage() {
     knowledgeChatReducer,
     initialKnowledgeChatState,
   );
+  const stateRef = useRef(state);
+  const lastDeltaAtRef = useRef(0);
+  const reconcileInFlightRef = useRef(false);
+  const reconcileUntilRef = useRef(0);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -209,6 +240,10 @@ export default function KnowledgeChatPage() {
     "--knowledge-chat-inspector-width": `${inspectorWidth}px`,
   } as CSSProperties;
   const [researchMode, setResearchMode] = useState<KnowledgeResearchMode>("local_web");
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   const nextId = useCallback((prefix: string) => {
     messageCounter.current += 1;
@@ -313,6 +348,37 @@ export default function KnowledgeChatPage() {
     }
   }, []);
 
+  const reconcileCurrentSession = useCallback(async (_reason: string): Promise<boolean> => {
+    const snapshot = stateRef.current;
+    const sessionId = snapshot.sessionId;
+    if (!sessionId || gw.state !== "open" || reconcileInFlightRef.current) return false;
+    reconcileInFlightRef.current = true;
+    try {
+      const result = await gw.request<GatewayHistoryResponse>("session.history", {
+        session_id: sessionId,
+      });
+      const hydrated = gatewayMessagesToWorkbench(result.messages ?? []);
+      if (!shouldHydrateFromHistory(snapshot, hydrated.messages)) return false;
+      dispatch({
+        type: "hydrate_messages",
+        messages: hydrated.messages,
+        tools: hydrated.tools,
+        toolSummaries: hydrated.toolSummaries,
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      reconcileInFlightRef.current = false;
+    }
+  }, [gw]);
+
+  const scheduleHistoryReconcile = useCallback((reason: string, delayMs = 0) => {
+    window.setTimeout(() => {
+      void reconcileCurrentSession(reason);
+    }, delayMs);
+  }, [reconcileCurrentSession]);
+
   useEffect(() => {
     void loadDrafts();
     void loadAnswerDrafts();
@@ -386,6 +452,9 @@ export default function KnowledgeChatPage() {
       void loadDrafts();
       void loadAnswerDrafts();
       void loadSessions();
+      if (stateRef.current.running || stateRef.current.draftAssistant) {
+        scheduleHistoryReconcile("focus");
+      }
       if (selectedDraftId) void loadDraftDetail(selectedDraftId);
     };
     window.addEventListener("focus", refreshWorkbench);
@@ -394,11 +463,14 @@ export default function KnowledgeChatPage() {
       window.removeEventListener("focus", refreshWorkbench);
       document.removeEventListener("visibilitychange", refreshWorkbench);
     };
-  }, [loadAnswerDrafts, loadDraftDetail, loadDrafts, loadSessions, selectedDraftId]);
+  }, [loadAnswerDrafts, loadDraftDetail, loadDrafts, loadSessions, scheduleHistoryReconcile, selectedDraftId]);
 
   useEffect(() => {
     const offState = gw.onState((connection) => {
       dispatch({ type: "connection", connection });
+      if (connection === "open" && (stateRef.current.running || stateRef.current.draftAssistant)) {
+        scheduleHistoryReconcile("gateway-open");
+      }
     });
 
     const offStart = gw.on("message.start", () => {
@@ -411,6 +483,7 @@ export default function KnowledgeChatPage() {
 
     const offDelta = gw.on<MessageDeltaPayload>("message.delta", (ev) => {
       if (ev.payload?.text) {
+        lastDeltaAtRef.current = Date.now();
         dispatch({ type: "message_delta", text: ev.payload.text });
       }
     });
@@ -426,6 +499,7 @@ export default function KnowledgeChatPage() {
       });
       void loadDrafts({ selectLatestOpen: true });
       void loadSessions();
+      scheduleHistoryReconcile("message-complete", 250);
       const readingDraftId = extractReadingDraftId(text);
       if (readingDraftId && !openedReadingDraftIdsRef.current.has(readingDraftId)) {
         openedReadingDraftIdsRef.current.add(readingDraftId);
@@ -467,6 +541,11 @@ export default function KnowledgeChatPage() {
         summary: ev.payload?.summary,
         error: ev.payload?.error,
         inlineDiff: ev.payload?.inline_diff,
+        answerText: ev.payload?.answer_text,
+        knowledgeSources: ev.payload?.knowledge_sources,
+        sourceMap: ev.payload?.source_map,
+        webSources: ev.payload?.web_sources,
+        retrievedWebSources: ev.payload?.retrieved_web_sources,
       });
       if (/capture|draft/i.test(toolName)) {
         void loadDrafts();
@@ -475,9 +554,12 @@ export default function KnowledgeChatPage() {
     });
 
     const offError = gw.on<ErrorPayload>("error", (ev) => {
-      dispatch({
-        type: "error",
-        message: ev.payload?.message ?? "Hermes returned an unknown error.",
+      void reconcileCurrentSession("gateway-error").then((recovered) => {
+        if (recovered) return;
+        dispatch({
+          type: "error",
+          message: ev.payload?.message ?? "Hermes returned an unknown error.",
+        });
       });
     });
 
@@ -493,14 +575,14 @@ export default function KnowledgeChatPage() {
           try {
             return await gw.request<GatewayResumeResponse>("session.resume", {
               session_id: target,
-              enabled_toolsets: KNOWLEDGE_TOOLSETS,
+              enabled_toolsets: knowledgeToolsetsForMode(researchMode),
             });
           } catch {
             window.localStorage.removeItem(WORKBENCH_LAST_SESSION_KEY);
           }
         }
         return gw.request<{ session_id: string }>("session.create", {
-          enabled_toolsets: KNOWLEDGE_TOOLSETS,
+          enabled_toolsets: knowledgeToolsetsForMode(researchMode),
         });
       })
       .then((created) => {
@@ -541,7 +623,7 @@ export default function KnowledgeChatPage() {
       offError();
       gw.close();
     };
-  }, [gw, loadAnswerDrafts, loadDrafts, loadSessions, nextId, openAnswerDraft]);
+  }, [gw, loadAnswerDrafts, loadDrafts, loadSessions, nextId, openAnswerDraft, reconcileCurrentSession, scheduleHistoryReconcile]);
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({
@@ -549,6 +631,20 @@ export default function KnowledgeChatPage() {
       behavior: "smooth",
     });
   }, [state.messages, state.draftAssistant?.text]);
+
+  useEffect(() => {
+    if (!state.sessionId || (!state.running && !state.draftAssistant)) return;
+    if (!reconcileUntilRef.current) {
+      reconcileUntilRef.current = Date.now() + HISTORY_RECONCILE_MAX_MS;
+    }
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      if (now > reconcileUntilRef.current) return;
+      if (lastDeltaAtRef.current && now - lastDeltaAtRef.current < HISTORY_RECONCILE_IDLE_MS) return;
+      void reconcileCurrentSession("idle-stream");
+    }, HISTORY_RECONCILE_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [reconcileCurrentSession, state.draftAssistant, state.running, state.sessionId]);
 
   useEffect(() => {
     if (hydratedPromptRef.current) return;
@@ -642,10 +738,7 @@ export default function KnowledgeChatPage() {
     const previousUser = [...state.messages.slice(0, messageIndex)]
       .reverse()
       .find((item) => item.role === "user");
-    const latestAssistant = [...state.messages]
-      .reverse()
-      .find((item) => item.role === "assistant");
-    const sourceHints = latestAssistant?.id === message.id ? state.sourceHints : [];
+    const sourceHints = message.sourceHints ?? [];
 
     setAnswerDraftActionLoading("create");
     setAnswerDraftLoading(true);
@@ -666,6 +759,12 @@ export default function KnowledgeChatPage() {
           label: source.ref || source.label,
           url: source.url,
           excerpt: source.excerpt,
+          file_path: source.filePath,
+          item_id: source.itemId,
+          item_kind: source.itemKind,
+          obsidian_url: source.obsidianUrl,
+          open_url: source.openUrl,
+          path: source.path || source.filePath,
         })),
         answer_source: sourceHints.length ? "latest_rag_full_answer" : "provided",
       });
@@ -688,7 +787,7 @@ export default function KnowledgeChatPage() {
       setAnswerDraftActionLoading(null);
       setAnswerDraftLoading(false);
     }
-  }, [loadAnswerDrafts, state.messages, state.sessionId, state.sourceHints]);
+  }, [loadAnswerDrafts, state.messages, state.sessionId]);
 
   const commitAnswerDraft = useCallback(async () => {
     if (!answerDraftDetail) return;
@@ -883,6 +982,10 @@ export default function KnowledgeChatPage() {
     const finalText = withResearchModeInstruction(basePrompt, researchMode);
 
     try {
+      await gw.request("session.set_toolsets", {
+        session_id: state.sessionId,
+        enabled_toolsets: knowledgeToolsetsForMode(researchMode),
+      });
       for (const attachment of selectedAttachments) {
         if (attachment.kind === "image") {
           await gw.request("image.attach", {
@@ -905,15 +1008,26 @@ export default function KnowledgeChatPage() {
       text: visibleText,
       createdAt: Date.now(),
     });
+    lastDeltaAtRef.current = Date.now();
+    reconcileUntilRef.current = Date.now() + HISTORY_RECONCILE_MAX_MS;
     setInput("");
     setAttachments([]);
 
-    gw.request("prompt.submit", { session_id: state.sessionId, text: finalText }).catch(
-      (error: Error) => {
-        dispatch({ type: "error", message: error.message });
-      },
-    );
-  }, [attachments, canSend, gw, handleDraftCommand, input, nextId, researchMode, state.sessionId]);
+    gw.request(
+      "prompt.submit",
+      { session_id: state.sessionId, text: finalText },
+      PROMPT_SUBMIT_TIMEOUT_MS,
+    )
+      .then(() => {
+        scheduleHistoryReconcile("prompt-submit-resolved", 250);
+      })
+      .catch(async (error: Error) => {
+        const recovered = await reconcileCurrentSession("prompt-submit-error");
+        if (!recovered) {
+          dispatch({ type: "error", message: error.message });
+        }
+      });
+  }, [attachments, canSend, gw, handleDraftCommand, input, nextId, reconcileCurrentSession, researchMode, scheduleHistoryReconcile, state.sessionId]);
 
   const reconnect = useCallback(() => {
     dispatch({ type: "reset_error" });
@@ -925,7 +1039,7 @@ export default function KnowledgeChatPage() {
     setResumingSessionId("new");
     try {
       const created = await gw.request<{ session_id: string }>("session.create", {
-        enabled_toolsets: KNOWLEDGE_TOOLSETS,
+        enabled_toolsets: knowledgeToolsetsForMode(researchMode),
       });
       dispatch({ type: "session_created", sessionId: created.session_id });
       dispatch({ type: "clear_messages" });
@@ -946,7 +1060,7 @@ export default function KnowledgeChatPage() {
     } finally {
       setResumingSessionId("");
     }
-  }, [gw, setSearchParams, state.connection]);
+  }, [gw, researchMode, setSearchParams, state.connection]);
 
   const resumeSession = useCallback(async (sessionId: string) => {
     if (state.connection !== "open") return;
@@ -954,7 +1068,7 @@ export default function KnowledgeChatPage() {
     try {
       const result = await gw.request<GatewayResumeResponse>("session.resume", {
         session_id: sessionId,
-        enabled_toolsets: KNOWLEDGE_TOOLSETS,
+        enabled_toolsets: knowledgeToolsetsForMode(researchMode),
       });
       dispatch({ type: "session_created", sessionId: result.session_id });
       const hydrated = gatewayMessagesToWorkbench(result.messages ?? []);
@@ -981,7 +1095,7 @@ export default function KnowledgeChatPage() {
     } finally {
       setResumingSessionId("");
     }
-  }, [gw, setSearchParams, state.connection]);
+  }, [gw, researchMode, setSearchParams, state.connection]);
 
   const saveEditableCaptureDraft = useCallback(async (): Promise<KnowledgeCaptureDraft | null> => {
     const content = editableContent.trim();
@@ -1250,6 +1364,26 @@ export default function KnowledgeChatPage() {
       ? "写修改意见，比如：把方法论部分展开、保留更多原文例子、删掉模板化表达..."
       : "直接问知识库、上传文件、粘贴材料，或者让 Hermes 整理主题关联...";
 
+  const openGatewaySource = useCallback((source: {
+    url?: string;
+    open_url?: string;
+    item_kind?: string;
+    item_id?: string;
+  }) => {
+    if (source.url) {
+      window.open(source.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    const openUrl = source.open_url || (
+      source.item_kind && source.item_id
+        ? `/knowledge-library?kind=${encodeURIComponent(source.item_kind)}&item=${encodeURIComponent(source.item_id)}`
+        : ""
+    );
+    if (openUrl) {
+      window.location.assign(openUrl);
+    }
+  }, []);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 text-foreground">
       <header className="flex h-[52px] shrink-0 items-center justify-between gap-3 rounded-lg border border-border bg-background px-4">
@@ -1428,7 +1562,6 @@ export default function KnowledgeChatPage() {
               messages={state.messages}
               researchMode={researchMode}
               running={state.running}
-              sourceHints={state.sourceHints}
               transcriptRef={transcriptRef}
               uploading={uploading}
               onInputChange={setInput}
@@ -1437,6 +1570,7 @@ export default function KnowledgeChatPage() {
               onRemoveAttachment={(id) =>
                 setAttachments((current) => current.filter((item) => item.id !== id))
               }
+              onSourceOpen={openGatewaySource}
               onSaveAnswer={createAnswerDraft}
               onSubmit={submit}
               onUploadFiles={(files) => void uploadFiles(files)}
@@ -1505,10 +1639,24 @@ function withResearchModeInstruction(text: string, mode: KnowledgeResearchMode):
     local_web: "知识库 + 联网搜索",
     web_only: "联网搜索",
   };
+  const citationInstruction =
+    mode === "local_web" || mode === "web_only"
+      ? "使用联网搜索结果回答时，请尽量在关键结论后标注对应来源编号，如 [W1]。"
+      : "";
+  const toolInstruction =
+    mode === "local_web"
+      ? "请调用 research_with_web 统一完成知识库与联网检索；不要调用未提供的独立知识库搜索工具。"
+      : mode === "web_only"
+        ? "请调用 research_with_web 完成联网检索；不要调用未提供的独立网页抽取或知识库搜索工具。"
+        : mode === "local_only"
+          ? "请只使用当前可用的知识库检索工具，不要调用联网搜索工具。"
+          : "";
   return [
     `【Hermes Knowledge 检索模式：${label[mode]}（mode=${mode}）】`,
+    toolInstruction,
+    citationInstruction,
     text,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function isImageFile(name: string, mimeType: string): boolean {
@@ -1557,6 +1705,10 @@ function bridgeMetaString(result: Record<string, unknown>, key: string): string 
   return typeof value === "string" ? value.trim() : "";
 }
 
+function knowledgeToolsetsForMode(mode: KnowledgeResearchMode): string[] {
+  return KNOWLEDGE_TOOLSETS_BY_MODE[mode] ?? KNOWLEDGE_TOOLSETS;
+}
+
 function gatewayMessagesToWorkbench(messages: GatewayResumeMessage[]): {
   messages: KnowledgeMessage[];
   tools: ToolEntry[];
@@ -1565,11 +1717,15 @@ function gatewayMessagesToWorkbench(messages: GatewayResumeMessage[]): {
   const now = Date.now();
   const visibleMessages: KnowledgeMessage[] = [];
   const tools: ToolEntry[] = [];
+  let pendingToolSummaries: string[] = [];
 
   messages.forEach((message, index) => {
     const text = message.text || message.content || "";
     if (message.role === "tool") {
       const summary = text.trim();
+      if (summary) pendingToolSummaries.push(summary);
+      const structuredSummary = gatewayToolSourceSummary(message);
+      if (structuredSummary) pendingToolSummaries.push(structuredSummary);
       tools.push({
         kind: "tool",
         id: `history-tool-${index}-${now}`,
@@ -1584,13 +1740,23 @@ function gatewayMessagesToWorkbench(messages: GatewayResumeMessage[]): {
     }
     if (message.role !== "user" && message.role !== "assistant") return;
     if (!text.trim()) return;
+    const fullAnswer = message.role === "assistant"
+      ? extractFullAnswerText(text, pendingToolSummaries)
+      : "";
+    const sourceHints = message.role === "assistant"
+      ? extractSourceHints(fullAnswer || text, pendingToolSummaries)
+      : undefined;
     visibleMessages.push({
       id: `history-${index}-${now}`,
       role: (message.role === "assistant" ? "assistant" : "user") as KnowledgeMessage["role"],
-      text,
+      text: fullAnswer || text,
       createdAt: now - (messages.length - index) * 1000,
       status: "complete" as const,
+      sourceHints,
     });
+    if (message.role === "assistant") {
+      pendingToolSummaries = [];
+    }
   });
 
   return {
@@ -1600,6 +1766,39 @@ function gatewayMessagesToWorkbench(messages: GatewayResumeMessage[]): {
       .map((tool) => tool.summary)
       .filter((summary): summary is string => Boolean(summary)),
   };
+}
+
+function gatewayToolSourceSummary(message: GatewayResumeMessage): string {
+  const meta: Record<string, unknown> = {};
+  if (Array.isArray(message.knowledge_sources)) meta.knowledge_sources = message.knowledge_sources;
+  if (Array.isArray(message.web_sources)) meta.web_sources = message.web_sources;
+  if (Array.isArray(message.retrieved_web_sources)) meta.retrieved_web_sources = message.retrieved_web_sources;
+  if (message.research_trace && typeof message.research_trace === "object") meta.research_trace = message.research_trace;
+  if (typeof message.answer_text === "string" && message.answer_text.trim()) meta.answer = message.answer_text.trim();
+  const payload: Record<string, unknown> = {};
+  if (Array.isArray(message.source_map)) payload.source_map = message.source_map;
+  if (Object.keys(meta).length) payload.meta = meta;
+  return Object.keys(payload).length ? JSON.stringify(payload) : "";
+}
+
+function shouldHydrateFromHistory(
+  current: typeof initialKnowledgeChatState,
+  historyMessages: KnowledgeMessage[],
+): boolean {
+  if (!historyMessages.length) return false;
+  const currentAssistantCount = current.messages.filter((message) => message.role === "assistant").length;
+  const historyAssistantCount = historyMessages.filter((message) => message.role === "assistant").length;
+  if (historyAssistantCount > currentAssistantCount) return true;
+  if (!current.running && !current.draftAssistant) return false;
+
+  const currentUserCount = current.messages.filter((message) => message.role === "user").length;
+  const historyUserCount = historyMessages.filter((message) => message.role === "user").length;
+  const lastHistory = historyMessages[historyMessages.length - 1];
+  if (lastHistory?.role !== "assistant" || !lastHistory.text.trim()) return false;
+  if (historyUserCount < currentUserCount) return false;
+
+  const draftText = current.draftAssistant?.text ?? "";
+  return lastHistory.text.length >= draftText.length;
 }
 
 function StatusPill({
