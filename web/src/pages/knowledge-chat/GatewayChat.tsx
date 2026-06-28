@@ -408,7 +408,7 @@ function answerSourceFromHint(source: KnowledgeSourceHint, index: number): Knowl
     path: source.path || source.filePath,
     file_path: source.filePath,
     open_url: source.openUrl || inferredOpenUrl(itemKind, itemId),
-    obsidian_url: source.obsidianUrl,
+    file_url: source.fileUrl,
     section: "",
     domain: source.domain,
   };

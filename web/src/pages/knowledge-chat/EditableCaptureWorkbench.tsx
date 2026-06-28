@@ -6,6 +6,7 @@ import { ActionButton, PanelEmpty, StatusBadge, TinyPill } from "./shared";
 export type EditableCaptureStatus =
   | "empty"
   | "editing"
+  | "organizing"
   | "saving_draft"
   | "ready_to_commit"
   | "committing"
@@ -23,6 +24,7 @@ export function EditableCaptureWorkbench({
   folderOptions,
   folderPath,
   generateCard = false,
+  progressMessage = "",
   source,
   status,
   summary = "",
@@ -36,6 +38,7 @@ export function EditableCaptureWorkbench({
   onFolderSuggestionModeChange,
   onFolderSuggestionReasonChange,
   onGenerateCardChange,
+  onOrganizeDraft,
   onSaveDraft,
   onDeleteDraft,
   onSourceChange,
@@ -53,6 +56,7 @@ export function EditableCaptureWorkbench({
   folderOptions?: Array<{ path: string; name: string }>;
   folderPath?: string;
   generateCard?: boolean;
+  progressMessage?: string;
   source: string;
   status: EditableCaptureStatus;
   summary?: string;
@@ -66,6 +70,7 @@ export function EditableCaptureWorkbench({
   onFolderSuggestionModeChange?: (value: "existing" | "new") => void;
   onFolderSuggestionReasonChange?: (value: string) => void;
   onGenerateCardChange?: (value: boolean) => void;
+  onOrganizeDraft: () => void;
   onSaveDraft: () => void;
   onDeleteDraft?: () => void;
   onSourceChange: (value: string) => void;
@@ -74,11 +79,13 @@ export function EditableCaptureWorkbench({
   onTitleChange: (value: string) => void;
 }) {
   const saving = status === "saving_draft";
+  const organizing = status === "organizing";
   const committing = status === "committing";
   const locked = status === "committed";
-  const canSave = Boolean(content.trim()) && !saving && !committing && !locked;
-  const canCommit = Boolean(draft?.id) && !saving && !committing && status !== "committed";
-  const canDeleteDraft = Boolean(draft?.id) && Boolean(onDeleteDraft) && !saving && !committing && !locked;
+  const busy = saving || organizing || committing;
+  const canSave = Boolean(content.trim()) && !busy && !locked;
+  const canCommit = Boolean(draft?.id) && !busy && status !== "committed";
+  const canDeleteDraft = Boolean(draft?.id) && Boolean(onDeleteDraft) && !busy && !locked;
   const titleSource = String(draft?.capture_intent?.title_source || "ai");
 
   return (
@@ -93,7 +100,7 @@ export function EditableCaptureWorkbench({
             </div>
             <h2 className="mt-2 flex items-center gap-2 text-lg font-semibold tracking-normal text-foreground">
               <NotebookPen className="h-5 w-5 text-primary/80" />
-              粘贴整理
+              新建知识文件
             </h2>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
@@ -104,7 +111,16 @@ export function EditableCaptureWorkbench({
               className="inline-flex items-center gap-1.5 rounded-md border border-primary/35 bg-background/60 px-3 py-2 text-sm text-foreground transition hover:bg-primary/10 disabled:opacity-45"
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              整理成草稿
+              保存草稿
+            </button>
+            <button
+              type="button"
+              onClick={onOrganizeDraft}
+              disabled={!canSave}
+              className="inline-flex items-center gap-1.5 rounded-md border border-primary/35 bg-background/60 px-3 py-2 text-sm text-foreground transition hover:bg-primary/10 disabled:opacity-45"
+            >
+              {organizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <NotebookPen className="h-4 w-4" />}
+              生成 AI 建议
             </button>
             {draft ? (
               <button
@@ -133,6 +149,15 @@ export function EditableCaptureWorkbench({
           {error}
         </div>
       )}
+
+      {progressMessage ? (
+        <div className="shrink-0 border-b border-primary/20 bg-primary/10 px-4 py-2 text-sm text-primary">
+          <span className="inline-flex items-center gap-2">
+            {saving || organizing || committing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+            {progressMessage}
+          </span>
+        </div>
+      ) : null}
 
       <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_300px]">
         <section className="flex min-h-0 flex-col border-b border-border/80 lg:border-b-0 lg:border-r">
@@ -276,7 +301,7 @@ export function EditableCaptureWorkbench({
               </section>
               <section>
                 <label className="flex items-center justify-between gap-3 rounded-md border border-current/10 bg-background/45 px-3 py-2">
-                  <span className="text-sm font-semibold tracking-normal text-foreground">入库后生成 Garden Card</span>
+                  <span className="text-sm font-semibold tracking-normal text-foreground">入库后自动生成知识卡片</span>
                   <input
                     type="checkbox"
                     checked={generateCard}
@@ -325,7 +350,7 @@ export function EditableCaptureWorkbench({
               </section>
             </div>
           ) : (
-            <PanelEmpty text="整理成草稿后会显示可修改的标题、摘要、标签、文件夹建议和卡片建议。" />
+            <PanelEmpty text="生成 AI 建议后会显示可修改的标题、摘要、标签、文件夹建议和卡片建议。" />
           )}
         </aside>
       </div>
@@ -335,12 +360,19 @@ export function EditableCaptureWorkbench({
 
 function editableStatusSteps(status: EditableCaptureStatus): Array<{ label: string; active?: boolean; done?: boolean; loading?: boolean }> {
   const saving = status === "saving_draft";
+  const organizing = status === "organizing";
   const committing = status === "committing";
   const committed = status === "committed";
   return [
-    { label: "草稿已保存", active: saving, done: status === "ready_to_commit" || committing || committed, loading: saving },
-    { label: "标题和标签已生成", done: status === "ready_to_commit" || committing || committed },
-    { label: "入库到知识库", active: committing, done: committed, loading: committing },
-    { label: "可被 AI 检索", done: committed },
+    { label: "正在保存当前修改...", active: saving, done: status === "ready_to_commit" || committing || committed, loading: saving },
+    { label: "正在整理正文...", active: organizing, done: status === "ready_to_commit" || committing || committed, loading: organizing },
+    { label: "正在生成标题摘要标签...", done: status === "ready_to_commit" || committing || committed },
+    { label: "正在生成文件夹和卡片建议...", done: status === "ready_to_commit" || committing || committed },
+    { label: "整理完成，可以入库", done: status === "ready_to_commit" || committing || committed },
+    { label: "正在保存当前修改...", active: committing, done: committed, loading: committing },
+    { label: "正在写入知识库文件...", done: committed },
+    { label: "正在重建索引和大纲...", done: committed },
+    { label: "正在生成知识卡片...", done: committed },
+    { label: "入库完成", done: committed },
   ];
 }

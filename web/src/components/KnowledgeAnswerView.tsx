@@ -139,8 +139,8 @@ function SourceLink({
 
   const text = `[${source.ref || fallbackRef}] ${label}${suffix}`;
   const canOpen = canOpenKnowledgeSource(source, onSourceOpen);
-  const obsidianUrl = source.obsidian_url || "";
-  if (!canOpen && !obsidianUrl) return <span>{text}</span>;
+  const fileUrl = source.file_url || "";
+  if (!canOpen && !fileUrl) return <span>{text}</span>;
 
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
@@ -155,12 +155,12 @@ function SourceLink({
       ) : (
         <span>{text}</span>
       )}
-      {obsidianUrl ? (
+      {fileUrl ? (
         <a
-          href={obsidianUrl}
+          href={fileUrl}
           className="rounded border border-border px-1.5 py-0.5 text-[0.68rem] text-muted-foreground no-underline hover:border-primary/30 hover:text-foreground"
         >
-          Obsidian
+          文件
         </a>
       ) : null}
     </span>

@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { ArrowRight, Edit3, Loader2, Send, Sparkles, Trash2 } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
 import type { KnowledgeCaptureDraft } from "@/lib/api";
@@ -24,23 +23,23 @@ export function DraftReview({
   view,
   onCommit,
   onDelete,
+  onEditCommittedCapture,
   onOpenCardFlow,
   onRevise,
   onRevisionChange,
-  onUpdateCommittedCapture,
   onViewChange,
 }: {
-  actionLoading: "commit" | "revise" | "card" | "delete" | "update" | null;
+  actionLoading: "commit" | "revise" | "card" | "delete" | null;
   detail: KnowledgeCaptureDraft | null;
   detailLoading: boolean;
   revision: string;
   view: DraftView;
   onCommit: () => void;
   onDelete: () => void;
+  onEditCommittedCapture: () => void;
   onOpenCardFlow: () => void;
   onRevise: () => void;
   onRevisionChange: (value: string) => void;
-  onUpdateCommittedCapture: (body: string, title: string) => void;
   onViewChange: (view: DraftView) => void;
 }) {
   if (detailLoading) return <LoadingBlock text="读取草稿详情..." />;
@@ -53,10 +52,10 @@ export function DraftReview({
       view={view}
       onCommit={onCommit}
       onDelete={onDelete}
+      onEditCommittedCapture={onEditCommittedCapture}
       onOpenCardFlow={onOpenCardFlow}
       onRevise={onRevise}
       onRevisionChange={onRevisionChange}
-      onUpdateCommittedCapture={onUpdateCommittedCapture}
       onViewChange={onViewChange}
     />
   );
@@ -69,36 +68,27 @@ function DraftReviewLoaded({
   view,
   onCommit,
   onDelete,
+  onEditCommittedCapture,
   onOpenCardFlow,
   onRevise,
   onRevisionChange,
-  onUpdateCommittedCapture,
   onViewChange,
 }: {
-  actionLoading: "commit" | "revise" | "card" | "delete" | "update" | null;
+  actionLoading: "commit" | "revise" | "card" | "delete" | null;
   detail: KnowledgeCaptureDraft;
   revision: string;
   view: DraftView;
   onCommit: () => void;
   onDelete: () => void;
+  onEditCommittedCapture: () => void;
   onOpenCardFlow: () => void;
   onRevise: () => void;
   onRevisionChange: (value: string) => void;
-  onUpdateCommittedCapture: (body: string, title: string) => void;
   onViewChange: (view: DraftView) => void;
 }) {
   const isOpenDraft = OPEN_STATUSES.has(detail.status);
   const isCommitted = detail.status === "committed" && Boolean(detail.committed_capture_id);
   const canCreateCard = detail.status === "committed" && Boolean(detail.committed_capture_id?.trim());
-  const [committedTitle, setCommittedTitle] = useState(detail.title || "");
-  const [committedBody, setCommittedBody] = useState(detail.draft_text || "");
-  const [editingCommitted, setEditingCommitted] = useState(false);
-
-  useEffect(() => {
-    setCommittedTitle(detail.title || "");
-    setCommittedBody(detail.draft_text || "");
-    setEditingCommitted(false);
-  }, [detail.id, detail.title, detail.draft_text]);
 
   return (
     <>
@@ -147,16 +137,11 @@ function DraftReviewLoaded({
             {isCommitted && (
               <button
                 type="button"
-                onClick={() => setEditingCommitted((value) => !value)}
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm transition",
-                  editingCommitted
-                    ? "border-primary/45 bg-primary/10 text-primary"
-                    : "border-border bg-background/60 text-foreground hover:bg-primary/10",
-                )}
+                onClick={onEditCommittedCapture}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-3 py-2 text-sm text-foreground transition hover:bg-primary/10"
               >
                 <Edit3 className="h-4 w-4" />
-                {editingCommitted ? "收起编辑" : "编辑笔记"}
+                去知识库编辑
               </button>
             )}
             <button
@@ -202,7 +187,7 @@ function DraftReviewLoaded({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {isCommitted && (
           <div className="mb-3 rounded-md border border-success/25 bg-success/10 px-3 py-2 text-sm leading-6 text-success">
-            这份材料已入库。需要调整内容时，点右上角“编辑笔记”。
+            这份材料已入库。需要调整内容时，请进入知识库编辑页。
           </div>
         )}
         {view === "draft" && (
@@ -223,38 +208,6 @@ function DraftReviewLoaded({
         )}
         {view === "meta" && <DraftMeta draft={detail} />}
       </div>
-
-      {isCommitted && editingCommitted && (
-        <div className="shrink-0 border-t border-border/80 bg-background/82 p-3">
-          <div className="grid gap-2">
-            <input
-              value={committedTitle}
-              onChange={(event) => setCommittedTitle(event.target.value)}
-              className="rounded-md border border-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
-            />
-            <div className="flex flex-col gap-2 lg:flex-row">
-              <textarea
-                value={committedBody}
-                onChange={(event) => setCommittedBody(event.target.value)}
-                className="min-h-28 flex-1 resize-none rounded-md border border-border bg-background/80 px-3 py-2 text-sm leading-6 text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
-              />
-              <button
-                type="button"
-                onClick={() => onUpdateCommittedCapture(committedBody, committedTitle)}
-                disabled={!committedBody.trim() || Boolean(actionLoading)}
-                className="inline-flex min-h-28 items-center justify-center gap-2 rounded-md border border-primary/45 bg-primary px-4 text-sm font-medium text-primary-foreground shadow-[0_14px_34px_-22px_rgba(47,111,95,0.65)] transition hover:brightness-105 disabled:border-border disabled:bg-muted/40 disabled:text-muted-foreground"
-              >
-                {actionLoading === "update" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Send className="h-4 w-4" />
-                )}
-                保存修改
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {!isCommitted && (
         <div className="shrink-0 border-t border-border/80 bg-background/82 p-3">

@@ -132,7 +132,7 @@ def test_search_notes_tool_complete_emits_enriched_knowledge_sources(monkeypatch
     assert complete_payload["source_map"][0]["id"] == "capture-1"
     assert complete_payload["knowledge_sources"][0]["type"] == "capture_note"
     assert complete_payload["knowledge_sources"][0]["open_url"] == "/knowledge-library?kind=capture&item=capture-1"
-    assert complete_payload["knowledge_sources"][0]["obsidian_url"].startswith("obsidian://open?")
+    assert complete_payload["knowledge_sources"][0]["file_url"].startswith("file://")
     assert complete_payload["knowledge_sources"][0]["file_path"] == "captures/智能问数项目的成功关键.md"
     assert complete_payload["answer_text"] == "这篇笔记提到智能问数的完整答案 [1]"
     assert "web_sources" not in complete_payload
@@ -191,7 +191,7 @@ def test_history_tool_messages_emit_enriched_knowledge_sources(monkeypatch, tmp_
     tool_message = messages[0]
     assert tool_message["role"] == "tool"
     assert tool_message["knowledge_sources"][0]["open_url"] == "/knowledge-library?kind=capture&item=capture-history-1"
-    assert tool_message["knowledge_sources"][0]["obsidian_url"].startswith("obsidian://open?")
+    assert tool_message["knowledge_sources"][0]["file_url"].startswith("file://")
     assert tool_message["source_map"][0]["file_path"] == "captures/历史知识.md"
 
 

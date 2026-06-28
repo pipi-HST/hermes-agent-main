@@ -6,7 +6,7 @@ def test_generate_canvas_tool_schema_routes_canvas_requests():
     assert "Canvas" in description
     assert "关系图" in description
     assert "画板" in description
-    assert "Obsidian" in description
+    assert "Hermes Knowledge" in description
 
 
 def test_generate_canvas_tool_registers_in_advanced_knowledge_toolset():

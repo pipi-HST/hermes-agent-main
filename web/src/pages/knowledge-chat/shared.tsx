@@ -22,6 +22,8 @@ export const OPEN_STATUSES = new Set([
   "draft_incomplete",
 ]);
 
+export const HIDDEN_DRAFT_STATUSES = new Set(["abandoned", "discarded"]);
+
 export const DRAFT_FILTERS = [
   { key: "open", label: "待审" },
   { key: "all", label: "全部" },
@@ -227,7 +229,7 @@ export function intentLabel(intent: string): string {
 
 export function answerDraftTypeLabel(type: string): string {
   return ({
-    local_learning_note: "学习笔记",
+    local_learning_note: "Capture Note",
     knowledge_card: "知识卡片",
     enhance_capture: "主笔记增强",
   } as Record<string, string>)[type] ?? "回答沉淀";

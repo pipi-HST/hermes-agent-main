@@ -4,8 +4,8 @@ def test_search_notes_schema_describes_rag_answer_and_trace_followup():
     description = tool.SEARCH_SCHEMA["description"]
 
     assert "回答问题" in description
-    assert "Garden" in description
-    assert "Theme" in description
+    assert "Knowledge Card" in description
+    assert "Theme View" in description
     assert "agent_run_status" in description
 
 
@@ -64,3 +64,32 @@ def test_search_my_notes_handler_passes_export_file(monkeypatch):
     tool._handler({"query": "问题", "export_file": True})
 
     assert captured == {"query": "问题", "export_file": True}
+
+
+def test_search_my_notes_handler_preserves_empty_knowledge_result(monkeypatch):
+    import json
+    import tools.search_notes_tool as tool
+
+    def fake_search(query, export_file=False):
+        assert query == "空库能回答吗？"
+        assert export_file is False
+        return {
+            "status": "success",
+            "agent": "rag",
+            "intent": "search_knowledge_base",
+            "chat_preview": "无知识库资料：当前本地知识库没有可引用的资料。",
+            "durable_artifacts": [],
+            "source_map": [],
+            "next_actions": [],
+            "warnings": [],
+            "errors": [],
+            "meta": {"result_count": 0},
+        }
+
+    monkeypatch.setattr(tool, "do_search", fake_search)
+
+    payload = json.loads(tool._handler({"query": "空库能回答吗？"}))
+
+    assert payload["chat_preview"] == "无知识库资料：当前本地知识库没有可引用的资料。"
+    assert payload["source_map"] == []
+    assert payload["meta"]["result_count"] == 0

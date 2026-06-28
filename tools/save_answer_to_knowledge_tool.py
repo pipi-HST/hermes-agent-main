@@ -17,7 +17,7 @@ SAVE_ANSWER_SCHEMA = {
     "description": (
         "把当前对话中一段高质量 AI 回答保存为可审阅知识草稿。适合用户说"
         "“把刚才这段存起来”“这个解释很好，做成卡片”“保存这轮讨论”等。"
-        "不要直接写 Obsidian；工具只生成 reading_draft。"
+        "不要直接写 Knowledge File；工具只生成 reading_draft。"
         "如果要保存的是刚才 search_my_notes/RAG 的完整回答，answer_source 传 latest_rag_full_answer，"
         "避免把微信或前端里被截断/压缩的预览存成正文。"
         "如果用户要求补进主笔记但回答涉及多个 Capture，工具会要求用户选择目标。"

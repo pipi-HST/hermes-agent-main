@@ -7,9 +7,11 @@ import {
   Check,
   CircleDot,
   Copy,
+  ExternalLink,
   FileText,
   Layers3,
   Loader2,
+  Network,
   RefreshCw,
   Search,
   ShieldAlert,
@@ -17,8 +19,17 @@ import {
   Trash2,
   Workflow,
 } from "lucide-react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, type KnowledgeCard, type KnowledgeCardKind, type KnowledgeSource } from "@/lib/api";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  api,
+  type KnowledgeCard,
+  type KnowledgeCardKind,
+  type KnowledgeGraphEdge,
+  type KnowledgeGraphNode,
+  type KnowledgeGraphNodeKind,
+  type KnowledgeGraphRelationType,
+  type KnowledgeSource,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const KIND_META: Record<
@@ -68,10 +79,31 @@ const KIND_META: Record<
 
 const KIND_ORDER: KnowledgeCardKind[] = ["viewpoint", "method", "fact", "risk"];
 
+const RELATION_LABELS: Record<KnowledgeGraphRelationType, string> = {
+  semantic_similarity: "相似笔记",
+  card_uses_capture: "卡片引用",
+  card_links_card: "卡片互链",
+  theme_groups_capture: "主题聚合",
+};
+
+const NODE_KIND_LABELS: Record<KnowledgeGraphNodeKind, string> = {
+  capture: "笔记",
+  garden_card: "卡片",
+  theme_candidate: "主题",
+};
+
+type GraphNodePosition = {
+  x: number;
+  y: number;
+  isFocus: boolean;
+};
+
 export default function KnowledgeCardsBoardPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { cardId: routeCardId } = useParams();
   const isDetailRoute = Boolean(routeCardId);
+  const currentView = new URLSearchParams(location.search).get("view") === "graph" ? "graph" : "cards";
   const [cards, setCards] = useState<KnowledgeCard[]>([]);
   const [selectedId, setSelectedId] = useState(routeCardId ?? "");
   const [detail, setDetail] = useState<KnowledgeCard | null>(null);
@@ -190,7 +222,7 @@ export default function KnowledgeCardsBoardPage() {
 
   const deleteCard = useCallback(async (card: KnowledgeCard) => {
     const title = card.title || "这张知识卡片";
-    const confirmed = window.confirm(`归档知识卡片《${title}》？\n\n归档后将从卡片库隐藏，Obsidian 文件会保留。`);
+    const confirmed = window.confirm(`归档知识卡片《${title}》？\n\n归档后将从卡片库隐藏，结构化记录会保留。`);
     if (!confirmed) return;
     setDeletingId(card.id);
     setError("");
@@ -213,6 +245,10 @@ export default function KnowledgeCardsBoardPage() {
       setDeletingId("");
     }
   }, [filteredCards, navigate, routeCardId, selectedId]);
+
+  const switchView = useCallback((view: "cards" | "graph") => {
+    navigate(view === "graph" ? "/cards-board?view=graph" : "/cards-board", { replace: true });
+  }, [navigate]);
 
   if (isDetailRoute) {
     return (
@@ -240,10 +276,32 @@ export default function KnowledgeCardsBoardPage() {
               可复用知识卡片
             </h1>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-              这里展示已经沉淀的观点、方法、事实和风险。卡片服务于复用，Theme 页面服务于关系地图。
+              这里展示已经沉淀的观点、方法、事实和风险。卡片服务于复用，Theme View 服务于关系地图。
             </p>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
+            <div className="col-span-2 inline-flex rounded-md border border-border bg-background/70 p-1 sm:col-span-1">
+              <button
+                type="button"
+                onClick={() => switchView("cards")}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm transition",
+                  currentView === "cards" ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                知识卡片
+              </button>
+              <button
+                type="button"
+                onClick={() => switchView("graph")}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm transition",
+                  currentView === "graph" ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                知识图谱
+              </button>
+            </div>
             <Metric label="总卡片" value={cards.length} />
             <Metric label="来源材料" value={cards.reduce((sum, card) => sum + card.sources.length, 0)} />
             <button
@@ -272,6 +330,9 @@ export default function KnowledgeCardsBoardPage() {
         </div>
       )}
 
+      {currentView === "graph" ? (
+        <KnowledgeGraphPanel focusCardId={selectedId} />
+      ) : (
       <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[250px_minmax(0,1fr)_380px]">
         <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
           <div className="border-b border-border/80 p-3">
@@ -383,8 +444,544 @@ export default function KnowledgeCardsBoardPage() {
           )}
         </aside>
       </div>
+      )}
     </div>
   );
+}
+
+function KnowledgeGraphPanel({ focusCardId }: { focusCardId: string }) {
+  const navigate = useNavigate();
+  const [graph, setGraph] = useState<{ nodes: KnowledgeGraphNode[]; edges: KnowledgeGraphEdge[]; meta?: { focus_kind?: string; focus_id?: string } } | null>(null);
+  const [selectedNodeKey, setSelectedNodeKey] = useState("");
+  const [selectedEdgeId, setSelectedEdgeId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const loadGraph = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await api.getKnowledgeGraph(
+        focusCardId
+          ? { focus_kind: "garden_card", focus_id: focusCardId, depth: 1, limit: 80 }
+          : { depth: 1, limit: 80 },
+      );
+      setGraph(data);
+      const focusKind = data.meta.focus_kind as KnowledgeGraphNodeKind | undefined;
+      const focusId = data.meta.focus_id;
+      const fallback = data.nodes[0];
+      setSelectedNodeKey(
+        focusKind && focusId
+          ? graphNodeKey(focusKind, focusId)
+          : fallback
+            ? graphNodeKey(fallback.kind, fallback.id)
+            : "",
+      );
+      setSelectedEdgeId("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [focusCardId]);
+
+  useEffect(() => {
+    void loadGraph();
+  }, [loadGraph]);
+
+  const nodeByKey = useMemo(() => {
+    return new Map((graph?.nodes ?? []).map((node) => [graphNodeKey(node.kind, node.id), node]));
+  }, [graph]);
+
+  const filteredEdges = useMemo(() => {
+    return graph?.edges ?? [];
+  }, [graph]);
+
+  const focusNodeKey = useMemo(() => {
+    const focusKind = graph?.meta?.focus_kind as KnowledgeGraphNodeKind | undefined;
+    const focusId = graph?.meta?.focus_id;
+    if (focusKind && focusId) return graphNodeKey(focusKind, focusId);
+    return graph?.nodes[0] ? graphNodeKey(graph.nodes[0].kind, graph.nodes[0].id) : "";
+  }, [graph]);
+
+  const selectedNode = selectedNodeKey ? nodeByKey.get(selectedNodeKey) ?? null : null;
+  const selectedEdges = useMemo(() => {
+    if (!selectedNode) return filteredEdges;
+    const key = graphNodeKey(selectedNode.kind, selectedNode.id);
+    return filteredEdges.filter((edge) =>
+      graphNodeKey(edge.source_kind, edge.source_id) === key ||
+      graphNodeKey(edge.target_kind, edge.target_id) === key,
+    );
+  }, [filteredEdges, selectedNode]);
+
+  const selectedEdge = useMemo(() => {
+    return filteredEdges.find((edge) => edge.id === selectedEdgeId) ?? selectedEdges[0] ?? filteredEdges[0] ?? null;
+  }, [filteredEdges, selectedEdgeId, selectedEdges]);
+
+  const visibleNodeKeys = useMemo(() => {
+    const keys = new Set<string>();
+    if (focusNodeKey) keys.add(focusNodeKey);
+    if (selectedNodeKey) keys.add(selectedNodeKey);
+    for (const edge of filteredEdges) {
+      keys.add(graphNodeKey(edge.source_kind, edge.source_id));
+      keys.add(graphNodeKey(edge.target_kind, edge.target_id));
+    }
+    return keys;
+  }, [filteredEdges, focusNodeKey, selectedNodeKey]);
+
+  const visibleNodes = useMemo(() => {
+    return (graph?.nodes ?? []).filter((node) => visibleNodeKeys.has(graphNodeKey(node.kind, node.id)));
+  }, [graph, visibleNodeKeys]);
+
+  const refreshGraph = async () => {
+    setRefreshing(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await api.refreshKnowledgeGraph();
+      setNotice(`已刷新 ${result.edge_count} 条关系，覆盖 ${result.node_count} 个节点。`);
+      await loadGraph();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const openNode = (node: KnowledgeGraphNode) => {
+    if (!node.open_url) return;
+    if (node.open_url.startsWith("/")) {
+      navigate(node.open_url);
+      return;
+    }
+    window.open(node.open_url, "_blank", "noopener,noreferrer");
+  };
+
+  return (
+    <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+      <main className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
+        <div className="flex shrink-0 flex-col gap-3 border-b border-border/80 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="flex items-center gap-2 text-sm font-semibold tracking-normal text-foreground">
+              <Network className="h-4 w-4 text-primary/80" />
+              知识图谱
+            </h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              仅展示已入库笔记、知识卡片和可解释主题关系。
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span className="rounded-md border border-border bg-background/70 px-2.5 py-1.5">
+              {graph?.nodes.length ?? 0} 节点
+            </span>
+            <span className="rounded-md border border-border bg-background/70 px-2.5 py-1.5">
+              {graph?.edges.length ?? 0} 关系
+            </span>
+            <button
+              type="button"
+              onClick={() => void refreshGraph()}
+              className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
+            >
+              <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
+              刷新图谱
+            </button>
+          </div>
+        </div>
+
+        {error ? (
+          <div className="m-4 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <AlertCircle className="mt-0.5 h-4 w-4" />
+            <span>{error}</span>
+          </div>
+        ) : null}
+        {notice ? (
+          <div className="m-4 flex items-start gap-2 rounded-md border border-success/25 bg-success/10 px-3 py-2 text-sm text-success">
+            <Check className="mt-0.5 h-4 w-4" />
+            <span>{notice}</span>
+          </div>
+        ) : null}
+
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+          {loading ? (
+            <div>
+              <LoadingBlock text="读取知识图谱..." />
+            </div>
+          ) : graph && graph.nodes.length ? (
+            <>
+              <section className="min-h-[520px] rounded-lg border border-border bg-background/60 p-4">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground">一跳关系图</h3>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      中心节点与一跳关联，关系类型直接标在连线上。
+                    </p>
+                  </div>
+                </div>
+                <GraphCanvas
+                  edges={filteredEdges}
+                  focusKey={focusNodeKey}
+                  nodes={visibleNodes}
+                  selectedEdgeId={selectedEdge?.id ?? ""}
+                  selectedNodeKey={selectedNodeKey}
+                  onSelectEdge={setSelectedEdgeId}
+                  onSelectNode={setSelectedNodeKey}
+                />
+              </section>
+
+              <section className="rounded-lg border border-border bg-background/60 p-4">
+                <h3 className="text-sm font-semibold text-foreground">关系证据</h3>
+                {selectedEdge ? (
+                  <div className="mt-3 rounded-lg border border-primary/25 bg-primary/10 px-3 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs font-medium text-primary">{edgeLabel(selectedEdge)}</span>
+                      <span className="text-xs text-muted-foreground">score {formatScore(selectedEdge.score)}</span>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">{graphEvidenceText(selectedEdge)}</p>
+                  </div>
+                ) : null}
+                <div className="mt-3 space-y-3">
+                  {selectedEdges.length ? (
+                    selectedEdges.map((edge) => (
+                      <GraphEdgeRow
+                        key={edge.id}
+                        edge={edge}
+                        nodeByKey={nodeByKey}
+                        selected={selectedEdge?.id === edge.id}
+                        onSelectEdge={setSelectedEdgeId}
+                        onSelectNode={setSelectedNodeKey}
+                      />
+                    ))
+                  ) : (
+                    <EmptyInline text="当前筛选下没有可展示的关系。" />
+                  )}
+                </div>
+              </section>
+            </>
+          ) : (
+            <div>
+              <GraphEmptyState />
+            </div>
+          )}
+        </div>
+      </main>
+
+      <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
+        {selectedNode ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <div className="mb-3 inline-flex rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
+              {NODE_KIND_LABELS[selectedNode.kind]}
+            </div>
+            <h2 className="text-xl font-semibold leading-7 text-foreground">{selectedNode.title}</h2>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">{selectedNode.summary || "暂无摘要"}</p>
+            {selectedNode.file_path ? (
+              <PathLine label="文件" value={selectedNode.file_path} />
+            ) : null}
+            <div className="mt-5 grid gap-2">
+              {selectedNode.open_url ? (
+                <button
+                  type="button"
+                  onClick={() => openNode(selectedNode)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-foreground transition hover:border-primary/55 hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  打开 Hermes
+                </button>
+              ) : null}
+              {selectedNode.file_url ? (
+                <button
+                  type="button"
+                  onClick={() => { window.location.href = selectedNode.file_url; }}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  打开文件
+                </button>
+              ) : null}
+            </div>
+            <section className="mt-5 rounded-lg border border-border bg-background p-3">
+              <h3 className="text-sm font-semibold text-foreground">相关关系</h3>
+              <div className="mt-3 space-y-2">
+                {selectedEdges.length ? selectedEdges.map((edge) => (
+                  <button
+                    key={`${selectedNode.id}-${edge.id}`}
+                    type="button"
+                    onClick={() => setSelectedEdgeId(edge.id)}
+                    className={cn(
+                      "w-full rounded-md border px-3 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20",
+                      selectedEdge?.id === edge.id ? "border-primary/35 bg-primary/10" : "border-border bg-background/60 hover:border-primary/30",
+                    )}
+                  >
+                    <div className="text-xs font-medium text-foreground">{RELATION_LABELS[edge.relation_type]}</div>
+                    <div className="mt-1 text-xs leading-5 text-muted-foreground">{graphEvidenceText(edge)}</div>
+                  </button>
+                )) : <EmptyInline text="当前节点暂无关系。" />}
+              </div>
+            </section>
+          </div>
+        ) : (
+          <EmptyBlock text="请选择一个图谱节点查看详情。" />
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function GraphCanvas({
+  edges,
+  focusKey,
+  nodes,
+  selectedEdgeId,
+  selectedNodeKey,
+  onSelectEdge,
+  onSelectNode,
+}: {
+  edges: KnowledgeGraphEdge[];
+  focusKey: string;
+  nodes: KnowledgeGraphNode[];
+  selectedEdgeId: string;
+  selectedNodeKey: string;
+  onSelectEdge: (edgeId: string) => void;
+  onSelectNode: (nodeKey: string) => void;
+}) {
+  const positions = useMemo(() => layoutGraphNodes(nodes, edges, focusKey), [edges, focusKey, nodes]);
+  const visibleEdges = edges.filter((edge) =>
+    positions.has(graphNodeKey(edge.source_kind, edge.source_id)) &&
+    positions.has(graphNodeKey(edge.target_kind, edge.target_id)),
+  );
+
+  return (
+    <div className="relative min-h-[540px] overflow-hidden rounded-lg border border-border bg-[radial-gradient(circle_at_center,rgba(95,153,142,0.08),transparent_58%)]">
+      <svg
+        className="pointer-events-none absolute inset-0 h-full w-full"
+        viewBox="0 0 1000 620"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        {visibleEdges.map((edge) => {
+          const source = positions.get(graphNodeKey(edge.source_kind, edge.source_id));
+          const target = positions.get(graphNodeKey(edge.target_kind, edge.target_id));
+          if (!source || !target) return null;
+          const selected = selectedEdgeId === edge.id;
+          return (
+            <line
+              key={edge.id}
+              x1={source.x}
+              y1={source.y}
+              x2={target.x}
+              y2={target.y}
+              className={cn("transition", selected ? "stroke-primary" : "stroke-border")}
+              strokeWidth={selected ? 4 : 2}
+              strokeLinecap="round"
+            />
+          );
+        })}
+      </svg>
+
+      {visibleEdges.map((edge) => {
+        const source = positions.get(graphNodeKey(edge.source_kind, edge.source_id));
+        const target = positions.get(graphNodeKey(edge.target_kind, edge.target_id));
+        if (!source || !target) return null;
+        const selected = selectedEdgeId === edge.id;
+        const labelPoint = edgeLabelPoint(source, target);
+        return (
+          <button
+            key={`${edge.id}-label`}
+            type="button"
+            onClick={() => onSelectEdge(edge.id)}
+            style={{ left: `${labelPoint.x / 10}%`, top: `${labelPoint.y / 6.2}%` }}
+            className={cn(
+              "absolute z-20 -translate-x-1/2 -translate-y-1/2 rounded-md border px-2.5 py-1 text-xs font-medium shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20",
+              selected
+                ? "border-primary/35 bg-primary/15 text-primary"
+                : "border-border bg-background text-muted-foreground hover:border-primary/30 hover:text-foreground",
+            )}
+          >
+            {edgeLabel(edge)}
+          </button>
+        );
+      })}
+
+      {nodes.map((node) => {
+        const key = graphNodeKey(node.kind, node.id);
+        const position = positions.get(key);
+        if (!position) return null;
+        const selected = selectedNodeKey === key;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onSelectNode(key)}
+            style={{ left: `${position.x / 10}%`, top: `${position.y / 6.2}%` }}
+            className={cn(
+              "absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-lg border p-3 text-left shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20",
+              position.isFocus ? "w-56" : "w-44",
+              selected || position.isFocus
+                ? "border-primary/45 bg-background"
+                : "border-border bg-background/90 hover:border-primary/30",
+            )}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className={cn("rounded border px-2 py-0.5 text-xs", graphNodeTone(node.kind))}>
+                {position.isFocus ? "中心" : NODE_KIND_LABELS[node.kind]}
+              </span>
+              <span className="text-xs text-muted-foreground">{relationCountForNode(edges, node)} 条</span>
+            </div>
+            <div className={cn("mt-2 line-clamp-2 font-semibold leading-5 text-foreground", position.isFocus ? "text-sm" : "text-xs")}>
+              {node.title}
+            </div>
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+              {node.summary || node.file_path || "暂无摘要"}
+            </p>
+          </button>
+        );
+      })}
+
+      {!visibleEdges.length && nodes.length ? (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-md border border-dashed border-border bg-background/85 px-3 py-2 text-xs text-muted-foreground">
+          暂无一跳关系
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function GraphEdgeRow({
+  edge,
+  nodeByKey,
+  selected,
+  onSelectEdge,
+  onSelectNode,
+}: {
+  edge: KnowledgeGraphEdge;
+  nodeByKey: Map<string, KnowledgeGraphNode>;
+  selected: boolean;
+  onSelectEdge: (edgeId: string) => void;
+  onSelectNode: (key: string) => void;
+}) {
+  const sourceKey = graphNodeKey(edge.source_kind, edge.source_id);
+  const targetKey = graphNodeKey(edge.target_kind, edge.target_id);
+  const source = nodeByKey.get(sourceKey);
+  const target = nodeByKey.get(targetKey);
+  return (
+    <div className={cn("rounded-lg border px-3 py-3", selected ? "border-primary/35 bg-primary/10" : "border-border bg-background")}>
+      <div className="flex items-center justify-between gap-3">
+        <button type="button" onClick={() => onSelectEdge(edge.id)} className="text-left text-xs font-medium text-primary hover:text-primary/80">
+          {edgeLabel(edge)}
+        </button>
+        <span className="text-xs text-muted-foreground">score {formatScore(edge.score)}</span>
+      </div>
+      <div className="mt-2 flex items-center gap-2 text-sm text-foreground">
+        <button type="button" onClick={() => onSelectNode(sourceKey)} className="min-w-0 truncate text-left hover:text-primary">
+          {source?.title || edge.source_id}
+        </button>
+        <span className="text-muted-foreground">→</span>
+        <button type="button" onClick={() => onSelectNode(targetKey)} className="min-w-0 truncate text-left hover:text-primary">
+          {target?.title || edge.target_id}
+        </button>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-muted-foreground">{graphEvidenceText(edge)}</p>
+    </div>
+  );
+}
+
+function graphNodeKey(kind: KnowledgeGraphNodeKind, id: string): string {
+  return `${kind}:${id}`;
+}
+
+function layoutGraphNodes(
+  nodes: KnowledgeGraphNode[],
+  edges: KnowledgeGraphEdge[],
+  focusKey: string,
+): Map<string, GraphNodePosition> {
+  const positions = new Map<string, GraphNodePosition>();
+  if (!nodes.length) return positions;
+  const nodeByKey = new Map(nodes.map((node) => [graphNodeKey(node.kind, node.id), node]));
+  const centerKey = focusKey && nodeByKey.has(focusKey) ? focusKey : graphNodeKey(nodes[0].kind, nodes[0].id);
+  positions.set(centerKey, { x: 500, y: 310, isFocus: true });
+
+  const orderedKeys = nodes
+    .map((node) => graphNodeKey(node.kind, node.id))
+    .filter((key) => key !== centerKey)
+    .sort((left, right) => {
+      const leftEdgeIndex = edgeIndexForNode(edges, left, centerKey);
+      const rightEdgeIndex = edgeIndexForNode(edges, right, centerKey);
+      if (leftEdgeIndex !== rightEdgeIndex) return leftEdgeIndex - rightEdgeIndex;
+      return (nodeByKey.get(left)?.title || "").localeCompare(nodeByKey.get(right)?.title || "", "zh-Hans-CN");
+    });
+
+  const count = orderedKeys.length;
+  orderedKeys.forEach((key, index) => {
+    if (count === 1) {
+      positions.set(key, { x: 760, y: 310, isFocus: false });
+      return;
+    }
+    const angle = -Math.PI / 2 + (index * Math.PI * 2) / count;
+    positions.set(key, {
+      x: 500 + Math.cos(angle) * 350,
+      y: 310 + Math.sin(angle) * 210,
+      isFocus: false,
+    });
+  });
+  return positions;
+}
+
+function edgeIndexForNode(edges: KnowledgeGraphEdge[], nodeKey: string, focusKey: string): number {
+  const index = edges.findIndex((edge) => {
+    const sourceKey = graphNodeKey(edge.source_kind, edge.source_id);
+    const targetKey = graphNodeKey(edge.target_kind, edge.target_id);
+    return (
+      (sourceKey === focusKey && targetKey === nodeKey) ||
+      (targetKey === focusKey && sourceKey === nodeKey)
+    );
+  });
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+function edgeLabelPoint(source: GraphNodePosition, target: GraphNodePosition): { x: number; y: number } {
+  const midX = (source.x + target.x) / 2;
+  const midY = (source.y + target.y) / 2;
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const offsetDirection = dy >= 0 ? -1 : 1;
+  return {
+    x: midX + (-dy / length) * 48 * offsetDirection,
+    y: midY + (dx / length) * 48 * offsetDirection,
+  };
+}
+
+function graphNodeTone(kind: KnowledgeGraphNodeKind): string {
+  if (kind === "garden_card") return "border-[#8fbbb2] bg-[#e1eeea] text-[#173f38]";
+  if (kind === "theme_candidate") return "border-[#e1d3aa] bg-[#f7f2e6] text-[#725c24]";
+  return "border-border bg-background text-muted-foreground";
+}
+
+function edgeLabel(edge: KnowledgeGraphEdge): string {
+  if (edge.relation_type === "semantic_similarity") return `相似 ${formatScore(edge.score)}`;
+  return RELATION_LABELS[edge.relation_type];
+}
+
+function relationCountForNode(edges: KnowledgeGraphEdge[], node: KnowledgeGraphNode): number {
+  const key = graphNodeKey(node.kind, node.id);
+  return edges.filter((edge) =>
+    graphNodeKey(edge.source_kind, edge.source_id) === key ||
+    graphNodeKey(edge.target_kind, edge.target_id) === key,
+  ).length;
+}
+
+function formatScore(score: number): string {
+  return Number.isFinite(score) ? score.toFixed(2) : "-";
+}
+
+function graphEvidenceText(edge: KnowledgeGraphEdge): string {
+  const evidence = edge.evidence || {};
+  const matches = Array.isArray(evidence.section_matches) ? evidence.section_matches.slice(0, 2).join("；") : "";
+  const reasons = Array.isArray(evidence.reasons) ? evidence.reasons.slice(0, 2).join("；") : "";
+  const title = typeof evidence.title === "string" ? evidence.title : "";
+  const question = typeof evidence.question === "string" ? evidence.question : "";
+  return matches || reasons || title || question || "该关系由现有知识库结构确定生成。";
 }
 
 function KnowledgeCardTile({
@@ -488,16 +1085,18 @@ function CardInspector({
           </Link>
         </section>
 
+        {(card.file_path || card.source_theme) ? (
         <section className="mt-4 rounded-lg border border-border bg-background p-3">
           <h3 className="flex items-center gap-2 text-sm font-semibold tracking-normal text-foreground">
             <FileText className="h-4 w-4 text-primary/80" />
-            文件与主题
+            兼容信息
           </h3>
           <div className="mt-2 space-y-2 text-sm leading-6 text-muted-foreground">
-            <PathLine label="卡片文件" value={card.file_path} />
+            <PathLine label="存储位置" value={card.file_path} />
             <PathLine label="来源主题" value={card.source_theme} />
           </div>
         </section>
+        ) : null}
 
         <section className="mt-4 rounded-lg border border-border bg-background p-3">
           <h3 className="flex items-center gap-2 text-sm font-semibold tracking-normal text-foreground">
@@ -715,18 +1314,22 @@ function StructuredCardContent({ card }: { card: KnowledgeCard }) {
 
       <CardSourceSection card={card} />
 
-      <DetailSection title="文件与原文" icon={<FileText className="h-4 w-4 text-primary/80" />}>
-        <div className="space-y-2 text-sm leading-6 text-muted-foreground">
-          <PathLine label="卡片文件" value={card.file_path} />
-          <PathLine label="来源主题" value={card.source_theme} />
-        </div>
+      {(card.file_path || card.source_theme || card.markdown?.trim()) ? (
+      <DetailSection title="兼容信息" icon={<FileText className="h-4 w-4 text-primary/80" />}>
+        {(card.file_path || card.source_theme) ? (
+          <div className="space-y-2 text-sm leading-6 text-muted-foreground">
+            <PathLine label="存储位置" value={card.file_path} />
+            <PathLine label="来源主题" value={card.source_theme} />
+          </div>
+        ) : null}
         {card.markdown?.trim() ? (
         <details className="mt-4 rounded-md border border-border bg-background p-3">
-            <summary className="cursor-pointer text-sm font-medium text-foreground">Obsidian 原文</summary>
+            <summary className="cursor-pointer text-sm font-medium text-foreground">旧版原始内容</summary>
             <MarkdownPreview markdown={card.markdown} />
           </details>
         ) : null}
       </DetailSection>
+      ) : null}
     </>
   );
 }
@@ -925,7 +1528,7 @@ function SourceRow({ source }: { source: KnowledgeSource }) {
       ) : null}
       {source.file_path ? (
         <p className="mt-2 break-words rounded border border-border bg-background px-2 py-1 text-xs leading-5 text-muted-foreground">
-          {obsidianWikiLink(source.file_path, displaySourceTitle(source))}
+          {knowledgeFileLink(source.file_path, displaySourceTitle(source))}
         </p>
       ) : null}
     </div>
@@ -1036,8 +1639,40 @@ function EmptyState() {
         <Layers3 className="mx-auto h-8 w-8 text-muted-foreground" />
         <h2 className="mt-3 text-base font-semibold text-foreground">暂无知识卡片</h2>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          当你从材料、阅读讨论或 Theme 方向中确认沉淀 Knowledge Card 后，它们会出现在这里。
+          当你从材料、阅读讨论或 Theme View 中确认沉淀知识卡片后，它们会出现在这里。
         </p>
+        <div className="mt-4 flex justify-center">
+          <Link
+            to="/knowledge-library"
+            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground transition hover:bg-muted"
+          >
+            <BookOpenText className="h-4 w-4" />
+            去新建或导入材料
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GraphEmptyState() {
+  return (
+    <div className="flex min-h-[360px] items-center justify-center rounded-md border border-dashed border-border bg-background/45 px-6 py-8 text-center">
+      <div className="max-w-md">
+        <Network className="mx-auto h-8 w-8 text-muted-foreground" />
+        <h2 className="mt-3 text-base font-semibold text-foreground">暂无知识图谱</h2>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          空库或还没有足够关系时不会生成图谱。先新建或导入材料，入库后再刷新图谱。
+        </p>
+        <div className="mt-4 flex justify-center">
+          <Link
+            to="/knowledge-library"
+            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground transition hover:bg-muted"
+          >
+            <BookOpenText className="h-4 w-4" />
+            去新建或导入材料
+          </Link>
+        </div>
       </div>
     </div>
   );
@@ -1130,7 +1765,7 @@ function sourceLabel(sources: KnowledgeSource[], sourceId: string): string {
   return source ? displaySourceTitle(source) : sourceId;
 }
 
-function obsidianWikiLink(filePath: string, title: string): string {
+function knowledgeFileLink(filePath: string, title: string): string {
   const stem = filePath.replace(/\.md$/, "");
   return `[[${stem}|${title}]]`;
 }

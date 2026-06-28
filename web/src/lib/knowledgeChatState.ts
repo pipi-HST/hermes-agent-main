@@ -26,7 +26,7 @@ export interface KnowledgeSourceHint {
   itemId?: string;
   itemKind?: string;
   openUrl?: string;
-  obsidianUrl?: string;
+  fileUrl?: string;
   path?: string;
   sourceType?: string;
 }
@@ -585,7 +585,7 @@ function sourceHintFromRecord(
     filePath,
     itemId: itemId || undefined,
     itemKind: itemKind || undefined,
-    obsidianUrl: stringField(record.obsidian_url) || undefined,
+    fileUrl: stringField(record.file_url) || undefined,
     openUrl: stringField(record.open_url) || inferredOpenUrl(itemKind, itemId),
     path,
     sourceType,

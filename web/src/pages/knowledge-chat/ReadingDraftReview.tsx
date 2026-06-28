@@ -37,12 +37,12 @@ export function ReadingDraftReview({
   const isCommitted = detail.status === "committed";
   const typeLabel = isCommitted
     ? ({
-        local_learning_note: "学习笔记",
+        local_learning_note: "Capture Note",
         knowledge_card: "知识卡片",
         enhance_capture: "主笔记增强",
       } as Record<string, string>)[detail.output_type] ?? "回答沉淀"
     : ({
-        local_learning_note: "学习笔记草稿",
+        local_learning_note: "Capture Note 草稿",
         knowledge_card: "知识卡片草稿",
         enhance_capture: "主笔记增强草稿",
       } as Record<string, string>)[detail.output_type] ?? "回答沉淀草稿";

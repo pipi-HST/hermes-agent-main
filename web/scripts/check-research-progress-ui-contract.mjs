@@ -182,7 +182,7 @@ const historicalKnowledgeSummary = JSON.stringify({
       item_kind: "capture",
       title: "AI产品经理笔记",
       open_url: "/knowledge-library?kind=capture&item=capture-3",
-      obsidian_url: "obsidian://open?vault=hermes-vault&file=captures%2FAI%E4%BA%A7%E5%93%81%E7%BB%8F%E7%90%86",
+      file_url: "file:///Users/pipi/Hermes/knowledge/captures/AI%E4%BA%A7%E5%93%81%E7%BB%8F%E7%90%86.md",
     },
   ],
 });
@@ -203,7 +203,7 @@ state = knowledgeChatReducer(initialKnowledgeChatState, {
 
 const restoredKnowledge = state.messages[0].sourceHints[0];
 assert(restoredKnowledge.openUrl === "/knowledge-library?kind=capture&item=capture-3", "History hydrate should restore Hermes knowledge open URL");
-assert(restoredKnowledge.obsidianUrl?.startsWith("obsidian://open?"), "History hydrate should restore Obsidian URL");
+assert(restoredKnowledge.fileUrl?.startsWith("file://"), "History hydrate should restore file URL");
 
 const manyKnowledgeSources = Array.from({ length: 10 }, (_, index) => ({
   ref: `K${index + 1}`,
@@ -304,7 +304,7 @@ state = knowledgeChatReducer(initialKnowledgeChatState, {
           title: "带 URL 的知识库来源",
           url: "https://original.example.com/article",
           open_url: "/knowledge-library?kind=capture&item=capture-with-url",
-          obsidian_url: "obsidian://open?vault=hermes-vault&file=captures%2Fwith-url",
+          file_url: "file:///Users/pipi/Hermes/knowledge/captures/with-url.md",
         },
         {
           ref: "W1",
@@ -337,7 +337,7 @@ assert(!markdownSource.includes("<ExternalLink"), "Inline web citations should n
 const answerViewSource = readFileSync(answerViewPath, "utf8");
 assert(answerViewSource.includes("rewriteCitationRefs(content, displayMap)"), "Answer view should rewrite raw refs to display refs");
 assert(answerViewSource.includes("sourceRefAliases(originalRef)"), "Answer view should map original refs to display refs");
-assert(answerViewSource.includes("obsidian_url"), "Answer view should render Obsidian source links");
+assert(answerViewSource.includes("file_url"), "Answer view should render file source links");
 
 const gatewayChatSource = readFileSync(gatewayChatPath, "utf8");
 assert(gatewayChatSource.includes("onSourceOpen={onSourceOpen}"), "Gateway chat should pass source open handler into answer view");

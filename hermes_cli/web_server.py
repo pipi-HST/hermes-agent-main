@@ -2762,11 +2762,11 @@ def _automation_boundary_for_cron_job(job: dict[str, Any]) -> dict[str, Any]:
     lowered = f"{name}\n{job.get('prompt') or ''}".lower()
     name_lower = name.lower()
     if "theme_scan" in lowered or "theme-scan" in name_lower:
-        read_write = "vault_write"
+        read_write = "knowledge_storage_write"
         writes_tables = ["captures", "pending_questions", "theme_candidates"]
         writes_paths = [str(_knowledge_vault_path() / "themes")]
         risk = "high"
-        description = "Scheduled theme maintenance; disabled jobs cannot auto-trigger."
+        description = "Scheduled Theme View maintenance; disabled jobs cannot auto-trigger."
     elif "daily_review" in lowered or "daily-review" in lowered or "knowledge-review" in toolsets:
         read_write = "state_write"
         writes_tables = ["review_items", "captures", "agent_runs"]
@@ -2830,8 +2830,8 @@ async def get_knowledge_automation_boundaries():
         ),
         (
             "com.pipi.hermes-vault-watcher",
-            "Vault watcher",
-            "LaunchAgent runs watch_vault.py; it calls repair_data(apply=True, rename_readable=True).",
+            "Knowledge storage watcher",
+            "LaunchAgent watches local Knowledge storage and calls repair_data(apply=True, rename_readable=True).",
             ["captures", "capture_drafts", "reading_drafts"],
             [str(_knowledge_vault_path()), str(_knowledge_custom_root() / "data")],
             "high",
@@ -2912,12 +2912,12 @@ async def get_knowledge_automation_boundaries():
                 kind="tool",
                 enabled=theme_enabled,
                 runtime_status="configured" if theme_enabled else "disabled",
-                read_write="vault_write",
+                read_write="knowledge_storage_write",
                 writes_tables=["captures", "pending_questions", "theme_candidates"],
                 writes_paths=[str(_knowledge_vault_path() / "themes")],
                 toolsets=["knowledge-advanced"],
                 risk_level="high",
-                description="Theme clustering and vault maintenance tool; disabled unless the theme-scan cron is enabled or invoked manually.",
+                description="Theme View clustering and local Knowledge storage maintenance tool; disabled unless the theme-scan cron is enabled or invoked manually.",
             ),
             _automation_boundary(
                 item_id="tool:life_tick",
@@ -2951,7 +2951,7 @@ async def get_knowledge_automation_boundaries():
                 kind="tool",
                 enabled=False,
                 runtime_status="configured",
-                read_write="vault_write",
+                read_write="knowledge_storage_write",
                 writes_tables=["capture_drafts", "agent_runs"],
                 writes_paths=[str(_knowledge_vault_path())],
                 toolsets=["personal-assistant"],
@@ -2964,24 +2964,24 @@ async def get_knowledge_automation_boundaries():
                 kind="tool",
                 enabled=False,
                 runtime_status="configured",
-                read_write="vault_write",
+                read_write="state_write",
                 writes_tables=["garden_drafts", "garden_cards", "agent_runs"],
-                writes_paths=[str(_knowledge_vault_path() / "Garden Card")],
+                writes_paths=[],
                 toolsets=["personal-assistant"],
                 risk_level="medium",
-                description="User-invoked Garden Card synthesis tool; not an automatic background job.",
+                description="User-invoked Knowledge Card synthesis tool; writes structured card state, not standing Markdown files.",
             ),
             _automation_boundary(
                 item_id="watcher:watch_vault",
-                name="scripts/watch_vault.py",
+                name="Knowledge storage watcher",
                 kind="watcher",
                 enabled=_launchagent_status("com.pipi.hermes-vault-watcher")[0] == "running",
                 runtime_status=_launchagent_status("com.pipi.hermes-vault-watcher")[0],
-                read_write="vault_write",
+                read_write="knowledge_storage_write",
                 writes_tables=["captures", "capture_drafts", "reading_drafts"],
                 writes_paths=[str(_knowledge_vault_path()), str(_knowledge_custom_root() / "data")],
                 risk_level="high",
-                description="Polls Obsidian captures/raw files and runs repair_data in apply mode after detected changes.",
+                description="Polls local Knowledge storage and runs repair_data in apply mode after detected changes.",
                 source_path=str(_knowledge_custom_root() / "scripts" / "watch_vault.py"),
             ),
             _automation_boundary(
@@ -2990,11 +2990,11 @@ async def get_knowledge_automation_boundaries():
                 kind="repair",
                 enabled=False,
                 runtime_status="configured",
-                read_write="vault_write",
+                read_write="knowledge_storage_write",
                 writes_tables=["captures", "capture_drafts"],
                 writes_paths=[str(_knowledge_vault_path()), str(_knowledge_custom_root() / "data" / "backups")],
                 risk_level="high",
-                description="Repair script is read-only unless called with apply=True; the vault watcher calls it with apply=True.",
+                description="Repair script is read-only unless called with apply=True; the Knowledge storage watcher calls it with apply=True.",
                 source_path=str(_knowledge_custom_root() / "scripts" / "repair_data.py"),
             ),
         ]
@@ -4349,6 +4349,14 @@ def _discover_dashboard_plugins() -> list:
                 # register the plugin component/slots without adding a tab
                 # (useful for slot-only plugins like a header-crest injector).
                 raw_tab = data.get("tab", {}) if isinstance(data.get("tab"), dict) else {}
+                entry = data.get("entry", "dist/index.js")
+                if source == "bundled" and entry and not (child / "dashboard" / str(entry)).is_file():
+                    _log.warning(
+                        "Skipping dashboard plugin %s: missing entry %s",
+                        name,
+                        entry,
+                    )
+                    continue
                 tab_info = {
                     "path": raw_tab.get("path", f"/{name}"),
                     "position": raw_tab.get("position", "end"),
@@ -4373,7 +4381,7 @@ def _discover_dashboard_plugins() -> list:
                     "version": data.get("version", "0.0.0"),
                     "tab": tab_info,
                     "slots": slots,
-                    "entry": data.get("entry", "dist/index.js"),
+                    "entry": entry,
                     "css": data.get("css"),
                     "has_api": bool(data.get("api")),
                     "source": source,
@@ -4695,6 +4703,10 @@ class _KnowledgeDraftRevisionBody(BaseModel):
     instruction: str
 
 
+class _KnowledgeCaptureRevisionBody(BaseModel):
+    instruction: str
+
+
 class _KnowledgeEditableCaptureDraftBody(BaseModel):
     content: str
     source: str = ""
@@ -4702,6 +4714,7 @@ class _KnowledgeEditableCaptureDraftBody(BaseModel):
     instruction: str = ""
     title: str = ""
     folder_path: str = ""
+    organize: bool = True
     summary: str | None = None
     tags: list[str] | None = None
     folder_suggestion: dict[str, Any] | None = None
@@ -4845,7 +4858,7 @@ def _knowledge_vault_path() -> Path:
                 return Path(str(vault["path"])).expanduser()
         except Exception:
             _log.warning("Failed to read Hermes Knowledge config at %s", config_path)
-    return Path("~/Obsidian/hermes-vault").expanduser()
+    return Path("~/Hermes/knowledge").expanduser()
 
 
 def _knowledge_conn() -> sqlite3.Connection:
@@ -4855,6 +4868,11 @@ def _knowledge_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _knowledge_graph_conn() -> sqlite3.Connection:
+    schema_module = _knowledge_custom_module("db.schema", "Knowledge schema")
+    return schema_module.init_db(str(_knowledge_db_path()))
 
 
 @app.get("/api/knowledge/runtime-check")
@@ -5198,7 +5216,7 @@ def _knowledge_capture_dependency_summary(
         "event_count": event_count,
         "policy": {
             "action": "archive_capture_only",
-            "obsidian_file": "retained",
+            "knowledge_file": "retained",
             "database_row": "retained_with_review_state_archived",
             "garden_cards": "retained",
             "garden_drafts": "retained",
@@ -5416,7 +5434,7 @@ def _knowledge_selection_chat_messages(item: dict, body: _KnowledgeLibrarySelect
             "content": (
                 "你是 Hermes Knowledge 的文章阅读助手。请根据用户问题和提供的结构化上下文回答。"
                 "回答必须基于当前文章内容；如果文章没有相关信息，直接说明。"
-                "不要修改正文，不要主动生成摘要、标签或 Garden Card。保持中文回答，结构清晰，避免空泛。"
+                "不要修改正文，不要主动生成摘要、标签或知识卡片。保持中文回答，结构清晰，避免空泛。"
             ),
         },
         {"role": "user", "content": user_context},
@@ -5498,7 +5516,53 @@ def _knowledge_library_items(
     return items[: max(1, min(limit, 500))]
 
 
-def _draft_row(row: sqlite3.Row, *, full: bool = False) -> dict:
+def _hydrate_committed_draft_from_capture(
+    result: dict[str, Any],
+    *,
+    conn: sqlite3.Connection | None,
+    vault_path: Path | None,
+) -> dict[str, Any]:
+    capture_id = str(result.get("committed_capture_id") or "").strip()
+    if not capture_id or conn is None or vault_path is None:
+        return result
+    capture = conn.execute("SELECT * FROM captures WHERE id = ?", (capture_id,)).fetchone()
+    if capture is None:
+        return result
+    capture_data = dict(capture)
+    note = _knowledge_read_note(vault_path, str(capture_data.get("file_path") or ""))
+    if note is None:
+        result["capture_note_missing"] = True
+        return result
+
+    frontmatter, body = note
+    historical_draft_text = str(result.get("draft_text") or "")
+    title = str(frontmatter.get("title") or result.get("title") or "未命名").strip()
+    result.update(
+        {
+            "title": title,
+            "draft_text": body,
+            "draft_preview": _clip_text(body, 420),
+            "historical_draft_text": historical_draft_text,
+            "file_path": str(capture_data.get("file_path") or ""),
+            "raw_path": str(capture_data.get("raw_path") or ""),
+            "word_count": int(frontmatter.get("word_count") or len(body)),
+        }
+    )
+    raw_note = _knowledge_read_note(vault_path, str(capture_data.get("raw_path") or ""))
+    if raw_note is not None:
+        _raw_frontmatter, raw_body = raw_note
+        result["raw_text"] = raw_body
+        result["raw_preview"] = _clip_text(raw_body, 260)
+    return result
+
+
+def _draft_row(
+    row: sqlite3.Row,
+    *,
+    conn: sqlite3.Connection | None = None,
+    vault_path: Path | None = None,
+    full: bool = False,
+) -> dict:
     data = dict(row)
     capture_intent = _json_value(str(data.get("capture_intent") or "{}"), {})
     draft_text = str(data.get("draft_text") or "")
@@ -5526,6 +5590,8 @@ def _draft_row(row: sqlite3.Row, *, full: bool = False) -> dict:
     if full:
         result["draft_text"] = draft_text
         result["raw_text"] = raw_text
+        if str(data.get("status") or "") == "committed":
+            result = _hydrate_committed_draft_from_capture(result, conn=conn, vault_path=vault_path)
     return result
 
 
@@ -5701,6 +5767,12 @@ def _knowledge_table_exists(conn: sqlite3.Connection, table: str) -> bool:
         (table,),
     ).fetchone()
     return row is not None
+
+
+def _knowledge_table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not _knowledge_table_exists(conn, table):
+        return set()
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
 def _knowledge_run_event_row(row: sqlite3.Row) -> dict:
@@ -5995,18 +6067,60 @@ def _validate_selection_search_length(selected_text: str) -> None:
         )
 
 
-def _knowledge_obsidian_url(vault_path: Path, file_path: str) -> str:
-    file_ref = file_path.removesuffix(".md")
-    return (
-        "obsidian://open?"
-        + urllib.parse.urlencode(
-            {
-                "vault": vault_path.name,
-                "file": file_ref,
-            },
-            quote_via=urllib.parse.quote,
-        )
-    )
+def _knowledge_file_url(vault_path: Path, file_path: str) -> str:
+    if not file_path:
+        return ""
+    rel_path = Path(file_path)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        return ""
+    root = vault_path.expanduser().resolve()
+    target = (root / rel_path).resolve()
+    if not target.is_relative_to(root):
+        return ""
+    return target.as_uri()
+
+
+def _knowledge_local_file_path(vault_path: Path, file_path: str) -> Path:
+    if not file_path:
+        raise HTTPException(status_code=400, detail="capture file path is empty")
+    rel_path = Path(file_path)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        raise HTTPException(status_code=400, detail="capture file path is outside Knowledge storage")
+    root = vault_path.expanduser().resolve()
+    target = (root / rel_path).resolve()
+    if not target.is_relative_to(root):
+        raise HTTPException(status_code=400, detail="capture file path is outside Knowledge storage")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="capture note file not found")
+    return target
+
+
+def _open_local_file(target: Path) -> None:
+    if sys.platform == "darwin":
+        cmd = ["open", str(target)]
+    elif sys.platform.startswith("linux"):
+        cmd = ["xdg-open", str(target)]
+    elif sys.platform.startswith("win"):
+        cmd = ["cmd", "/c", "start", "", str(target)]
+    else:
+        raise HTTPException(status_code=400, detail="local open is not supported on this platform")
+    subprocess.Popen(cmd)
+
+
+@app.post("/api/knowledge/library/items/{kind}/{item_id}/open-local")
+async def post_knowledge_library_item_open_local(request: Request, kind: str, item_id: str):
+    _require_token(request)
+    kind = (kind or "").strip()
+    if kind != "capture":
+        raise HTTPException(status_code=400, detail="Only committed capture files can be opened locally")
+    vault_path = _knowledge_vault_path()
+    with _knowledge_conn() as conn:
+        row = conn.execute("SELECT file_path FROM captures WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Library capture not found")
+        target = _knowledge_local_file_path(vault_path, str(row["file_path"] or ""))
+    _open_local_file(target)
+    return {"ok": True, "path": str(target)}
 
 
 def _knowledge_source_open_url(kind: str, item_id: str) -> str:
@@ -6058,7 +6172,7 @@ def _enrich_knowledge_source(
             }
         )
         if file_path:
-            enriched["obsidian_url"] = _knowledge_obsidian_url(vault_path, file_path)
+            enriched["file_url"] = _knowledge_file_url(vault_path, file_path)
         return enriched
 
     if source_id:
@@ -6338,6 +6452,237 @@ async def patch_knowledge_library_item(
     raise HTTPException(status_code=400, detail="Unsupported library item kind")
 
 
+def _knowledge_dependencies_block_permanent_delete(dependencies: dict[str, Any]) -> bool:
+    return any(
+        [
+            bool(dependencies.get("garden_cards")),
+            bool(dependencies.get("garden_drafts")),
+            bool(dependencies.get("backlinks")),
+        ]
+    )
+
+
+def _knowledge_unlink_storage_file(vault_path: Path, file_path: str) -> str:
+    file_path = str(file_path or "").strip()
+    if not file_path:
+        return ""
+    rel_path = Path(file_path)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        raise HTTPException(status_code=400, detail="capture file path is outside Knowledge storage")
+    root = vault_path.expanduser().resolve()
+    target = (root / rel_path).resolve()
+    if not target.is_relative_to(root):
+        raise HTTPException(status_code=400, detail="capture file path is outside Knowledge storage")
+    if not target.exists():
+        return ""
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="capture file path is not a file")
+    target.unlink()
+    return rel_path.as_posix()
+
+
+def _knowledge_delete_by_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    value: str,
+) -> int:
+    columns = _knowledge_table_columns(conn, table)
+    if column not in columns:
+        return 0
+    cursor = conn.execute(f"DELETE FROM {table} WHERE {column} = ?", (value,))
+    return int(cursor.rowcount or 0)
+
+
+def _knowledge_unlink_committed_capture_drafts(conn: sqlite3.Connection, capture_id: str) -> int:
+    columns = _knowledge_table_columns(conn, "capture_drafts")
+    if "committed_capture_id" not in columns:
+        return 0
+    if "status" in columns:
+        updated_at_set = ", updated_at = datetime('now')" if "updated_at" in columns else ""
+        cursor = conn.execute(
+            f"""UPDATE capture_drafts
+                SET committed_capture_id = '', status = 'abandoned'{updated_at_set}
+                WHERE committed_capture_id = ?""",
+            (capture_id,),
+        )
+    else:
+        cursor = conn.execute(
+            "UPDATE capture_drafts SET committed_capture_id = '' WHERE committed_capture_id = ?",
+            (capture_id,),
+        )
+    return int(cursor.rowcount or 0)
+
+
+def _knowledge_delete_capture_review_items(conn: sqlite3.Connection, capture_id: str) -> int:
+    columns = _knowledge_table_columns(conn, "review_items")
+    if not columns:
+        return 0
+    if {"capture_id", "object_type", "object_id"}.issubset(columns):
+        cursor = conn.execute(
+            """DELETE FROM review_items
+               WHERE capture_id = ?
+                  OR (object_type = 'capture' AND object_id = ?)""",
+            (capture_id, capture_id),
+        )
+        return int(cursor.rowcount or 0)
+    return _knowledge_delete_by_column(conn, "review_items", "capture_id", capture_id)
+
+
+def _new_capture_agent():
+    capture_agent_module = _knowledge_custom_module("agents.capture_agent", "Capture agent")
+    CaptureAgent = capture_agent_module.CaptureAgent
+    load_capture_config = capture_agent_module.load_config
+    return CaptureAgent(load_capture_config(str(_knowledge_custom_root() / "config.yaml")))
+
+
+def _knowledge_revision_llm_text(result: Any) -> str:
+    text = getattr(result, "text", result)
+    return str(text or "").strip()
+
+
+def _knowledge_capture_revision_prompt(
+    *,
+    instruction: str,
+    title: str,
+    current_body: str,
+    raw_body: str,
+) -> str:
+    raw_section = raw_body.strip() or "（没有单独 raw 来源材料；以当前笔记为准。）"
+    return f"""你是 Hermes Knowledge 的入库笔记修订助手。
+
+用户要修改的笔记标题：{title or "未命名"}
+
+用户修改指令：
+{instruction}
+
+硬性要求：
+1. 只输出修订后的 Markdown 正文，不要输出解释、前言或代码块。
+2. 除非用户明确要求总结、压缩、删除或只保留部分内容，否则不得删减信息、不得改变原文观点、不得丢失例子。
+3. 可以改善标题层级、段落、列表、空行和表达清晰度。
+4. 当前笔记是要被修订的正文；原始来源材料只用于校验和补回遗漏信息。
+
+当前笔记正文：
+{current_body}
+
+原始来源材料：
+{raw_section}
+"""
+
+
+@app.post("/api/knowledge/captures/{capture_id}/revise")
+async def post_knowledge_capture_revise(
+    request: Request,
+    capture_id: str,
+    body: _KnowledgeCaptureRevisionBody,
+):
+    _require_token(request)
+    instruction = (body.instruction or "").strip()
+    if not instruction:
+        raise HTTPException(status_code=400, detail="instruction cannot be empty")
+
+    markdown_writer = _knowledge_custom_module("agents.markdown_writer", "Markdown writer")
+    repo_module = _knowledge_custom_module("db.repo", "Capture repository")
+    read_note = markdown_writer.read_note
+    CaptureRepo = repo_module.CaptureRepo
+
+    vault_path = _knowledge_vault_path()
+    with _knowledge_conn() as conn:
+        repo = CaptureRepo(conn)
+        item = repo.get_by_id(capture_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Capture not found")
+        file_path = str(item.get("file_path") or "")
+        if not file_path:
+            raise HTTPException(status_code=400, detail="capture has no editable note")
+        note = read_note(vault_path, file_path)
+        if note is None:
+            raise HTTPException(status_code=404, detail="capture note file not found")
+        frontmatter, current_body = note
+        raw_note = read_note(vault_path, str(item.get("raw_path") or ""))
+        _raw_frontmatter, raw_body = raw_note if raw_note is not None else ({}, "")
+
+    title = str(frontmatter.get("title") or "").strip()
+    prompt = _knowledge_capture_revision_prompt(
+        instruction=instruction,
+        title=title,
+        current_body=current_body,
+        raw_body=raw_body,
+    )
+    agent = _new_capture_agent()
+    llm_result = agent._call_llm(prompt)
+    revised_body = _knowledge_revision_llm_text(llm_result)
+    if getattr(llm_result, "incomplete", False):
+        raise HTTPException(status_code=502, detail="AI revision output was incomplete")
+    if not revised_body:
+        raise HTTPException(status_code=502, detail="AI revision output was empty")
+
+    summary_result = agent.summarizer.summarize(revised_body, [])
+    return {
+        "ok": True,
+        "capture_id": capture_id,
+        "title": str(summary_result.get("title") or title or "").strip(),
+        "body": revised_body,
+        "summary": str(summary_result.get("summary") or "").strip(),
+        "tags": summary_result.get("tags", []),
+        "source": "ai_revision",
+    }
+
+
+@app.delete("/api/knowledge/library/items/{kind}/{item_id}/permanent")
+async def permanent_delete_knowledge_library_item(request: Request, kind: str, item_id: str):
+    _require_token(request)
+    kind = (kind or "").strip()
+    if kind != "capture":
+        raise HTTPException(status_code=400, detail="Only committed capture files can be permanently deleted")
+
+    vault_path = _knowledge_vault_path()
+    with _knowledge_conn() as conn:
+        row = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Library capture not found")
+        dependency_response = _knowledge_capture_dependency_response(conn, vault_path, item_id=item_id)
+        dependencies = dependency_response["dependencies"]
+        if _knowledge_dependencies_block_permanent_delete(dependencies):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "该文件仍被其他知识对象或文档引用，不能彻底删除；请先解除引用或改用归档。",
+                    "dependencies": dependencies,
+                },
+            )
+
+        file_path = str(row["file_path"] or "")
+        raw_path = str(row["raw_path"] or "") if "raw_path" in row.keys() else ""
+        deleted_file = _knowledge_unlink_storage_file(vault_path, file_path)
+        deleted_raw = ""
+        if raw_path and raw_path != file_path:
+            deleted_raw = _knowledge_unlink_storage_file(vault_path, raw_path)
+
+        deleted_rows = {
+            "capture_embeddings": _knowledge_delete_by_column(conn, "capture_embeddings", "capture_id", item_id),
+            "capture_metadata": _knowledge_delete_by_column(conn, "capture_metadata", "capture_id", item_id),
+            "review_items": _knowledge_delete_capture_review_items(conn, item_id),
+            "capture_drafts_unlinked": _knowledge_unlink_committed_capture_drafts(conn, item_id),
+            "agent_run_objects": _knowledge_delete_by_column(conn, "agent_run_objects", "object_id", item_id),
+            "capture_version_backups": _knowledge_delete_by_column(conn, "capture_version_backups", "capture_id", item_id),
+            "captures": _knowledge_delete_by_column(conn, "captures", "id", item_id),
+        }
+        conn.commit()
+
+    return {
+        "ok": True,
+        "status": "permanently_deleted",
+        "id": item_id,
+        "deleted": {
+            "knowledge_file": deleted_file,
+            "raw_file": deleted_raw,
+            "rows": deleted_rows,
+        },
+        "message": "已彻底删除入库文件及其本地索引记录。",
+    }
+
+
 @app.delete("/api/knowledge/library/items/{kind}/{item_id}")
 async def delete_knowledge_library_item(request: Request, kind: str, item_id: str):
     _require_token(request)
@@ -6371,6 +6716,7 @@ async def get_knowledge_capture_drafts(request: Request, limit: int = 50):
     with _knowledge_conn() as conn:
         rows = conn.execute(
             """SELECT * FROM capture_drafts
+               WHERE COALESCE(status, '') NOT IN ('abandoned', 'discarded')
                ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
                         rowid DESC
                LIMIT ?""",
@@ -6391,14 +6737,15 @@ async def get_knowledge_capture_drafts(request: Request, limit: int = 50):
 @app.get("/api/knowledge/capture-drafts/{draft_id}")
 async def get_knowledge_capture_draft(request: Request, draft_id: str):
     _require_token(request)
+    vault_path = _knowledge_vault_path()
     with _knowledge_conn() as conn:
         row = conn.execute(
             "SELECT * FROM capture_drafts WHERE id = ?",
             (draft_id,),
         ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Capture draft not found")
-    return {"draft": _draft_row(row, full=True)}
+        if row is None:
+            raise HTTPException(status_code=404, detail="Capture draft not found")
+        return {"draft": _draft_row(row, conn=conn, vault_path=vault_path, full=True)}
 
 
 @app.post("/api/knowledge/capture-drafts/editable")
@@ -6415,6 +6762,7 @@ async def post_knowledge_editable_capture_draft(
         "source_type": body.source_type,
         "instruction": body.instruction,
         "title": body.title,
+        "organize": body.organize,
         "existing_folders": body.existing_folders or _knowledge_visible_folder_paths(),
     }
     if body.folder_path.strip():
@@ -6440,6 +6788,7 @@ async def patch_knowledge_editable_capture_draft(
         folder_path=body.folder_path,
         folder_suggestion=body.folder_suggestion,
         card_suggestion=body.card_suggestion,
+        organize=body.organize,
         existing_folders=body.existing_folders or _knowledge_visible_folder_paths(),
     )
 
@@ -6599,6 +6948,7 @@ async def get_knowledge_reading_drafts(request: Request, limit: int = 50):
         vault_path = _knowledge_vault_path()
         rows = conn.execute(
             """SELECT * FROM reading_drafts
+               WHERE COALESCE(status, '') NOT IN ('abandoned', 'discarded')
                ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
                         rowid DESC
                LIMIT ?""",
@@ -6785,23 +7135,6 @@ def _source_for_capture(conn: sqlite3.Connection, vault_path: Path, capture_id: 
     }
 
 
-def _knowledge_card_note(vault_path: Path, card_id: str) -> tuple[str, dict, str]:
-    if not card_id:
-        return "", {}, ""
-    garden_dir = vault_path / "garden"
-    if not garden_dir.exists():
-        return "", {}, ""
-    matches = sorted(garden_dir.glob(f"*-{card_id}.md"))
-    if not matches:
-        return "", {}, ""
-    rel_path = f"garden/{matches[0].name}"
-    note = _knowledge_read_note(vault_path, rel_path)
-    if not note:
-        return rel_path, {}, ""
-    frontmatter, body = note
-    return rel_path, frontmatter, body
-
-
 def _knowledge_card_row(
     row: sqlite3.Row,
     *,
@@ -6811,7 +7144,6 @@ def _knowledge_card_row(
 ) -> dict:
     data = dict(row)
     card_id = str(data.get("id") or "")
-    file_path, frontmatter, markdown = _knowledge_card_note(vault_path, card_id)
     payload = _knowledge_normalized_card_payload(data)
     capture_ids = payload.get("source_ids") or _json_value(str(data.get("capture_ids") or "[]"), [])
     core_arguments = _json_value(str(data.get("core_arguments") or "[]"), [])
@@ -6829,9 +7161,13 @@ def _knowledge_card_row(
         "status": data.get("status", ""),
         "updated_at": data.get("updated_at", ""),
         "created_at": data.get("created_at", ""),
-        "file_path": file_path,
-        "markdown": markdown,
-        "source_theme": str(frontmatter.get("source_theme") or "").strip(),
+        "file_path": "",
+        "markdown": "",
+        "source_theme": "",
+        "core_arguments": core_arguments,
+        "knowledge_links": knowledge_links,
+        "key_materials": key_materials,
+        "my_view": data.get("my_view", ""),
         "sources": [
             _source_for_capture(conn, vault_path, str(capture_id))
             for capture_id in capture_ids
@@ -6848,7 +7184,7 @@ def _knowledge_card_row(
                 "knowledge_links": knowledge_links,
                 "key_materials": key_materials,
                 "my_view": data.get("my_view", ""),
-                "markdown": markdown,
+                "markdown": "",
             }
         )
     return card
@@ -6898,6 +7234,39 @@ async def delete_knowledge_card(request: Request, card_id: str):
     garden_bridge = _knowledge_custom_module("bridge.garden_bridge", "Garden bridge")
     archive_garden_card = garden_bridge.archive_garden_card
     return archive_garden_card(card_id=card_id)
+
+
+@app.post("/api/knowledge/graph/refresh")
+async def refresh_knowledge_graph(request: Request):
+    _require_token(request)
+    graph_module = _knowledge_custom_module("agents.knowledge_graph", "Knowledge graph service")
+    conn = _knowledge_graph_conn()
+    try:
+        return graph_module.KnowledgeGraphService(conn, _knowledge_vault_path()).refresh()
+    finally:
+        conn.close()
+
+
+@app.get("/api/knowledge/graph")
+async def get_knowledge_graph(
+    request: Request,
+    focus_kind: str = "",
+    focus_id: str = "",
+    depth: int = 1,
+    limit: int = 80,
+):
+    _require_token(request)
+    graph_module = _knowledge_custom_module("agents.knowledge_graph", "Knowledge graph service")
+    conn = _knowledge_graph_conn()
+    try:
+        return graph_module.KnowledgeGraphService(conn, _knowledge_vault_path()).focus_graph(
+            focus_kind=focus_kind,
+            focus_id=focus_id,
+            depth=depth,
+            limit=max(1, min(limit, 120)),
+        )
+    finally:
+        conn.close()
 
 
 @app.get("/dashboard-plugins/{plugin_name}/{file_path:path}")

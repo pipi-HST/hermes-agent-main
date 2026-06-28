@@ -8,6 +8,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { elapsedMsForTool } from "@/lib/toolElapsed";
 
 /**
  * Expandable tool call row — the web equivalent of Ink's ToolTrail node.
@@ -71,22 +72,25 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
   const [userOverride, setUserOverride] = useState<boolean | null>(null);
   const open = userOverride ?? (tool.status === "error" || (isResearchTool && (tool.status === "running" || hasProgressEvents)));
 
-  // Tick only while the running tool is expanded; collapsed rows do not need
-  // sub-second elapsed updates.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (tool.status !== "running" || !open) return;
+    if (tool.status !== "running") return;
+    const refresh = () => setNow(() => Date.now());
     const id = window.setInterval(() => setNow(() => Date.now()), TICK_MS);
-    return () => window.clearInterval(id);
-  }, [open, tool.status]);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("visibilitychange", refresh);
+    };
+  }, [tool.status]);
 
   // Historical tools (hydrated from session.resume) signal missing timestamps
   // with `startedAt === 0`; we hide the elapsed badge for those rather than
   // rendering a misleading "0ms".
-  const hasTimestamps = tool.startedAt > 0;
-  const elapsed = hasTimestamps
-    ? fmtElapsed((tool.completedAt ?? now) - tool.startedAt)
-    : null;
+  const elapsedMs = elapsedMsForTool(tool, now);
+  const elapsed = elapsedMs === null ? null : fmtElapsed(elapsedMs);
 
   const hasBody = !!(
     tool.context ||

@@ -12,11 +12,11 @@ def test_reading_session_uses_redesign_output_choices():
     commit_description = COMMIT_SCHEMA["description"]
 
     assert "原文增强版主笔记" in description
-    assert "局部学习笔记" in description
+    assert "Capture Note" in description
     assert "知识卡片" in description
     assert "knowledge_card" in output_type["description"]
     assert "discussion_note" not in output_type["description"]
-    assert "knowledge_card 会写入知识卡片" in commit_description
+    assert "knowledge_card 会写入结构化知识卡片" in commit_description
 
 
 def test_knowledge_card_tool_uses_slim_card_kinds():
@@ -37,7 +37,7 @@ def test_personal_assistant_skill_routes_explicit_theme_requests():
 
     assert "扫描最近保存的内容" in skill_text
     assert "theme_scan" in skill_text
-    assert "themes/*.md" in skill_text
+    assert "默认不生成或更新 `themes/*.md`" in skill_text
     assert "Canvas 仍是高级可视化能力" in skill_text
     assert "synthesize_garden" in skill_text
 

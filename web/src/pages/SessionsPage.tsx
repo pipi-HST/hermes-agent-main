@@ -64,7 +64,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
 const READ_WRITE_LABELS: Record<string, string> = {
   readonly: "Read only",
   state_write: "State write",
-  vault_write: "Vault write",
+  knowledge_storage_write: "Knowledge storage write",
   external_write: "External write",
   mixed: "Mixed write",
 };

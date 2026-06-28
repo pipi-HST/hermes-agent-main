@@ -95,7 +95,7 @@ SUMMARIZE_SCHEMA = {
     "description": (
         "把 Reading Session 整理成可审阅草稿。只有用户明确要求“整理进笔记/保存讨论/"
         "补进原文/合并到主笔记/做成知识卡片”时才调用。output_type 不明确时传空，"
-        "工具会返回 1/2/3 确认问题：原文增强版主笔记、局部学习笔记、知识卡片。"
+        "工具会返回 1/2/3 确认问题：原文增强版主笔记、Capture Note、知识卡片。"
     ),
     "parameters": {
         "type": "object",
@@ -115,7 +115,7 @@ COMMIT_SCHEMA = {
     "name": "commit_reading_artifact",
     "description": (
         "用户确认后提交 Reading Draft。enhance_capture 会备份旧 Capture 并写回主笔记；"
-        "local_learning_note 会写入独立 Obsidian 学习笔记；knowledge_card 会写入知识卡片。"
+        "local_learning_note 会写入知识库正式记录；knowledge_card 会写入结构化知识卡片。"
         "只有用户明确确认时才调用。"
     ),
     "parameters": {

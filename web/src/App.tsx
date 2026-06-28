@@ -14,11 +14,11 @@ import {
   useLocation,
 } from "react-router-dom";
 import {
+  ChevronRight,
   Database,
   Layers3,
   Menu,
   PanelLeftClose,
-  PanelLeftOpen,
   Sparkles,
   X,
 } from "lucide-react";
@@ -29,6 +29,7 @@ import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
+import { WorkspaceChromeProvider } from "@/contexts/WorkspaceChromeContext";
 import ConfigPage from "@/pages/ConfigPage";
 import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
@@ -242,6 +243,10 @@ export default function App() {
     () => buildRoutes(builtinRoutes, manifests),
     [builtinRoutes, manifests],
   );
+  const workspaceChrome = useMemo(
+    () => ({ sidebarCollapsed, setSidebarCollapsed }),
+    [sidebarCollapsed],
+  );
   const pluginTabMeta = useMemo(
     () =>
       manifests
@@ -349,19 +354,21 @@ export default function App() {
               "transition-[width,transform] duration-200 ease-out",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0",
-              sidebarCollapsed ? "lg:w-16" : "lg:w-64",
+              sidebarCollapsed
+                ? "lg:w-2 lg:overflow-visible lg:border-r lg:border-border/70 lg:bg-transparent lg:backdrop-blur-0"
+                : "lg:w-64",
             )}
             style={{
-              background: "var(--component-sidebar-background)",
-              clipPath: "var(--component-sidebar-clip-path)",
-              borderImage: "var(--component-sidebar-border-image)",
+              background: sidebarCollapsed ? "transparent" : "var(--component-sidebar-background)",
+              clipPath: sidebarCollapsed ? "none" : "var(--component-sidebar-clip-path)",
+              borderImage: sidebarCollapsed ? "none" : "var(--component-sidebar-border-image)",
             }}
           >
             <div
               className={cn(
-                "flex h-14 shrink-0 items-center justify-between gap-2 px-4",
+                "relative flex h-14 shrink-0 items-center justify-between gap-2 px-4",
                 "border-b border-border/80",
-                sidebarCollapsed && "lg:justify-center lg:px-2",
+                sidebarCollapsed && "lg:h-0 lg:overflow-visible lg:border-0 lg:p-0",
               )}
             >
               <div className={cn("flex items-center gap-2", sidebarCollapsed && "lg:hidden")}>
@@ -382,9 +389,13 @@ export default function App() {
                 onClick={() => setSidebarCollapsed((value) => !value)}
                 aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
                 title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
-                className="hidden text-muted-foreground hover:text-foreground lg:inline-flex"
+                className={cn(
+                  "hidden text-muted-foreground hover:text-foreground lg:inline-flex",
+                  sidebarCollapsed
+                    && "lg:absolute lg:left-1 lg:top-4 lg:z-20 lg:h-8 lg:w-8 lg:opacity-0 lg:shadow-sm lg:transition lg:hover:opacity-100 lg:focus:opacity-100",
+                )}
               >
-                {sidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+                {sidebarCollapsed ? <ChevronRight /> : <PanelLeftClose />}
               </Button>
 
               <Button
@@ -399,7 +410,10 @@ export default function App() {
             </div>
 
             <nav
-              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden py-3"
+              className={cn(
+                "min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden py-3",
+                sidebarCollapsed && "lg:hidden",
+              )}
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
@@ -416,68 +430,70 @@ export default function App() {
             </nav>
           </aside>
 
-          <PageHeaderProvider pluginTabs={pluginTabMeta}>
-            <div
-              className={cn(
-                "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "px-3 sm:px-6 lg:px-8",
-                isChatRoute
-                  ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
-                (isDocsRoute || isKnowledgeWorkspaceRoute) && "min-h-0 flex-1",
-              )}
-            >
-              <PluginSlot name="pre-main" />
+          <WorkspaceChromeProvider value={workspaceChrome}>
+            <PageHeaderProvider pluginTabs={pluginTabMeta}>
               <div
                 className={cn(
-                  "w-full min-w-0",
-                  (isDocsRoute || isChatRoute || isKnowledgeWorkspaceRoute) &&
-                    "min-h-0 flex flex-1 flex-col",
+                  "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
+                  "px-3 sm:px-6 lg:px-8",
+                  isChatRoute
+                    ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
+                    : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
+                  (isDocsRoute || isKnowledgeWorkspaceRoute) && "min-h-0 flex-1",
                 )}
               >
-                <Routes>
-                  {routes.map(({ key, path, element }) => (
-                    <Route key={key} path={path} element={element} />
-                  ))}
-                  <Route
-                    path="*"
-                    element={
-                      <UnknownRouteFallback pluginsLoading={pluginsLoading} />
-                    }
-                  />
-                </Routes>
+                <PluginSlot name="pre-main" />
+                <div
+                  className={cn(
+                    "w-full min-w-0",
+                    (isDocsRoute || isChatRoute || isKnowledgeWorkspaceRoute) &&
+                      "min-h-0 flex flex-1 flex-col",
+                  )}
+                >
+                  <Routes>
+                    {routes.map(({ key, path, element }) => (
+                      <Route key={key} path={path} element={element} />
+                    ))}
+                    <Route
+                      path="*"
+                      element={
+                        <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                      }
+                    />
+                  </Routes>
 
-                {embeddedChat &&
-                  !chatOverriddenByPlugin &&
-                  (pluginsLoading ? (
-                    isChatRoute ? (
-                      <div
-                        className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
-                        aria-busy="true"
-                        aria-live="polite"
-                      >
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Spinner />
-                          <span>Loading chat…</span>
+                  {embeddedChat &&
+                    !chatOverriddenByPlugin &&
+                    (pluginsLoading ? (
+                      isChatRoute ? (
+                        <div
+                          className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
+                          aria-busy="true"
+                          aria-live="polite"
+                        >
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Spinner />
+                            <span>Loading chat…</span>
+                          </div>
                         </div>
+                      ) : null
+                    ) : (
+                      <div
+                        data-chat-active={isChatRoute ? "true" : "false"}
+                        className={cn(
+                          "min-h-0 min-w-0",
+                          isChatRoute ? "flex flex-1 flex-col" : "hidden",
+                        )}
+                        aria-hidden={!isChatRoute}
+                      >
+                        <ChatPage isActive={isChatRoute} />
                       </div>
-                    ) : null
-                  ) : (
-                    <div
-                      data-chat-active={isChatRoute ? "true" : "false"}
-                      className={cn(
-                        "min-h-0 min-w-0",
-                        isChatRoute ? "flex flex-1 flex-col" : "hidden",
-                      )}
-                      aria-hidden={!isChatRoute}
-                    >
-                      <ChatPage isActive={isChatRoute} />
-                    </div>
-                  ))}
+                    ))}
+                </div>
+                <PluginSlot name="post-main" />
               </div>
-              <PluginSlot name="post-main" />
-            </div>
-          </PageHeaderProvider>
+            </PageHeaderProvider>
+          </WorkspaceChromeProvider>
         </div>
       </div>
 

@@ -15,7 +15,7 @@ from tools.registry import registry
 LIBRARIAN_SCHEMA = {
     "name": "audit_library",
     "description": (
-        "检查 Hermes Obsidian 知识库与 SQLite 数据是否一致，并检查长文是否缺少目录。"
+        "检查 Hermes Knowledge File storage 与 SQLite 数据是否一致，并检查长文是否缺少目录。"
         "默认只审计、不修改任何数据。只有当用户明确说“执行修复”“确认修复”“应用修复”"
         "这类确认语句时，才把 apply 设为 true。返回微信友好的审计摘要和本地报告路径。"
     ),

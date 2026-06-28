@@ -1,4 +1,4 @@
-"""Hermes tool: theme_scan — Obsidian Theme map scan."""
+"""Hermes tool: theme_scan — Theme View scan."""
 from __future__ import annotations
 
 import sys
@@ -12,11 +12,11 @@ from tools.registry import registry
 THEME_SCAN_SCHEMA = {
     "name": "theme_scan",
     "description": (
-        "知识库主题地图工具：扫描最近保存内容之间的关联，并自动生成或更新 "
-        "Obsidian vault 里的 themes/*.md 主题页。Theme 页面是 MOC 风格的关系地图，"
+        "知识库主题地图工具：扫描最近保存内容之间的关联，并更新 "
+        "Web/DB Theme View；默认不生成或更新 themes/*.md。Theme View 是关系地图，"
         "用于整理多篇 Capture 之间的关系，也可以给 Knowledge Card 沉淀提供方向。"
         "当用户要求“扫描最近内容”“整理主题关联”“看看有没有可以沉淀成知识卡片的内容”"
-        "“重建主题页”“整理 MOC”时，可以调用本工具。"
+        "“重建 Theme View”“整理主题线索”时，可以调用本工具。"
         "这是索引图谱优先的扫描：先用 identity/section embeddings 和元数据找关系，"
         "不再逐篇调用 LLM 精筛；LLM 只负责解释已经发现的候选关联。"
         "扫描发现关联时，Theme Agent 会说明这些材料的共同问题，"
@@ -26,8 +26,8 @@ THEME_SCAN_SCHEMA = {
         "如果工具返回“扫描不完整”或 warnings，必须如实告诉用户这次结果不可靠，"
         "不要改写成“知识库没有关联”。"
         "面向用户回复时尽量照抄 chat_preview，不要暴露 processed_ids 等内部 ID 列表。"
-        "默认只扫描最近未扫描的新内容；当用户明确要求“重建主题页”"
-        "“扫描全部知识库”“重新整理主题/MOC”时，传 rescan_all=true。"
+        "默认只扫描最近未扫描的新内容；当用户明确要求“重建 Theme View”"
+        "“扫描全部知识库”“重新整理主题关系”时，传 rescan_all=true。"
         "如果用户只要求扫描最近内容，而工具返回“没有待扫描的新内容”，"
         "不要自动改成 rescan_all=true；应先问用户是否全库扫描。"
         "如果刚刚返回“没有待扫描的新内容”，而用户追问“有哪些内容/有哪些组/第一组是什么”，"

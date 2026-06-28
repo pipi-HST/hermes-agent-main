@@ -1,4 +1,4 @@
-"""Hermes tool: generate_canvas — advanced Obsidian Canvas relationship maps."""
+"""Hermes tool: generate_canvas — advanced Knowledge Canvas relationship maps."""
 from __future__ import annotations
 
 import sys
@@ -15,7 +15,7 @@ from tools.registry import registry
 GENERATE_CANVAS_SCHEMA = {
     "name": "generate_canvas",
     "description": (
-        "高级/内部工具：为 Obsidian 知识库生成 Canvas 关系图/画板。"
+        "高级/内部工具：为 Hermes Knowledge 生成 Canvas 关系图/画板文件。"
         "新版 Hermes Knowledge 主流程不主动推荐 Canvas；只有用户明确要求"
         "“生成 Canvas”“做成关系图”“把这个主题做成画板”时才调用。"
         "本工具只生成 .canvas 文件，不改写原笔记内容。"
@@ -25,7 +25,7 @@ GENERATE_CANVAS_SCHEMA = {
         "properties": {
             "theme": {
                 "type": "string",
-                "description": "主题/MOC 名称或自然语言主题。",
+                "description": "Theme View 名称或自然语言主题。",
             },
             "question_id": {
                 "type": "string",
@@ -35,7 +35,7 @@ GENERATE_CANVAS_SCHEMA = {
             "garden_card_ids": {"type": "array", "items": {"type": "string"}},
             "export_file": {
                 "type": "boolean",
-                "description": "只有用户明确要求把 Canvas 文件作为附件发出时才设为 true；普通生成到 Obsidian 保持 false。",
+                "description": "只有用户明确要求把 Canvas 文件作为附件发出时才设为 true；普通生成到 Knowledge File storage 保持 false。",
             },
         },
         "required": [],

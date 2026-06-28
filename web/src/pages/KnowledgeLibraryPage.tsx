@@ -15,11 +15,13 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CircleAlert,
   Clock3,
   Copy,
   Eye,
+  ExternalLink,
   FilePlus2,
   FileText,
   Folder,
@@ -27,8 +29,12 @@ import {
   Inbox,
   Layers3,
   Loader2,
+  Maximize2,
+  Minimize2,
   MoreHorizontal,
   NotebookPen,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Pencil,
@@ -59,12 +65,17 @@ import {
 } from "@/lib/api";
 import { cn, isoTimeAgo } from "@/lib/utils";
 import { ResizableRail, readStoredWidth } from "@/components/ResizableRail";
+import { useWorkspaceChrome } from "@/contexts/WorkspaceChromeContext";
 import {
   EditableCaptureWorkbench,
   type EditableCaptureStatus,
 } from "@/pages/knowledge-chat/EditableCaptureWorkbench";
 import { Markdown } from "@/components/Markdown";
 import { KnowledgeAnswerView } from "@/components/KnowledgeAnswerView";
+import {
+  analyzeKnowledgeOutlineMarkdown,
+  repairKnowledgeOutlineMarkdown,
+} from "@/lib/markdownNavigation";
 
 type LibrarySelection =
   | { type: "all"; value: "all" }
@@ -115,6 +126,7 @@ const STATUS_FILTERS: Array<{ key: StatusFilter; label: string }> = [
 ];
 
 const KNOWLEDGE_LEFT_WIDTH_KEY = "hermes.knowledgeLibrary.leftWidth";
+const KNOWLEDGE_LEFT_COLLAPSED_KEY = "hermes.knowledgeLibrary.leftPaneCollapsed";
 const KNOWLEDGE_AI_WIDTH_KEY = "hermes.knowledgeLibrary.aiWidth";
 const KNOWLEDGE_AI_FOCUS_WIDTH_KEY = "hermes.knowledgeLibrary.aiFocusWidth";
 const DEFAULT_KNOWLEDGE_LEFT_WIDTH = 360;
@@ -122,10 +134,22 @@ const DEFAULT_KNOWLEDGE_AI_WIDTH = 380;
 const DEFAULT_KNOWLEDGE_AI_FOCUS_WIDTH = 520;
 const MAX_SELECTION_SEARCH_CHARS = 1000;
 const SELECTION_TOO_LONG_MESSAGE = "选区超过 1000 字，当前不支持基于超长选区检索。请缩短选区后再试。";
+const LIBRARY_NOT_FOUND_PATTERNS = [
+  "Library capture not found",
+  "Library draft not found",
+  "Capture not found",
+  "Capture draft not found",
+];
+
+function isLibraryNotFoundError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.startsWith("404:") && LIBRARY_NOT_FOUND_PATTERNS.some((pattern) => message.includes(pattern));
+}
 
 export default function KnowledgeLibraryPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { sidebarCollapsed, setSidebarCollapsed } = useWorkspaceChrome();
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [mode, setMode] = useState<LibraryMode>(
     searchParams.get("mode") === "paste" ? "paste" : "files",
@@ -146,6 +170,7 @@ export default function KnowledgeLibraryPage() {
   const [renamingFolder, setRenamingFolder] = useState("");
   const [renameFolderName, setRenameFolderName] = useState("");
   const [newMenuOpen, setNewMenuOpen] = useState(false);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [loadingFolders, setLoadingFolders] = useState(true);
   const [loadingItems, setLoadingItems] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -171,8 +196,13 @@ export default function KnowledgeLibraryPage() {
   const [aiFocusPaneWidth, setAiFocusPaneWidth] = useState(() =>
     readStoredWidth(KNOWLEDGE_AI_FOCUS_WIDTH_KEY, DEFAULT_KNOWLEDGE_AI_FOCUS_WIDTH),
   );
+  const [leftPaneCollapsed, setLeftPaneCollapsed] = useState(() => (
+    window.localStorage.getItem(KNOWLEDGE_LEFT_COLLAPSED_KEY) === "true"
+  ));
+  const [readingFullscreen, setReadingFullscreen] = useState(false);
   const libraryLayoutRef = useRef<HTMLDivElement | null>(null);
   const articleLayoutRef = useRef<HTMLDivElement | null>(null);
+  const lastOpenAiPanelModeRef = useRef<ArticleAIPanelMode>("assist");
   const [selectionContext, setSelectionContext] = useState<ArticleSelectionContext | null>(null);
   const [chatMessages, setChatMessages] = useState<ArticleChatMessage[]>([]);
   const [chatQuestion, setChatQuestion] = useState("");
@@ -194,6 +224,7 @@ export default function KnowledgeLibraryPage() {
   const [editableCardSuggestionsText, setEditableCardSuggestionsText] = useState("");
   const [editableDraft, setEditableDraft] = useState<KnowledgeCaptureDraft | null>(null);
   const [editableStatus, setEditableStatus] = useState<EditableCaptureStatus>("empty");
+  const [editableProgressMessage, setEditableProgressMessage] = useState("");
   const [editableError, setEditableError] = useState("");
 
   const selectedFolder = selection.type === "folder" ? selection.value : "";
@@ -264,6 +295,8 @@ export default function KnowledgeLibraryPage() {
   ]);
   const hasUnsavedChanges = detailDirty || editableDirty;
   const aiPanelOpen = aiPanelMode !== "collapsed";
+  const allSidebarsCollapsed = sidebarCollapsed && leftPaneCollapsed && aiPanelMode === "collapsed";
+  const canEnterReadingFullscreen = mode === "files" && Boolean(detail) && workbenchMode === "browse";
   const aiPanelWidth = aiPanelMode === "focus" ? aiFocusPaneWidth : aiPaneWidth;
   const libraryLayoutStyle = {
     "--knowledge-left-width": `${leftPaneWidth}px`,
@@ -275,6 +308,63 @@ export default function KnowledgeLibraryPage() {
     if (!hasUnsavedChanges) return true;
     return window.confirm("当前文件有未保存更改，确定离开吗？");
   }, [hasUnsavedChanges]);
+
+  useEffect(() => {
+    window.localStorage.setItem(KNOWLEDGE_LEFT_COLLAPSED_KEY, leftPaneCollapsed ? "true" : "false");
+  }, [leftPaneCollapsed]);
+
+  useEffect(() => {
+    if (aiPanelMode !== "collapsed") {
+      lastOpenAiPanelModeRef.current = aiPanelMode;
+    }
+  }, [aiPanelMode]);
+
+  useEffect(() => {
+    if (!readingFullscreen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setReadingFullscreen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [readingFullscreen]);
+
+  const toggleAllSidebars = useCallback(() => {
+    if (allSidebarsCollapsed) {
+      setSidebarCollapsed(false);
+      setLeftPaneCollapsed(false);
+      setViewMenuOpen(false);
+      return;
+    }
+    setSidebarCollapsed(true);
+    setLeftPaneCollapsed(true);
+    if (aiPanelMode !== "collapsed") {
+      lastOpenAiPanelModeRef.current = aiPanelMode;
+      setAiPanelMode("collapsed");
+    }
+    setViewMenuOpen(false);
+  }, [aiPanelMode, allSidebarsCollapsed, setSidebarCollapsed]);
+
+  const toggleWorkspaceNavigation = useCallback(() => {
+    setSidebarCollapsed((current) => !current);
+    setViewMenuOpen(false);
+  }, [setSidebarCollapsed]);
+
+  const toggleKnowledgeLeftPane = useCallback(() => {
+    setLeftPaneCollapsed((current) => !current);
+    setViewMenuOpen(false);
+  }, []);
+
+  const toggleArticleAiPanel = useCallback(() => {
+    setAiPanelMode((current) => current === "collapsed" ? lastOpenAiPanelModeRef.current : "collapsed");
+    setViewMenuOpen(false);
+  }, []);
+
+  const enterReadingFullscreen = useCallback(() => {
+    if (canEnterReadingFullscreen) {
+      setReadingFullscreen(true);
+    }
+    setViewMenuOpen(false);
+  }, [canEnterReadingFullscreen]);
 
   const loadFolders = useCallback(async () => {
     setLoadingFolders(true);
@@ -351,6 +441,14 @@ export default function KnowledgeLibraryPage() {
       setDraftBody(payload.item.body || payload.item.preview || "");
       setDraftFolder(payload.item.folder_path || "Inbox");
     } catch (err) {
+      if (isLibraryNotFoundError(err)) {
+        setDetail(null);
+        setSelectedKey("");
+        setDraftTitle("");
+        setDraftBody("");
+        setDraftFolder(selectedFolder || "Inbox");
+        return;
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoadingDetail(false);
@@ -393,15 +491,55 @@ export default function KnowledgeLibraryPage() {
   }, [searchParams]);
 
   useEffect(() => {
+    const rawKind = searchParams.get("kind");
+    const itemId = searchParams.get("item");
+    const requestedMode = searchParams.get("mode");
+    const kind = rawKind === "capture" || rawKind === "capture_draft" ? rawKind : "";
+    if (!kind || !itemId) return;
+    if (!allItems.length && loadingItems) return;
+
+    const item = allItems.find((entry) => entry.kind === kind && entry.id === itemId);
+    const clearRouteParams = () => {
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        next.delete("kind");
+        next.delete("item");
+        next.delete("mode");
+        return next;
+      }, { replace: true });
+    };
+
+    if (!item) {
+      setSelectedKey("");
+      setDetail(null);
+      setNotice("目标文件已不存在或已被删除。");
+      clearRouteParams();
+      return;
+    }
+
+    const folder = item.folder_path || "Inbox";
+    setSelection(item.folder_path ? { type: "folder", value: folder } : DEFAULT_SELECTION);
+    setExpandedFolders((current) => new Set(current).add(folder));
+    setStatusFilter("all");
+    setMode("files");
+    setWorkbenchMode(requestedMode === "edit" ? "edit" : "browse");
+    setSelectedKey(itemKey(item));
+    void loadDetail(item);
+    clearRouteParams();
+  }, [allItems, loadDetail, loadingItems, searchParams, setSearchParams]);
+
+  useEffect(() => {
     if (mode !== "files") return;
     if (!visibleItems.length) {
+      if (selectedItem) return;
       setSelectedKey("");
       return;
     }
+    if (selectedItem) return;
     if (!visibleItems.some((item) => itemKey(item) === selectedKey)) {
       setSelectedKey(itemKey(visibleItems[0]));
     }
-  }, [mode, selectedKey, visibleItems]);
+  }, [mode, selectedItem, selectedKey, visibleItems]);
 
   useEffect(() => {
     if (!hasUnsavedChanges) return undefined;
@@ -582,11 +720,7 @@ export default function KnowledgeLibraryPage() {
     switchMode("paste");
   }, [confirmLeaveCurrentWork, draftFolder, selectedFolder, switchMode]);
 
-  const createFile = useCallback(() => {
-    startEditableEntry("空白文件");
-  }, [startEditableEntry]);
-
-  const pasteAndOrganize = useCallback(() => {
+  const createKnowledgeFile = useCallback(() => {
     startEditableEntry("");
   }, [startEditableEntry]);
 
@@ -630,13 +764,32 @@ export default function KnowledgeLibraryPage() {
     setError("");
     if (!options.silent) setNotice("");
     try {
-      const payload = await api.updateKnowledgeLibraryItem(detail.kind, detail.id, {
-        title: draftTitle,
-        body: draftBody,
-        folder_path: draftFolder,
-      });
-      setDetail(payload.item);
-      setSelectedKey(itemKey(payload.item));
+      let bodyToSave = draftBody;
+      const outlineAnalysis = analyzeKnowledgeOutlineMarkdown(bodyToSave);
+      if (outlineAnalysis.missing.length) {
+        const confirmed = window.confirm(
+          `发现 ${outlineAnalysis.missing.length} 个目录纲要条目无法跳转，是否自动补齐标题后保存？`,
+        );
+        if (!confirmed) return false;
+        bodyToSave = repairKnowledgeOutlineMarkdown(bodyToSave);
+        setDraftBody(bodyToSave);
+      }
+      if (detail.kind === "capture") {
+        await api.updateKnowledgeCapture(detail.id, {
+          title: draftTitle,
+          body: bodyToSave,
+          folder_path: draftFolder,
+        });
+        await loadDetail(detail);
+      } else {
+        const payload = await api.updateKnowledgeLibraryItem(detail.kind, detail.id, {
+          title: draftTitle,
+          body: bodyToSave,
+          folder_path: draftFolder,
+        });
+        setDetail(payload.item);
+        setSelectedKey(itemKey(payload.item));
+      }
       if (options.refresh !== false) await refreshAll();
       if (!options.silent) setNotice("已保存。");
       return true;
@@ -646,25 +799,89 @@ export default function KnowledgeLibraryPage() {
     } finally {
       setSaving(false);
     }
-  }, [detail, draftBody, draftFolder, draftTitle, refreshAll]);
+  }, [detail, draftBody, draftFolder, draftTitle, loadDetail, refreshAll]);
+
+  const maybeGenerateGardenCardAfterCommit = useCallback(async ({
+    draft,
+    commitResult,
+    shouldGenerate,
+    reason,
+    suggestionsText,
+    onStage,
+  }: {
+    draft: KnowledgeCaptureDraft;
+    commitResult: Record<string, unknown>;
+    shouldGenerate: boolean;
+    reason: string;
+    suggestionsText: string;
+    onStage?: (message: string) => void;
+  }): Promise<{ generated: boolean; error?: string }> => {
+    if (!shouldGenerate) return { generated: false };
+    const captureId = (
+      bridgeMetaString(commitResult, "capture_id")
+      || bridgeMetaString(commitResult, "committed_capture_id")
+      || draft.committed_capture_id
+    );
+    if (!captureId) {
+      return { generated: false, error: "入库成功，但没有拿到 Capture ID。" };
+    }
+    try {
+      onStage?.("正在生成知识卡片...");
+      const cardHint = firstGardenCardHint(suggestionsText);
+      const result = await api.createKnowledgeGardenDraft({
+        capture_ids: [captureId],
+        title: cardHint.title,
+        card_kind: cardHint.card_kind,
+        instruction: buildGardenDraftInstruction(reason, suggestionsText),
+      });
+      if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
+        throw new Error(gardenDraftError(result));
+      }
+      return { generated: true };
+    } catch (err) {
+      return {
+        generated: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }, []);
 
   const commitDraft = useCallback(async () => {
     if (!detail || detail.kind !== "capture_draft") return;
     setCommitting(true);
     setError("");
-    setNotice("");
+    setNotice("正在保存草稿...");
     try {
-      const saved = await saveDetail();
+      const saved = await saveDetail({ refresh: false, silent: true });
       if (!saved) return;
-      await api.commitKnowledgeCaptureDraft(detail.id);
+      const draftBeforeCommit = (await api.getKnowledgeCaptureDraft(detail.id)).draft;
+      const cardSuggestion = editableCardSuggestion(draftBeforeCommit.capture_intent);
+      setNotice("正在写入知识库文件...");
+      const commitResult = await api.commitKnowledgeCaptureDraft(detail.id);
+      setNotice("正在重建索引和大纲...");
+      const payload = await api.getKnowledgeCaptureDraft(detail.id);
+      const cardResult = await maybeGenerateGardenCardAfterCommit({
+        draft: payload.draft,
+        commitResult,
+        shouldGenerate: cardSuggestion.should_generate,
+        reason: cardSuggestion.reason,
+        suggestionsText: formatEditableCardSuggestions(cardSuggestion.cards),
+        onStage: setNotice,
+      });
       await refreshAll();
-      setNotice("已入库到知识库。");
+      if (cardResult.generated) {
+        setNotice("已入库并生成知识卡片。");
+      } else if (cardResult.error) {
+        setNotice(`已入库，但知识卡片生成失败：${cardResult.error}`);
+      } else {
+        setNotice("入库完成。");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCommitting(false);
     }
-  }, [detail, refreshAll, saveDetail]);
+  }, [detail, maybeGenerateGardenCardAfterCommit, refreshAll, saveDetail]);
 
   const deleteDetail = useCallback(async () => {
     if (!detail) return;
@@ -687,11 +904,62 @@ export default function KnowledgeLibraryPage() {
           : "已删除草稿。",
       );
     } catch (err) {
+      if (isLibraryNotFoundError(err)) {
+        setSelectedKey("");
+        setDetail(null);
+        await refreshAll();
+        setNotice("文件已删除。");
+        return;
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setDeleting(false);
     }
   }, [detail, refreshAll]);
+
+  const deleteDetailPermanent = useCallback(async () => {
+    if (!detail || detail.kind !== "capture") return;
+    setDeleting(true);
+    setError("");
+    setNotice("");
+    try {
+      const dependencies = (await api.getKnowledgeLibraryItemDependencies(detail.kind, detail.id)).dependencies;
+      if (libraryHasBlockingDependencies(dependencies)) {
+        setError(libraryPermanentDeleteBlockedMessage(detail, dependencies));
+        return;
+      }
+      const confirmed = window.confirm(libraryPermanentDeleteConfirmMessage(detail, dependencies));
+      if (!confirmed) return;
+      const result = await api.deleteKnowledgeLibraryItemPermanent(detail.kind, detail.id);
+      setSelectedKey("");
+      setDetail(null);
+      await refreshAll();
+      setNotice(libraryPermanentDeleteNotice(result));
+    } catch (err) {
+      if (isLibraryNotFoundError(err)) {
+        setSelectedKey("");
+        setDetail(null);
+        await refreshAll();
+        setNotice("文件已彻底删除。");
+        return;
+      }
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleting(false);
+    }
+  }, [detail, refreshAll]);
+
+  const openDetailLocal = useCallback(async () => {
+    if (!detail || detail.kind !== "capture" || !detail.file_path) return;
+    setError("");
+    setNotice("");
+    try {
+      const result = await api.openKnowledgeLibraryItemLocal(detail.kind, detail.id);
+      setNotice(`已用本地默认 App 打开：${result.path}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [detail]);
 
   const generateCard = useCallback(async () => {
     if (!detail || detail.kind !== "capture") return;
@@ -715,39 +983,37 @@ export default function KnowledgeLibraryPage() {
     }
   }, [detail, loadDetail, refreshAll, saveDetail]);
 
-  const saveEditableCaptureDraft = useCallback(async (
-    options: { preserveEditableMetadata?: boolean; folderPath?: string } = {},
+  const saveEditableCaptureDraftSnapshot = useCallback(async (
+    options: { folderPath?: string; silent?: boolean } = {},
   ): Promise<KnowledgeCaptureDraft | null> => {
     const content = editableContent.trim();
     if (!content) return null;
     const draftFolderPath = options.folderPath ?? editableFolder;
     setEditableStatus("saving_draft");
+    setEditableProgressMessage("正在保存当前修改...");
     setEditableError("");
     setError("");
-    setNotice("");
+    if (!options.silent) setNotice("");
     try {
       const result = editableDraft?.id
         ? await api.updateKnowledgeEditableCaptureDraft(editableDraft.id, {
             content,
             title: editableTitle,
+            summary: editableSummary,
+            tags: parseTagsText(editableTagsText),
             folder_path: draftFolderPath,
+            folder_suggestion: {
+              mode: editableFolderSuggestionMode,
+              folder_path: draftFolderPath,
+              reason: editableFolderSuggestionReason,
+            },
+            card_suggestion: {
+              should_generate: editableGenerateCard,
+              reason: editableCardReason,
+              cards: parseCardSuggestionsText(editableCardSuggestionsText),
+            },
+            organize: false,
             existing_folders: visibleFolderPaths,
-            ...(options.preserveEditableMetadata
-              ? {
-                  summary: editableSummary,
-                  tags: parseTagsText(editableTagsText),
-                  folder_suggestion: {
-                    mode: editableFolderSuggestionMode,
-                    folder_path: draftFolderPath,
-                    reason: editableFolderSuggestionReason,
-                  },
-                  card_suggestion: {
-                    should_generate: editableGenerateCard,
-                    reason: editableCardReason,
-                    cards: parseCardSuggestionsText(editableCardSuggestionsText),
-                  },
-                }
-              : {}),
           })
         : await api.createKnowledgeEditableCaptureDraft({
             content,
@@ -755,6 +1021,7 @@ export default function KnowledgeLibraryPage() {
             source_type: "manual",
             title: editableTitle,
             folder_path: draftFolderPath,
+            organize: false,
             existing_folders: visibleFolderPaths,
           });
       const draftId = bridgeMetaString(result, "draft_id") || editableDraft?.id || "";
@@ -766,13 +1033,15 @@ export default function KnowledgeLibraryPage() {
       });
       setSelectedKey(`capture_draft:${draftId}`);
       setEditableStatus("ready_to_commit");
+      setEditableProgressMessage("已保存当前修改");
       await refreshAll();
-      setNotice("已整理成草稿，可以入库到知识库。");
+      if (!options.silent) setNotice("已保存草稿。");
       return payload.draft;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setEditableError(message);
       setEditableStatus("error");
+      setEditableProgressMessage("");
       return null;
     }
   }, [
@@ -788,6 +1057,68 @@ export default function KnowledgeLibraryPage() {
     editableSummary,
     editableSource,
     editableTagsText,
+    editableTitle,
+    refreshAll,
+    visibleFolderPaths,
+  ]);
+
+  const organizeEditableCaptureDraft = useCallback(async (
+    options: { folderPath?: string } = {},
+  ): Promise<KnowledgeCaptureDraft | null> => {
+    const content = editableContent.trim();
+    if (!content) return null;
+    const draftFolderPath = options.folderPath ?? editableFolder;
+    setEditableStatus("organizing");
+    setEditableProgressMessage("正在整理正文...");
+    setEditableError("");
+    setError("");
+    setNotice("");
+    try {
+      const result = editableDraft?.id
+        ? await api.updateKnowledgeEditableCaptureDraft(editableDraft.id, {
+            content,
+            title: editableTitle,
+            folder_path: draftFolderPath,
+            organize: true,
+            existing_folders: visibleFolderPaths,
+          })
+        : await api.createKnowledgeEditableCaptureDraft({
+            content,
+            source: editableSource,
+            source_type: "manual",
+            title: editableTitle,
+            folder_path: draftFolderPath,
+            organize: true,
+            existing_folders: visibleFolderPaths,
+          });
+      const draftId = bridgeMetaString(result, "draft_id") || editableDraft?.id || "";
+      if (!draftId) throw new Error("没有返回草稿编号。");
+      setEditableProgressMessage("正在生成标题摘要标签...");
+      const payload = await api.getKnowledgeCaptureDraft(draftId);
+      setEditableProgressMessage("正在生成文件夹和卡片建议...");
+      applyEditableDraftSuggestion(payload.draft, {
+        fallbackContent: content,
+        fallbackFolder: draftFolderPath,
+      });
+      setSelectedKey(`capture_draft:${draftId}`);
+      setEditableStatus("ready_to_commit");
+      setEditableProgressMessage("整理完成，可以入库");
+      await refreshAll();
+      setNotice("已生成 AI 建议，可以继续编辑或入库。");
+      return payload.draft;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setEditableError(message);
+      setEditableStatus("error");
+      setEditableProgressMessage("");
+      return null;
+    }
+  }, [
+    editableContent,
+    editableDraft,
+    applyEditableDraftSuggestion,
+    editableFolder,
+    editableSource,
     editableTitle,
     refreshAll,
     visibleFolderPaths,
@@ -825,6 +1156,7 @@ export default function KnowledgeLibraryPage() {
       setEditableCardReason("");
       setEditableCardSuggestionsText("");
       setEditableStatus("empty");
+      setEditableProgressMessage("");
       setSelectedKey("");
       await refreshAll();
       setNotice("已删除草稿。");
@@ -839,6 +1171,7 @@ export default function KnowledgeLibraryPage() {
 
   const commitEditableCaptureDraft = useCallback(async () => {
     setEditableStatus("committing");
+    setEditableProgressMessage("正在保存当前修改...");
     setEditableError("");
     setError("");
     setNotice("");
@@ -847,31 +1180,38 @@ export default function KnowledgeLibraryPage() {
       if (targetFolder !== editableFolder) {
         setEditableFolder(targetFolder);
       }
-      const draft = await saveEditableCaptureDraft({
-        preserveEditableMetadata: true,
+      const draft = await saveEditableCaptureDraftSnapshot({
         folderPath: targetFolder,
+        silent: true,
       });
       if (!draft) return;
-      await api.commitKnowledgeCaptureDraft(draft.id);
+      setEditableStatus("committing");
+      setEditableProgressMessage("正在写入知识库文件...");
+      const commitResult = await api.commitKnowledgeCaptureDraft(draft.id);
+      setEditableProgressMessage("正在重建索引和大纲...");
       const payload = await api.getKnowledgeCaptureDraft(draft.id);
       applyEditableDraftSuggestion(payload.draft, {
         fallbackContent: "",
         fallbackFolder: targetFolder,
       });
-      setEditableStatus("committed");
       setSelection({ type: "folder", value: targetFolder || "Inbox" });
       setExpandedFolders((current) => new Set(current).add(targetFolder || "Inbox"));
       setSelectedKey(`capture_draft:${draft.id}`);
+      const cardResult = await maybeGenerateGardenCardAfterCommit({
+        draft: payload.draft,
+        commitResult,
+        shouldGenerate: editableGenerateCard,
+        reason: editableCardReason,
+        suggestionsText: editableCardSuggestionsText,
+        onStage: setEditableProgressMessage,
+      });
+      setEditableStatus("committed");
+      setEditableProgressMessage("入库完成");
       await refreshAll();
-      if (editableGenerateCard && payload.draft.committed_capture_id) {
-        const cardHint = firstGardenCardHint(editableCardSuggestionsText);
-        await api.createKnowledgeGardenDraft({
-          capture_ids: [payload.draft.committed_capture_id],
-          title: cardHint.title,
-          card_kind: cardHint.card_kind,
-          instruction: buildGardenDraftInstruction(editableCardReason, editableCardSuggestionsText),
-        });
-        setNotice(`已入库并生成 Garden Card：《${payload.draft.title || "未命名草稿"}》。`);
+      if (cardResult.generated) {
+        setNotice(`已入库并生成知识卡片：《${payload.draft.title || "未命名草稿"}》。`);
+      } else if (cardResult.error) {
+        setNotice(`已入库，但知识卡片生成失败：${cardResult.error}`);
       } else {
         setNotice(`已入库到知识库：《${payload.draft.title || "未命名草稿"}》。`);
       }
@@ -879,6 +1219,7 @@ export default function KnowledgeLibraryPage() {
       const message = err instanceof Error ? err.message : String(err);
       setEditableError(message);
       setEditableStatus("error");
+      setEditableProgressMessage("");
     }
   }, [
     editableCardReason,
@@ -886,8 +1227,9 @@ export default function KnowledgeLibraryPage() {
     editableFolder,
     editableGenerateCard,
     ensureEditableFolder,
+    maybeGenerateGardenCardAfterCommit,
     refreshAll,
-    saveEditableCaptureDraft,
+    saveEditableCaptureDraftSnapshot,
   ]);
 
   const askArticleAi = useCallback(async (override?: { question?: string; mode?: KnowledgeResearchMode }) => {
@@ -1080,7 +1422,7 @@ export default function KnowledgeLibraryPage() {
         hermes_session_id: "knowledge-library",
         user_message: [...chatMessages].reverse().find((item) => item.role === "user")?.content || chatQuestion || detail.title,
         assistant_answer: message.content,
-        instruction: outputType === "knowledge_card" ? "把知识库右侧 AI 回答做成卡片" : "把知识库右侧 AI 回答存成学习笔记",
+        instruction: outputType === "knowledge_card" ? "把知识库右侧 AI 回答做成卡片" : "把知识库右侧 AI 回答存成 Capture Note",
         output_type: outputType,
         assistant_message_id: message.id,
         sources: articleSourcesForSave(message.sources, detail),
@@ -1091,7 +1433,7 @@ export default function KnowledgeLibraryPage() {
           ? result.meta.reading_draft_id
           : "";
       await refreshAll();
-      setNotice(result.chat_preview || (outputType === "knowledge_card" ? "已生成知识卡片草稿。" : "已生成学习笔记草稿。"));
+      setNotice(result.chat_preview || (outputType === "knowledge_card" ? "已生成知识卡片草稿。" : "已生成 Capture Note 草稿。"));
       if (draftId) {
         navigate(`/knowledge-chat?answerDraft=${encodeURIComponent(draftId)}`);
       }
@@ -1136,25 +1478,83 @@ export default function KnowledgeLibraryPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 text-foreground">
+      {readingFullscreen && detail ? (
+        <ImmersiveReadingOverlay
+          body={draftBody}
+          title={draftTitle || detail.title || "未命名文件"}
+          onExit={() => setReadingFullscreen(false)}
+        />
+      ) : null}
       <header className="flex h-[52px] shrink-0 items-center justify-between rounded-lg border border-border bg-background px-4">
         <h1 className="min-w-0 truncate text-base font-semibold tracking-normal">知识库</h1>
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setNewMenuOpen((open) => !open)}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-          >
-            <Plus className="h-4 w-4" />
-            新建
-            <ChevronDown className="h-3.5 w-3.5" />
-          </button>
-          {newMenuOpen ? (
-            <div className="absolute right-0 z-20 mt-2 w-60 overflow-hidden rounded-md border border-border bg-background shadow-lg">
-              <MenuAction description="粘贴材料，由 Hermes 生成元信息建议" icon={NotebookPen} label="粘贴整理" onClick={pasteAndOrganize} />
-              <MenuAction description="从空白开始写一篇知识文件" icon={FilePlus2} label="新建空白文件" onClick={createFile} />
-              <MenuAction description="导入 .txt / .md 文件内容后整理" icon={UploadCloud} label="导入 Text / Markdown 文件" onClick={importContent} />
-            </div>
-          ) : null}
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setViewMenuOpen((open) => !open);
+                setNewMenuOpen(false);
+              }}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background/65 px-3 text-sm text-muted-foreground transition hover:border-primary/35 hover:text-foreground"
+              aria-expanded={viewMenuOpen}
+              aria-label="视图"
+              title="视图"
+            >
+              <Eye className="h-4 w-4" />
+              视图
+              <ChevronDown className="h-3.5 w-3.5" />
+            </button>
+            {viewMenuOpen ? (
+              <div className="absolute right-0 z-20 mt-2 w-56 overflow-hidden rounded-md border border-border bg-background p-1 shadow-lg">
+                <MenuButton
+                  icon={sidebarCollapsed ? PanelLeftOpen : PanelLeftClose}
+                  label={sidebarCollapsed ? "展开导航" : "收起导航"}
+                  onClick={toggleWorkspaceNavigation}
+                />
+                <MenuButton
+                  icon={leftPaneCollapsed ? PanelLeftOpen : PanelLeftClose}
+                  label={leftPaneCollapsed ? "展开文件栏" : "收起文件栏"}
+                  onClick={toggleKnowledgeLeftPane}
+                />
+                <MenuButton
+                  icon={aiPanelOpen ? PanelRightClose : PanelRightOpen}
+                  label={aiPanelOpen ? "收起 AI" : "展开 AI"}
+                  onClick={toggleArticleAiPanel}
+                />
+                <MenuButton
+                  icon={allSidebarsCollapsed ? PanelLeftOpen : Minimize2}
+                  label={allSidebarsCollapsed ? "展开侧栏" : "收起全部侧栏"}
+                  onClick={toggleAllSidebars}
+                />
+                <MenuButton
+                  disabled={!canEnterReadingFullscreen}
+                  icon={Maximize2}
+                  label="进入沉浸阅读"
+                  onClick={enterReadingFullscreen}
+                />
+              </div>
+            ) : null}
+          </div>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setNewMenuOpen((open) => !open);
+                setViewMenuOpen(false);
+              }}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              <Plus className="h-4 w-4" />
+              新建
+              <ChevronDown className="h-3.5 w-3.5" />
+            </button>
+            {newMenuOpen ? (
+              <div className="absolute right-0 z-20 mt-2 w-60 overflow-hidden rounded-md border border-border bg-background shadow-lg">
+                <MenuAction description="空白写作或粘贴材料，再按需生成 AI 建议" icon={NotebookPen} label="新建知识文件" onClick={createKnowledgeFile} />
+                <MenuAction description="导入 .txt / .md 文件内容后整理" icon={UploadCloud} label="导入 Text / Markdown 文件" onClick={importContent} />
+              </div>
+            ) : null}
+          </div>
           <input
             ref={importInputRef}
             type="file"
@@ -1182,50 +1582,72 @@ export default function KnowledgeLibraryPage() {
       <div
         ref={libraryLayoutRef}
         style={libraryLayoutStyle}
-        className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[var(--knowledge-left-width)_8px_minmax(0,1fr)]"
+        className={cn(
+          "grid min-h-0 flex-1 gap-0",
+          leftPaneCollapsed
+            ? "lg:grid-cols-[8px_minmax(0,1fr)]"
+            : "lg:grid-cols-[var(--knowledge-left-width)_8px_minmax(0,1fr)]",
+        )}
       >
-        <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
-          <div className="shrink-0 border-b border-border p-3">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold">知识库</h2>
-              <button
-                type="button"
-                onClick={() => void refreshAll()}
-                className="rounded p-1 text-muted-foreground transition hover:bg-background/80 hover:text-foreground"
-                title="刷新"
-                aria-label="刷新"
-              >
-                <RefreshCw className={cn("h-4 w-4", (loadingFolders || loadingItems) && "animate-spin")} />
-              </button>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-              <Metric label="全部" value={stats.all} />
-              <Metric label="草稿" value={stats.drafts} />
-              <Metric label="已入库" value={stats.inLibrary} />
-              <Metric label="有卡片" value={stats.cards} />
-            </div>
-            <label className="mt-3 flex h-9 items-center gap-2 rounded-md border border-border bg-background/70 px-3">
-              <Search className="h-4 w-4 text-muted-foreground" />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索文件"
-                className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-              />
-            </label>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {STATUS_FILTERS.map((filter) => (
-                <FilterButton
-                  key={filter.key}
-                  active={statusFilter === filter.key}
-                  label={filter.label}
-                  onClick={() => setStatusFilter(filter.key)}
-                />
-              ))}
-            </div>
-          </div>
+        {leftPaneCollapsed ? (
+          <CollapsedKnowledgeLeftRail
+            onExpand={() => setLeftPaneCollapsed(false)}
+          />
+        ) : (
+          <>
+            <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
+              <div className="shrink-0 border-b border-border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold">知识库</h2>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setLeftPaneCollapsed(true)}
+                      className="rounded p-1 text-muted-foreground transition hover:bg-background/80 hover:text-foreground"
+                      title="收起侧栏"
+                      aria-label="收起侧栏"
+                    >
+                      <PanelLeftClose className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void refreshAll()}
+                      className="rounded p-1 text-muted-foreground transition hover:bg-background/80 hover:text-foreground"
+                      title="刷新"
+                      aria-label="刷新"
+                    >
+                      <RefreshCw className={cn("h-4 w-4", (loadingFolders || loadingItems) && "animate-spin")} />
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <Metric label="全部" value={stats.all} />
+                  <Metric label="草稿" value={stats.drafts} />
+                  <Metric label="已入库" value={stats.inLibrary} />
+                  <Metric label="有卡片" value={stats.cards} />
+                </div>
+                <label className="mt-3 flex h-9 items-center gap-2 rounded-md border border-border bg-background/70 px-3">
+                  <Search className="h-4 w-4 text-muted-foreground" />
+                  <input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="搜索文件"
+                    className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                  />
+                </label>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {STATUS_FILTERS.map((filter) => (
+                    <FilterButton
+                      key={filter.key}
+                      active={statusFilter === filter.key}
+                      label={filter.label}
+                      onClick={() => setStatusFilter(filter.key)}
+                    />
+                  ))}
+                </div>
+              </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+              <div className="min-h-0 flex-1 overflow-y-auto p-2">
             {query.trim() || statusFilter !== "all" ? (
               <div>
                 <div className="mb-2 flex items-start justify-between gap-3 px-2">
@@ -1257,7 +1679,11 @@ export default function KnowledgeLibraryPage() {
                     ))}
                   </div>
                 ) : (
-                  <EmptyState text="当前范围没有符合条件的文件。" />
+                  <EmptyState
+                    text="当前知识库范围没有文件。"
+                    onCreate={createKnowledgeFile}
+                    onImport={importContent}
+                  />
                 )}
               </div>
             ) : (
@@ -1330,17 +1756,19 @@ export default function KnowledgeLibraryPage() {
                 </NavSection>
               </>
             )}
-          </div>
-        </aside>
-        <ResizableRail
-          containerRef={libraryLayoutRef}
-          defaultWidth={DEFAULT_KNOWLEDGE_LEFT_WIDTH}
-          maxWidth={460}
-          minWidth={260}
-          onCommit={setLeftPaneWidth}
-          storageKey={KNOWLEDGE_LEFT_WIDTH_KEY}
-          variableName="--knowledge-left-width"
-        />
+              </div>
+            </aside>
+            <ResizableRail
+              containerRef={libraryLayoutRef}
+              defaultWidth={DEFAULT_KNOWLEDGE_LEFT_WIDTH}
+              maxWidth={460}
+              minWidth={260}
+              onCommit={setLeftPaneWidth}
+              storageKey={KNOWLEDGE_LEFT_WIDTH_KEY}
+              variableName="--knowledge-left-width"
+            />
+          </>
+        )}
 
 	        {mode === "paste" ? (
 	          <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
@@ -1355,6 +1783,7 @@ export default function KnowledgeLibraryPage() {
               folderOptions={folderOptions}
               folderPath={editableFolder}
               generateCard={editableGenerateCard}
+              progressMessage={editableProgressMessage}
               source={editableSource}
               status={editableStatus}
               summary={editableSummary}
@@ -1367,17 +1796,22 @@ export default function KnowledgeLibraryPage() {
                 setEditableContent(value);
                 if (editableStatus !== "committed") {
                   setEditableStatus(value.trim() ? "editing" : "empty");
+                  setEditableProgressMessage("");
                 }
               }}
               onFolderChange={(value) => {
                 setEditableFolder(value);
-                if (editableStatus !== "committed") setEditableStatus("editing");
+                if (editableStatus !== "committed") {
+                  setEditableStatus("editing");
+                  setEditableProgressMessage("");
+                }
               }}
               onFolderSuggestionModeChange={setEditableFolderSuggestionMode}
               onFolderSuggestionReasonChange={setEditableFolderSuggestionReason}
               onGenerateCardChange={setEditableGenerateCard}
               onDeleteDraft={() => void deleteEditableCaptureDraft()}
-              onSaveDraft={() => void saveEditableCaptureDraft()}
+              onOrganizeDraft={() => void organizeEditableCaptureDraft()}
+              onSaveDraft={() => void saveEditableCaptureDraftSnapshot()}
               onSourceChange={setEditableSource}
               onSummaryChange={setEditableSummary}
               onTagsTextChange={setEditableTagsText}
@@ -1393,10 +1827,10 @@ export default function KnowledgeLibraryPage() {
                 style={articleLayoutStyle}
 	            className={cn(
 	              "grid min-h-0 gap-0",
-	              detail && workbenchMode === "browse" && aiPanelMode === "collapsed"
-	                ? "xl:grid-cols-[minmax(0,1fr)_44px]"
-	                : detail && workbenchMode === "browse" && aiPanelOpen
-	                  ? "xl:grid-cols-[minmax(0,1fr)_44px] 2xl:grid-cols-[minmax(0,1fr)_8px_var(--knowledge-ai-width)]"
+	              detail && workbenchMode === "browse" && aiPanelMode === "collapsed" && !allSidebarsCollapsed
+	                ? "xl:grid-cols-[minmax(0,1fr)_8px]"
+	                : detail && workbenchMode === "browse" && aiPanelOpen && !allSidebarsCollapsed
+	                  ? "xl:grid-cols-[minmax(0,1fr)_8px_var(--knowledge-ai-width)]"
 	                  : "xl:grid-cols-[minmax(0,1fr)]",
 	            )}
 	          >
@@ -1422,6 +1856,8 @@ export default function KnowledgeLibraryPage() {
 	                  onDelete={() => void deleteDetail()}
 	                  onFolderChange={setDraftFolder}
 	                  onGenerateCard={() => void generateCard()}
+	                  onOpenLocal={() => void openDetailLocal()}
+	                  onPermanentDelete={() => void deleteDetailPermanent()}
 	                  onModeChange={setWorkbenchMode}
 	                  onPublish={() => void commitDraft()}
 	                  onSave={() => void saveDetail()}
@@ -1433,10 +1869,9 @@ export default function KnowledgeLibraryPage() {
 	                <EmptyState text="从左侧文件夹或文件列表选择一个文件。" />
 	              )}
 	            </section>
-	            {detail && workbenchMode === "browse" && aiPanelOpen ? (
+	            {detail && workbenchMode === "browse" && aiPanelOpen && !allSidebarsCollapsed ? (
                   <>
                     <ResizableRail
-                      className="!hidden 2xl:!flex"
                       containerRef={articleLayoutRef}
                       defaultWidth={aiPanelMode === "focus" ? DEFAULT_KNOWLEDGE_AI_FOCUS_WIDTH : DEFAULT_KNOWLEDGE_AI_WIDTH}
                       edge="left"
@@ -1464,13 +1899,8 @@ export default function KnowledgeLibraryPage() {
 	                onOpenSource={openKnowledgeSource}
 	                onSaveAnswer={saveArticleAiAnswer}
 	              />
-                    <CollapsedAIPanelRail
-                      className="2xl:!hidden"
-                      loading={chatLoading}
-                      onOpen={() => setAiPanelMode("assist")}
-                    />
                   </>
-	            ) : detail && workbenchMode === "browse" && aiPanelMode === "collapsed" ? (
+	            ) : detail && workbenchMode === "browse" && aiPanelMode === "collapsed" && !allSidebarsCollapsed ? (
                   <CollapsedAIPanelRail
                     loading={chatLoading}
                     onOpen={() => setAiPanelMode("assist")}
@@ -1519,10 +1949,11 @@ function editableFolderSuggestion(intent: Record<string, unknown> | undefined): 
   const raw = intent?.folder_suggestion;
   const suggestion = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   const mode = suggestion.mode === "new" ? "new" : "existing";
+  const folderPath = stringValue(suggestion.folder_path) || stringValue(intent?.folder_path) || "Inbox";
   return {
     mode,
-    folder_path: stringValue(suggestion.folder_path) || stringValue(intent?.folder_path),
-    reason: stringValue(suggestion.reason),
+    folder_path: folderPath,
+    reason: stringValue(suggestion.reason) || "AI 未返回明确文件夹建议，先放入 Inbox 等待人工确认。",
   };
 }
 
@@ -1533,9 +1964,10 @@ function editableCardSuggestion(intent: Record<string, unknown> | undefined): {
 } {
   const raw = intent?.card_suggestion;
   const suggestion = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const reason = stringValue(suggestion.reason);
   return {
-    should_generate: suggestion.should_generate === true,
-    reason: stringValue(suggestion.reason),
+    should_generate: suggestion.should_generate === true && Boolean(reason),
+    reason: reason || "AI 未返回有效卡片建议，默认暂不生成 Garden Card。",
     cards: normalizeCardSuggestions(suggestion.cards),
   };
 }
@@ -1658,7 +2090,7 @@ function libraryDeleteNotice(result: KnowledgeLibraryDeleteResponse): string {
   const { cardCount, gardenDraftCount, backlinkCount, draftCount, eventCount } = libraryDependencyCounts(dependencies);
   const parts = [
     cardCount ? `${cardCount} 张卡片` : "",
-    gardenDraftCount ? `${gardenDraftCount} 条 Garden 草稿` : "",
+    gardenDraftCount ? `${gardenDraftCount} 条卡片草稿` : "",
     backlinkCount ? `${backlinkCount} 个引用` : "",
     draftCount ? `${draftCount} 条历史草稿` : "",
     eventCount ? `${eventCount} 条运行记录` : "",
@@ -1681,14 +2113,59 @@ function libraryDeleteConfirmMessage(
     "这不是物理删除：文件会标记为归档并从知识库列表隐藏。",
     "",
     "将保留：",
-    "- Obsidian 源文件",
-    `- Garden Card：${counts.cardCount} 张`,
-    `- Garden 草稿：${counts.gardenDraftCount} 条`,
+    "- 本地正文和来源记录",
+    `- Knowledge Card：${counts.cardCount} 张`,
+    `- 卡片草稿：${counts.gardenDraftCount} 条`,
     `- 历史草稿：${counts.draftCount} 条`,
     `- 其他文件引用：${counts.backlinkCount} 个`,
     `- 运行记录：${counts.eventCount} 条`,
     "- 数据库 capture 行：保留，状态改为 archived",
   ].join("\n");
+}
+
+function libraryHasBlockingDependencies(dependencies?: KnowledgeLibraryDependencies): boolean {
+  const counts = libraryDependencyCounts(dependencies);
+  return counts.cardCount > 0 ||
+    counts.gardenDraftCount > 0 ||
+    counts.backlinkCount > 0;
+}
+
+function libraryPermanentDeleteBlockedMessage(
+  item: KnowledgeLibraryItem,
+  dependencies?: KnowledgeLibraryDependencies,
+): string {
+  const counts = libraryDependencyCounts(dependencies);
+  const parts = [
+    counts.cardCount ? `${counts.cardCount} 张知识卡片` : "",
+    counts.gardenDraftCount ? `${counts.gardenDraftCount} 条卡片草稿` : "",
+    counts.backlinkCount ? `${counts.backlinkCount} 个文件引用` : "",
+  ].filter(Boolean);
+  const reason = parts.length ? parts.join("、") : "其他知识对象";
+  return `无法彻底删除《${item.title || "未命名文件"}》：仍被 ${reason} 引用。请先解除引用，或使用“归档”。`;
+}
+
+function libraryPermanentDeleteConfirmMessage(
+  item: KnowledgeLibraryItem,
+  dependencies?: KnowledgeLibraryDependencies,
+): string {
+  const counts = libraryDependencyCounts(dependencies);
+  const traceLines = [
+    counts.draftCount ? `- 历史草稿指针：${counts.draftCount} 条，将解绑` : "",
+    counts.eventCount ? `- 运行对象索引：${counts.eventCount} 条，将删除` : "",
+  ].filter(Boolean);
+  return [
+    `确定彻底删除《${item.title || "未命名文件"}》吗？`,
+    "",
+    "这会删除本地 Markdown 正文、raw 来源文件、数据库 capture 行和本地索引记录。",
+    "只有在没有知识卡片、卡片草稿和其他文件引用时才允许执行。",
+    ...(traceLines.length ? ["", "历史草稿和运行记录不是硬阻断，会同步清理：", ...traceLines] : []),
+    "",
+    "此操作不可从 Hermes UI 恢复。",
+  ].join("\n");
+}
+
+function libraryPermanentDeleteNotice(result: { message?: string }): string {
+  return result.message || "已彻底删除入库文件。";
 }
 
 function libraryDependencyCounts(dependencies?: KnowledgeLibraryDependencies): {
@@ -2016,6 +2493,8 @@ function FileWorkbench({
   onDelete,
   onFolderChange,
   onGenerateCard,
+  onOpenLocal,
+  onPermanentDelete,
   onModeChange,
   onPublish,
   onSave,
@@ -2040,6 +2519,8 @@ function FileWorkbench({
   onDelete: () => void;
   onFolderChange: (value: string) => void;
   onGenerateCard: () => void;
+  onOpenLocal: () => void;
+  onPermanentDelete: () => void;
   onModeChange: (mode: LibraryWorkbenchMode) => void;
   onPublish: () => void;
   onSave: () => void;
@@ -2047,9 +2528,14 @@ function FileWorkbench({
   onTitleChange: (value: string) => void;
 }) {
   const isPublished = detail.kind === "capture";
+  const canOpenLocal = isPublished && Boolean(detail.file_path);
+  const canPermanentDelete = isPublished;
+  const [metadataOpen, setMetadataOpen] = useState(mode === "edit");
+  const [moreOpen, setMoreOpen] = useState(false);
+  const busy = deleting || saving || committing || cardGenerating;
   return (
     <>
-      <div className="shrink-0 border-b border-border p-4">
+      <div className="relative shrink-0 border-b border-border p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <StatusBadge item={detail} />
@@ -2062,23 +2548,74 @@ function FileWorkbench({
             </div>
             <button
               type="button"
-              onClick={onAiPanelToggle}
+              onClick={() => setMetadataOpen((current) => !current)}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background/65 px-2 text-xs text-muted-foreground transition hover:border-primary/35 hover:text-foreground"
-              title={aiPanelOpen ? "收起 AI 面板" : "展开 AI 面板"}
+              title={metadataOpen ? "收起元信息" : "展开元信息"}
             >
-              {aiPanelOpen ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRightOpen className="h-3.5 w-3.5" />}
-              AI
+              <FileText className="h-3.5 w-3.5" />
+              元信息
             </button>
+            {mode === "browse" ? (
+              <button
+                type="button"
+                onClick={onAiPanelToggle}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background/65 px-2 text-xs text-muted-foreground transition hover:border-primary/35 hover:text-foreground"
+                title={aiPanelOpen ? "收起 AI 面板" : "展开 AI 面板"}
+              >
+                {aiPanelOpen ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRightOpen className="h-3.5 w-3.5" />}
+                AI
+              </button>
+            ) : null}
             <button
               type="button"
-              className="rounded p-1 text-muted-foreground transition hover:bg-background/80 hover:text-foreground"
-              title="更多"
+              onClick={() => setMoreOpen((current) => !current)}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background/65 text-muted-foreground transition hover:border-primary/35 hover:text-foreground"
+              title={aiPanelOpen ? "收起 AI 面板" : "展开 AI 面板"}
               aria-label="更多"
             >
               <MoreHorizontal className="h-4 w-4" />
             </button>
           </div>
         </div>
+        {moreOpen ? (
+          <div className="absolute right-4 top-14 z-20 w-56 rounded-md border border-border bg-popover p-1 shadow-lg">
+            {canOpenLocal ? (
+              <MenuButton icon={ExternalLink} label="用本地 App 打开" onClick={() => { setMoreOpen(false); onOpenLocal(); }} />
+            ) : null}
+            {isPublished ? (
+              <MenuButton
+                icon={Layers3}
+                label={cardGenerating ? "正在生成卡片" : "生成知识卡片"}
+                disabled={!canGenerateCard}
+                onClick={() => { setMoreOpen(false); onGenerateCard(); }}
+              />
+            ) : null}
+            {!isPublished ? (
+              <MenuButton
+                icon={Send}
+                label={committing ? "正在入库" : "入库到知识库"}
+                disabled={!canPublish}
+                onClick={() => { setMoreOpen(false); onPublish(); }}
+              />
+            ) : null}
+            <MenuButton
+              icon={Trash2}
+              label={isPublished ? "归档" : "删除"}
+              tone="danger"
+              disabled={busy}
+              onClick={() => { setMoreOpen(false); onDelete(); }}
+            />
+            {canPermanentDelete ? (
+              <MenuButton
+                icon={XCircle}
+                label="彻底删除"
+                tone="danger"
+                disabled={busy}
+                onClick={() => { setMoreOpen(false); onPermanentDelete(); }}
+              />
+            ) : null}
+          </div>
+        ) : null}
         {mode === "edit" ? (
           <input
             value={title}
@@ -2091,8 +2628,8 @@ function FileWorkbench({
             {title || "未命名文件"}
           </h2>
         )}
-        <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-          {mode === "edit" ? (
+        {mode === "edit" ? (
+          <div className="mt-3 max-w-xl">
             <label className="flex items-center gap-2 rounded-md border border-border bg-background/65 px-3 py-2 text-sm">
               <span className="shrink-0 text-muted-foreground">所在文件夹</span>
               <select
@@ -2108,33 +2645,22 @@ function FileWorkbench({
                 ) : null}
               </select>
             </label>
-          ) : (
-            <div className="flex items-center gap-2 rounded-md border border-border bg-background/65 px-3 py-2 text-sm">
-              <span className="shrink-0 text-muted-foreground">所在文件夹</span>
-              <span className="min-w-0 flex-1 truncate">{folder || "Inbox"}</span>
-            </div>
-          )}
-          <div className="flex items-center gap-2 rounded-md border border-border bg-background/65 px-3 py-2 text-sm text-muted-foreground">
-            <span className="truncate">{detail.file_path || "入库后写入 Obsidian"}</span>
           </div>
-        </div>
-        <div className="mt-3 grid gap-2 md:grid-cols-3">
-          <StatusTile
-            active={Boolean(detail.file_path)}
-            label="Obsidian"
-            value={detail.file_path ? "已写入文件" : "入库后写入"}
-          />
-          <StatusTile
-            active={detail.indexed}
-            label="AI 检索"
-            value={detail.indexed ? "可被 AI 检索" : "尚未检索"}
-          />
-          <StatusTile
-            active={detail.garden_card_count > 0}
-            label="Garden Card"
-            value={detail.garden_card_count > 0 ? `${detail.garden_card_count} 张卡片` : "尚未生成"}
-          />
-        </div>
+        ) : null}
+        {metadataOpen ? (
+          <div className="mt-3 grid gap-2 rounded-md border border-border bg-background/55 p-3 text-sm md:grid-cols-2">
+            <MetadataRow label="所在文件夹" value={folder || "Inbox"} />
+            <MetadataRow label="本地文件" value={detail.file_path || "入库后写入 Knowledge File"} />
+            <MetadataRow label="AI 检索" value={detail.indexed ? "可被检索" : "尚未检索"} />
+            <MetadataRow label="知识卡片" value={detail.garden_card_count > 0 ? `${detail.garden_card_count} 张` : "尚未生成"} />
+            <div className="md:col-span-2">
+              <div className="mb-1 text-xs text-muted-foreground">标签</div>
+              <div className="flex flex-wrap gap-1.5">
+                {detail.tags.length ? detail.tags.map((tag) => <TinyPill key={tag}>{tag}</TinyPill>) : <TinyPill>暂无标签</TinyPill>}
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden p-4">
@@ -2153,20 +2679,8 @@ function FileWorkbench({
         )}
       </div>
 
-      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-background/95 px-4 py-3">
-        <div className="min-w-0 flex flex-wrap gap-1.5">
-          {detail.tags.length ? detail.tags.map((tag) => <TinyPill key={tag}>{tag}</TinyPill>) : <TinyPill>暂无标签</TinyPill>}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={deleting || saving || committing || cardGenerating}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/8 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/12 disabled:opacity-45"
-          >
-            {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-            删除
-          </button>
+      {(mode === "edit" || !isPublished) ? (
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border bg-background/95 px-4 py-3">
           {mode === "edit" ? (
             <button
               type="button"
@@ -2178,17 +2692,7 @@ function FileWorkbench({
               {isPublished ? "保存文件" : "保存草稿"}
             </button>
           ) : null}
-          {isPublished ? (
-            <button
-              type="button"
-              onClick={onGenerateCard}
-              disabled={!canGenerateCard}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 text-sm font-medium text-foreground transition hover:bg-primary/15 disabled:opacity-45"
-            >
-              {cardGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Layers3 className="h-4 w-4" />}
-              生成卡片
-            </button>
-          ) : (
+          {!isPublished ? (
             <button
               type="button"
               onClick={onPublish}
@@ -2198,10 +2702,103 @@ function FileWorkbench({
               {committing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               入库到知识库
             </button>
-          )}
+          ) : null}
         </div>
-      </div>
+      ) : null}
     </>
+  );
+}
+
+function MenuButton({
+  disabled = false,
+  icon: Icon,
+  label,
+  tone = "default",
+  onClick,
+}: {
+  disabled?: boolean;
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  tone?: "default" | "danger";
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "flex w-full items-center gap-2 rounded px-2 py-2 text-left text-sm transition disabled:opacity-45",
+        tone === "danger"
+          ? "text-destructive hover:bg-destructive/10"
+          : "text-foreground hover:bg-background/80",
+      )}
+    >
+      <Icon className="h-4 w-4 shrink-0" />
+      <span className="truncate">{label}</span>
+    </button>
+  );
+}
+
+function MetadataRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-1 text-xs text-muted-foreground">{label}</div>
+      <div className="truncate text-foreground">{value}</div>
+    </div>
+  );
+}
+
+function CollapsedKnowledgeLeftRail({ onExpand }: { onExpand: () => void }) {
+  return (
+    <aside className="group relative hidden min-h-0 overflow-visible border-l border-border/70 bg-transparent lg:block">
+      <button
+        type="button"
+        onClick={onExpand}
+        className="absolute left-0 top-3 z-10 inline-flex h-8 w-8 -translate-x-1 items-center justify-center rounded-md border border-border bg-background text-muted-foreground opacity-0 shadow-sm transition hover:border-primary/35 hover:text-foreground group-hover:translate-x-0 group-hover:opacity-100 focus:translate-x-0 focus:opacity-100"
+        title="展开侧栏"
+        aria-label="展开侧栏"
+      >
+        <ChevronRight className="h-4 w-4" />
+      </button>
+    </aside>
+  );
+}
+
+function ImmersiveReadingOverlay({
+  body,
+  title,
+  onExit,
+}: {
+  body: string;
+  title: string;
+  onExit: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[80] flex min-h-0 flex-col bg-background text-foreground">
+      <div className="flex h-14 shrink-0 items-center justify-between border-b border-border/70 px-5">
+        <h1 className="min-w-0 truncate text-base font-semibold tracking-normal">{title}</h1>
+        <button
+          type="button"
+          onClick={onExit}
+          className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background/70 px-3 text-sm text-muted-foreground transition hover:border-primary/35 hover:text-foreground"
+          title="退出沉浸阅读"
+          aria-label="退出沉浸阅读"
+        >
+          <Minimize2 className="h-4 w-4" />
+          退出沉浸阅读
+        </button>
+      </div>
+      <main className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+        <article className="mx-auto max-w-4xl rounded-md border border-border bg-background/70 px-5 py-5 text-base leading-8">
+          {body.trim() ? (
+            <Markdown content={body} enableKnowledgeOutlineLinks />
+          ) : (
+            <p className="text-sm text-muted-foreground">暂无正文</p>
+          )}
+        </article>
+      </main>
+    </div>
   );
 }
 
@@ -2224,7 +2821,7 @@ function ReadonlyMarkdownDocument({
       onMouseUpCapture={updateSelection}
     >
       {body.trim() ? (
-        <Markdown content={body} />
+        <Markdown content={body} enableKnowledgeOutlineLinks />
       ) : (
         <p className="text-sm text-muted-foreground">暂无正文</p>
       )}
@@ -2348,7 +2945,7 @@ function ArticleAIPanel({
 }) {
   const hasPendingAssistant = messages.some((message) => message.role === "assistant" && message.pending);
   return (
-    <aside className="hidden min-h-0 flex-col overflow-hidden rounded-lg border border-border/80 bg-background 2xl:flex">
+    <aside className="hidden min-h-0 flex-col overflow-hidden rounded-lg border border-border/80 bg-background xl:flex">
       <div className="shrink-0 border-b border-border/70 px-3 py-2.5">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
@@ -2473,19 +3070,22 @@ function CollapsedAIPanelRail({
   onOpen: () => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onOpen}
+    <aside
       className={cn(
-        "hidden min-h-0 flex-col items-center justify-start gap-2 rounded-lg border border-border bg-background px-2 py-3 text-muted-foreground transition hover:border-primary/35 hover:text-foreground xl:flex",
+        "group relative hidden min-h-0 overflow-visible border-r border-border/70 bg-transparent xl:block",
         className,
       )}
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        className="absolute right-0 top-3 z-10 inline-flex h-8 w-8 translate-x-1 items-center justify-center rounded-md border border-border bg-background text-muted-foreground opacity-0 shadow-sm transition hover:border-primary/35 hover:text-foreground group-hover:translate-x-0 group-hover:opacity-100 focus:translate-x-0 focus:opacity-100"
       title="展开 AI 面板"
       aria-label="展开 AI 面板"
     >
-      {loading ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : <PanelRightOpen className="h-4 w-4" />}
-      <span className="writing-mode-vertical text-xs font-medium [writing-mode:vertical-rl]">AI</span>
-    </button>
+        {loading ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : <ChevronLeft className="h-4 w-4" />}
+      </button>
+    </aside>
   );
 }
 
@@ -3342,30 +3942,6 @@ function Metric({ label, value }: { label: string; value: number }) {
   );
 }
 
-function StatusTile({
-  active,
-  label,
-  value,
-}: {
-  active: boolean;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-background/65 px-3 py-2">
-      {active ? (
-        <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />
-      ) : (
-        <XCircle className="h-4 w-4 shrink-0 text-muted-foreground" />
-      )}
-      <div className="min-w-0">
-        <div className="text-xs font-medium text-foreground">{label}</div>
-        <div className="truncate text-[0.68rem] text-muted-foreground">{value}</div>
-      </div>
-    </div>
-  );
-}
-
 function LoadingState({ text }: { text: string }) {
   return (
     <div className="flex min-h-[220px] items-center justify-center gap-2 text-sm text-muted-foreground">
@@ -3375,10 +3951,48 @@ function LoadingState({ text }: { text: string }) {
   );
 }
 
-function EmptyState({ text }: { text: string }) {
+function EmptyState({
+  text,
+  onCreate,
+  onImport,
+}: {
+  text: string;
+  onCreate?: () => void;
+  onImport?: () => void;
+}) {
   return (
-    <div className="flex min-h-[220px] items-center justify-center px-4 text-center text-sm text-muted-foreground">
-      {text}
+    <div className="flex min-h-[260px] items-center justify-center px-4 text-center">
+      <div className="max-w-sm">
+        <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
+        <p className="mt-3 text-sm font-medium text-foreground">{text}</p>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+          可以从粘贴材料、空白文件或本地 Markdown 导入开始。
+        </p>
+        {(onCreate || onImport) ? (
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            {onCreate ? (
+              <button
+                type="button"
+                onClick={onCreate}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground transition hover:bg-muted"
+              >
+                <FilePlus2 className="h-3.5 w-3.5" />
+                新建知识文件
+              </button>
+            ) : null}
+            {onImport ? (
+              <button
+                type="button"
+                onClick={onImport}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground transition hover:bg-muted"
+              >
+                <UploadCloud className="h-3.5 w-3.5" />
+                导入文件
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

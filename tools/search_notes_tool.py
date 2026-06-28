@@ -16,7 +16,7 @@ SEARCH_SCHEMA = {
     "name": "search_my_notes",
     "description": (
         "基于个人知识库回答问题或搜索之前保存的文章、笔记。"
-        "工具内部会用 Capture/section 作为详细证据，并参考相关 Garden 卡片和 Theme 页面理解上下文。"
+        "工具内部会用 Capture/section 作为详细证据，并参考相关 Knowledge Card 和 Theme View 理解上下文。"
         "返回结果包含 [编号] 引用格式，请在回答中保留这些引用标注。"
         "用户在一次知识库回答后说“继续展开”“展开全文”“接着说”“后面呢”时，调用 continue_rag_answer 续读上一条完整答案，"
         "不要重新调用本工具检索。用户提出新问题或新角度时才调用本工具。"

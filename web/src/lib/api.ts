@@ -387,6 +387,11 @@ export const api = {
     fetchJSON<KnowledgeLibraryDependenciesResponse>(
       `/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/dependencies`,
     ),
+  openKnowledgeLibraryItemLocal: (kind: KnowledgeLibraryItemKind, itemId: string) =>
+    fetchJSON<KnowledgeLibraryOpenLocalResponse>(
+      `/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/open-local`,
+      { method: "POST" },
+    ),
   selectionChatKnowledgeLibraryItem: (
     kind: KnowledgeLibraryItemKind,
     itemId: string,
@@ -491,6 +496,11 @@ export const api = {
       `/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}`,
       { method: "DELETE" },
     ),
+  deleteKnowledgeLibraryItemPermanent: (kind: KnowledgeLibraryItemKind, itemId: string) =>
+    fetchJSON<KnowledgeLibraryPermanentDeleteResponse>(
+      `/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/permanent`,
+      { method: "DELETE" },
+    ),
   getKnowledgeCaptureDrafts: (limit = 50) =>
     fetchJSON<KnowledgeCaptureDraftsResponse>(
       `/api/knowledge/capture-drafts?limit=${limit}`,
@@ -522,6 +532,15 @@ export const api = {
   reviseKnowledgeCaptureDraft: (draftId: string, instruction: string) =>
     fetchJSON<Record<string, unknown>>(
       `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}/revise`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction }),
+      },
+    ),
+  reviseKnowledgeCapture: (captureId: string, instruction: string) =>
+    fetchJSON<KnowledgeCaptureRevisionResponse>(
+      `/api/knowledge/captures/${encodeURIComponent(captureId)}/revise`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -601,6 +620,24 @@ export const api = {
       `/api/knowledge/cards/${encodeURIComponent(cardId)}`,
       { method: "DELETE" },
     ),
+  getKnowledgeGraph: (params: {
+    focus_kind?: KnowledgeGraphNodeKind;
+    focus_id?: string;
+    depth?: number;
+    limit?: number;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.focus_kind) qs.set("focus_kind", params.focus_kind);
+    if (params.focus_id) qs.set("focus_id", params.focus_id);
+    if (params.depth !== undefined) qs.set("depth", String(params.depth));
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<KnowledgeGraphResponse>(`/api/knowledge/graph${suffix}`);
+  },
+  refreshKnowledgeGraph: () =>
+    fetchJSON<KnowledgeGraphRefreshResult>("/api/knowledge/graph/refresh", {
+      method: "POST",
+    }),
 };
 
 export interface ActionResponse {
@@ -667,7 +704,7 @@ export type AutomationBoundaryKind =
 export type AutomationBoundaryReadWrite =
   | "readonly"
   | "state_write"
-  | "vault_write"
+  | "knowledge_storage_write"
   | "external_write"
   | "mixed";
 
@@ -758,6 +795,11 @@ export interface KnowledgeLibraryItemResponse {
   item: KnowledgeLibraryItem;
 }
 
+export interface KnowledgeLibraryOpenLocalResponse {
+  ok: boolean;
+  path: string;
+}
+
 export interface KnowledgeLibraryCreateRequest {
   title?: string;
   body?: string;
@@ -811,6 +853,18 @@ export interface KnowledgeLibraryDeleteResponse {
   dependencies?: KnowledgeLibraryDependencies;
 }
 
+export interface KnowledgeLibraryPermanentDeleteResponse {
+  ok?: boolean;
+  status?: string;
+  id?: string;
+  message?: string;
+  deleted?: {
+    knowledge_file?: string;
+    raw_file?: string;
+    rows?: Record<string, number>;
+  };
+}
+
 export type KnowledgeResearchMode = "current_article_only" | "local_only" | "local_web" | "web_only";
 
 export interface KnowledgeResearchSource {
@@ -823,7 +877,7 @@ export interface KnowledgeResearchSource {
   path?: string;
   file_path?: string;
   open_url?: string;
-  obsidian_url?: string;
+  file_url?: string;
   url?: string;
   domain?: string;
   search_backend?: string;
@@ -960,6 +1014,10 @@ export interface KnowledgeCaptureDraft {
   raw_preview: string;
   draft_text?: string;
   raw_text?: string;
+  historical_draft_text?: string;
+  file_path?: string;
+  raw_path?: string;
+  capture_note_missing?: boolean;
 }
 
 export interface KnowledgeCaptureDraftsResponse {
@@ -979,6 +1037,7 @@ export interface KnowledgeEditableCaptureDraftRequest {
   instruction?: string;
   title?: string;
   folder_path?: string;
+  organize?: boolean;
   existing_folders?: string[];
 }
 
@@ -990,6 +1049,7 @@ export interface KnowledgeEditableCaptureDraftUpdateRequest {
   folder_path?: string;
   folder_suggestion?: Record<string, unknown> | null;
   card_suggestion?: Record<string, unknown> | null;
+  organize?: boolean;
   existing_folders?: string[];
 }
 
@@ -997,6 +1057,16 @@ export interface KnowledgeCaptureUpdateRequest {
   body?: string;
   title?: string;
   folder_path?: string | null;
+}
+
+export interface KnowledgeCaptureRevisionResponse {
+  ok: boolean;
+  capture_id: string;
+  title: string;
+  body: string;
+  summary: string;
+  tags: string[];
+  source: "ai_revision" | string;
 }
 
 export interface KnowledgeAnswerDraftSource {
@@ -1151,6 +1221,54 @@ export interface KnowledgeCardsResponse {
 
 export interface KnowledgeCardResponse {
   card: KnowledgeCard;
+}
+
+export type KnowledgeGraphNodeKind = "capture" | "garden_card" | "theme_candidate";
+
+export type KnowledgeGraphRelationType =
+  | "semantic_similarity"
+  | "card_uses_capture"
+  | "card_links_card"
+  | "theme_groups_capture";
+
+export interface KnowledgeGraphNode {
+  id: string;
+  kind: KnowledgeGraphNodeKind;
+  title: string;
+  summary: string;
+  file_path: string;
+  open_url: string;
+  file_url: string;
+}
+
+export interface KnowledgeGraphEdge {
+  id: string;
+  source_kind: KnowledgeGraphNodeKind;
+  source_id: string;
+  target_kind: KnowledgeGraphNodeKind;
+  target_id: string;
+  relation_type: KnowledgeGraphRelationType;
+  score: number;
+  evidence: Record<string, unknown>;
+  generated_by: string;
+  updated_at: string;
+}
+
+export interface KnowledgeGraphResponse {
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+  meta: {
+    focus_kind: string;
+    focus_id: string;
+    depth: number;
+    edge_count: number;
+  };
+}
+
+export interface KnowledgeGraphRefreshResult {
+  node_count: number;
+  edge_count: number;
+  relation_counts: Record<string, number>;
 }
 
 export interface SessionInfo {

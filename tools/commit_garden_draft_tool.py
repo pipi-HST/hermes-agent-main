@@ -16,7 +16,7 @@ COMMIT_GARDEN_DRAFT_SCHEMA = {
     "name": "commit_garden_draft",
     "description": (
         "在用户明确确认后，把 Knowledge Card 草稿写入知识卡片库。"
-        "会创建 garden_cards 记录并写入 Obsidian garden/*.md。"
+        "会创建 garden_cards 结构化记录；默认不写常驻 Markdown 卡片文件。"
         "只有用户说“确认卡片/存入知识卡片/可以入库”这类确认语义时才调用。"
     ),
     "parameters": {

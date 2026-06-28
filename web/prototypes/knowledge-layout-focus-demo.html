@@ -1,0 +1,1019 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
+  <title>Hermes Knowledge Layout Demo</title>
+  <style>
+    :root {
+      --bg: #f7faf8;
+      --panel: #ffffff;
+      --panel-soft: #f1f6f3;
+      --line: #d9e4de;
+      --edge: rgba(23, 35, 31, 0.14);
+      --text: #17231f;
+      --muted: #6d7c76;
+      --primary: #2d7668;
+      --primary-soft: #e0f3ed;
+      --danger: #b84a4a;
+      --shadow: 0 18px 48px rgba(32, 54, 45, 0.08);
+      --radius: 12px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at 80% 0%, rgba(45, 118, 104, 0.08), transparent 28%), var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button, input {
+      font: inherit;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr);
+      height: 100vh;
+      min-width: 0;
+      transition: grid-template-columns 160ms ease;
+    }
+
+    .shell.app-open {
+      grid-template-columns: 232px minmax(0, 1fr);
+    }
+
+    .app-rail {
+      border-right: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.72);
+      backdrop-filter: blur(18px);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      position: relative;
+      overflow: visible;
+    }
+
+    .shell:not(.app-open) .app-rail {
+      border-right: 0;
+      background: transparent;
+      backdrop-filter: none;
+      box-shadow: inset -1px 0 0 var(--edge);
+    }
+
+    .brand {
+      height: 68px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .shell:not(.app-open) .brand {
+      height: 0;
+      padding: 0;
+      border: 0;
+      overflow: visible;
+    }
+
+    .brand-name {
+      display: none;
+      min-width: 0;
+      font-weight: 750;
+      line-height: 1.05;
+    }
+
+    .app-open .brand {
+      justify-content: space-between;
+    }
+
+    .app-open .brand-name {
+      display: block;
+    }
+
+    .shell:not(.app-open) .nav {
+      display: none;
+    }
+
+    .shell:not(.app-open) #appToggle {
+      position: absolute;
+      top: 14px;
+      left: 2px;
+      z-index: 5;
+      width: 28px;
+      height: 32px;
+      border-radius: 8px;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(-4px);
+      box-shadow: 0 8px 22px rgba(23, 35, 31, 0.14);
+    }
+
+    .shell:not(.app-open) .app-rail:hover #appToggle,
+    .shell:not(.app-open) .app-rail:focus-within #appToggle {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(0);
+    }
+
+    .icon-button,
+    .toolbar-button,
+    .primary-button {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.8);
+      color: var(--muted);
+      height: 38px;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 12px;
+      cursor: pointer;
+      transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 140ms ease;
+      white-space: nowrap;
+    }
+
+    .icon-button {
+      width: 38px;
+      padding: 0;
+    }
+
+    .icon-button:hover,
+    .toolbar-button:hover {
+      border-color: rgba(45, 118, 104, 0.4);
+      color: var(--text);
+      background: #fff;
+    }
+
+    .primary-button {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: #fff;
+      font-weight: 650;
+    }
+
+    .nav {
+      padding: 14px 10px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav-item {
+      height: 44px;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 0 12px;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .app-open .nav-item {
+      justify-content: flex-start;
+    }
+
+    .nav-item.active {
+      background: var(--primary-soft);
+      color: var(--text);
+      box-shadow: inset 3px 0 0 var(--primary);
+    }
+
+    .nav-label {
+      display: none;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .app-open .nav-label {
+      display: inline;
+    }
+
+    .workspace {
+      min-width: 0;
+      min-height: 0;
+      padding: 18px;
+      display: grid;
+      grid-template-rows: 58px minmax(0, 1fr);
+      gap: 14px;
+    }
+
+    .topbar {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.82);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 12px 0 18px;
+      box-shadow: 0 8px 26px rgba(32, 54, 45, 0.05);
+    }
+
+    .topbar h1 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .view-menu {
+      position: relative;
+    }
+
+    .view-menu-button {
+      min-width: 64px;
+      padding: 0 11px;
+    }
+
+    .view-menu-panel {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      z-index: 20;
+      width: 210px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 14px 36px rgba(23, 35, 31, 0.10);
+      padding: 6px;
+      display: none;
+    }
+
+    .view-menu.open .view-menu-panel {
+      display: grid;
+      gap: 2px;
+    }
+
+    .view-menu-item {
+      height: 36px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 10px;
+      cursor: pointer;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    .view-menu-item:hover {
+      background: var(--panel-soft);
+    }
+
+    .view-menu-item span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .layout {
+      min-height: 0;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 332px minmax(0, 1fr) 360px;
+      gap: 12px;
+      transition: grid-template-columns 160ms ease;
+    }
+
+    .library-closed .layout {
+      grid-template-columns: 8px minmax(0, 1fr) 360px;
+      gap: 0;
+    }
+
+    .ai-closed .layout {
+      grid-template-columns: 332px minmax(0, 1fr) 8px;
+      gap: 0;
+    }
+
+    .library-closed.ai-closed .layout {
+      grid-template-columns: 8px minmax(0, 1fr) 8px;
+      gap: 0;
+    }
+
+    .library-closed:not(.ai-closed) .ai-panel {
+      margin-left: 12px;
+    }
+
+    .ai-closed:not(.library-closed) .library-panel {
+      margin-right: 12px;
+    }
+
+    .panel {
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.82);
+      box-shadow: var(--shadow);
+    }
+
+    .library-panel,
+    .ai-panel {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .rail-panel {
+      display: none;
+      position: relative;
+      width: 8px;
+      min-width: 8px;
+      overflow: visible;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .library-rail {
+      box-shadow: inset 1px 0 0 var(--edge);
+    }
+
+    .ai-rail {
+      box-shadow: inset -1px 0 0 var(--edge);
+    }
+
+    .library-closed .library-panel,
+    .ai-closed .ai-panel {
+      display: none;
+    }
+
+    .library-closed .library-rail,
+    .ai-closed .ai-rail {
+      display: block;
+    }
+
+    .edge-handle {
+      position: absolute;
+      top: 14px;
+      z-index: 4;
+      width: 28px;
+      height: 32px;
+      border-radius: 8px;
+      opacity: 0;
+      pointer-events: none;
+      box-shadow: 0 8px 22px rgba(23, 35, 31, 0.14);
+    }
+
+    .library-rail .edge-handle {
+      left: 2px;
+      transform: translateX(-4px);
+    }
+
+    .ai-rail .edge-handle {
+      right: 2px;
+      transform: translateX(4px);
+    }
+
+    .rail-panel:hover .edge-handle,
+    .rail-panel:focus-within .edge-handle {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(0);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 22px;
+      height: 22px;
+      border-radius: 7px;
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 12px;
+      padding: 0 6px;
+    }
+
+    .panel-head {
+      height: 54px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      gap: 10px;
+    }
+
+    .panel-title {
+      font-weight: 750;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .library-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 12px;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 9px 10px;
+      background: rgba(255, 255, 255, 0.62);
+    }
+
+    .metric span {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 2px;
+      font-size: 18px;
+    }
+
+    .search {
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      color: var(--muted);
+      margin-bottom: 12px;
+      background: rgba(255, 255, 255, 0.7);
+    }
+
+    .search input {
+      border: 0;
+      outline: 0;
+      background: transparent;
+      min-width: 0;
+      width: 100%;
+      color: var(--text);
+    }
+
+    .tabs {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+
+    .tab {
+      height: 30px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .tab.active {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    .section-label {
+      margin: 16px 4px 8px;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 750;
+    }
+
+    .folder,
+    .file-row {
+      min-height: 38px;
+      border-radius: 10px;
+      padding: 0 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+    }
+
+    .folder.active,
+    .file-row.active {
+      background: var(--primary-soft);
+      color: var(--text);
+    }
+
+    .article {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .article-head {
+      border-bottom: 1px solid var(--line);
+      padding: 18px 22px 16px;
+    }
+
+    .article-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .pills {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+
+    .pill {
+      height: 28px;
+      border-radius: 8px;
+      background: var(--primary-soft);
+      color: var(--primary);
+      display: inline-flex;
+      align-items: center;
+      padding: 0 9px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .pill.muted {
+      background: rgba(255, 255, 255, 0.7);
+      color: var(--muted);
+      border: 1px solid var(--line);
+    }
+
+    .segmented {
+      display: flex;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .segmented button {
+      height: 34px;
+      border: 0;
+      padding: 0 12px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .segmented .active {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    .article h2 {
+      margin: 0;
+      font-size: 27px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .article-scroll {
+      min-height: 0;
+      overflow: auto;
+      padding: 22px;
+    }
+
+    .paper {
+      max-width: 920px;
+      margin: 0 auto;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.66);
+      padding: 24px 28px;
+      line-height: 1.82;
+      font-size: 16px;
+    }
+
+    .paper h3 {
+      margin: 0 0 12px;
+      font-size: 20px;
+    }
+
+    .paper h4 {
+      margin: 24px 0 6px;
+      font-size: 17px;
+    }
+
+    .paper a {
+      color: var(--primary);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    .ai-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 14px;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+    }
+
+    .message {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      line-height: 1.6;
+      background: rgba(255, 255, 255, 0.66);
+      font-size: 14px;
+    }
+
+    .message.user {
+      background: var(--primary-soft);
+    }
+
+    .composer {
+      border-top: 1px solid var(--line);
+      padding: 12px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .composer input {
+      min-width: 0;
+      flex: 1;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      outline: 0;
+      padding: 0 11px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .focus-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: var(--bg);
+      display: none;
+      grid-template-rows: 58px minmax(0, 1fr);
+    }
+
+    .focus .focus-overlay {
+      display: grid;
+    }
+
+    .focus-head {
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.82);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+    }
+
+    .focus-scroll {
+      min-height: 0;
+      overflow: auto;
+      padding: 30px 18px;
+    }
+
+    .focus-paper {
+      max-width: 860px;
+      margin: 0 auto;
+      background: rgba(255, 255, 255, 0.82);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 34px 42px;
+      line-height: 1.9;
+      font-size: 17px;
+      box-shadow: var(--shadow);
+    }
+
+    .note {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%);
+      background: rgba(23, 35, 31, 0.9);
+      color: #fff;
+      border-radius: 999px;
+      padding: 9px 14px;
+      font-size: 13px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 160ms ease;
+    }
+
+    .note.show {
+      opacity: 1;
+    }
+
+    @media (max-width: 1120px) {
+      .layout,
+      .library-closed .layout,
+      .ai-closed .layout,
+      .library-closed.ai-closed .layout {
+        grid-template-columns: 8px minmax(0, 1fr) 8px;
+      }
+
+      .library-panel,
+      .ai-panel {
+        display: none;
+      }
+
+      .library-rail,
+      .ai-rail {
+        display: flex;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell app-open" id="shell">
+    <aside class="app-rail">
+      <div class="brand">
+        <div class="brand-name">Hermes<br />Knowledge</div>
+        <button class="icon-button" id="appToggle" title="切换全局导航">⇤</button>
+      </div>
+      <nav class="nav">
+        <button class="nav-item active"><span>▣</span><span class="nav-label">知识库</span></button>
+        <button class="nav-item"><span>✧</span><span class="nav-label">工作台</span></button>
+        <button class="nav-item"><span>▱</span><span class="nav-label">知识卡片</span></button>
+      </nav>
+    </aside>
+
+    <main class="workspace" id="workspace">
+      <header class="topbar">
+        <h1>知识库</h1>
+        <div class="top-actions">
+          <div class="view-menu" id="viewMenu">
+            <button class="toolbar-button view-menu-button" id="viewMenuButton" aria-expanded="false">视图</button>
+            <div class="view-menu-panel" id="viewMenuPanel">
+              <button class="view-menu-item" id="appToggleTop">收起导航 <span>全局</span></button>
+              <button class="view-menu-item" id="libraryToggle">收起文件栏 <span>左侧</span></button>
+              <button class="view-menu-item" id="aiToggleTop">收起 AI <span>右侧</span></button>
+              <button class="view-menu-item" id="collapseAll">收起全部侧栏 <span>布局</span></button>
+              <button class="view-menu-item" id="focusToggle">沉浸阅读 <span>阅读</span></button>
+            </div>
+          </div>
+          <button class="primary-button">＋ 新建</button>
+        </div>
+      </header>
+
+      <section class="layout">
+        <aside class="panel library-panel">
+          <div class="panel-head">
+            <div class="panel-title">文件与文件夹</div>
+            <button class="icon-button" id="libraryClose" title="收起文件栏">⇤</button>
+          </div>
+          <div class="library-body">
+            <div class="metrics">
+              <div class="metric"><span>全部</span><strong>12</strong></div>
+              <div class="metric"><span>已入库</span><strong>9</strong></div>
+              <div class="metric"><span>草稿</span><strong>3</strong></div>
+              <div class="metric"><span>有卡片</span><strong>5</strong></div>
+            </div>
+            <label class="search">
+              <span>⌕</span>
+              <input placeholder="搜索文件" />
+            </label>
+            <div class="tabs">
+              <button class="tab active">全部</button>
+              <button class="tab">草稿</button>
+              <button class="tab">已入库</button>
+              <button class="tab">有卡片</button>
+            </div>
+            <div class="section-label">处理队列</div>
+            <div class="folder active"><span>所有文件</span><span class="badge">12</span></div>
+            <div class="folder"><span>草稿箱</span><span class="badge">3</span></div>
+            <div class="folder"><span>最近更新</span><span class="badge">8</span></div>
+            <div class="section-label">文件夹</div>
+            <div class="folder active"><span>Inbox</span><span class="badge">4</span></div>
+            <div class="file-row active"><span>Agent Harness 工程笔记</span><span>●</span></div>
+            <div class="folder"><span>AI 产品</span><span class="badge">5</span></div>
+            <div class="folder"><span>数据 Agent</span><span class="badge">2</span></div>
+            <div class="folder"><span>待读</span><span class="badge">1</span></div>
+          </div>
+        </aside>
+
+        <aside class="panel rail-panel library-rail">
+          <button class="icon-button edge-handle" id="libraryOpen" title="展开文件栏">⇥</button>
+        </aside>
+
+        <article class="panel article">
+          <div class="article-head">
+            <div class="article-toolbar">
+              <div class="pills">
+                <span class="pill">已入库</span>
+                <span class="pill muted">3229 字</span>
+              </div>
+              <div class="segmented">
+                <button class="active">浏览模式</button>
+                <button>编辑模式</button>
+              </div>
+            </div>
+            <h2>基于知识库回答这个问题：什么 Hareness 工程</h2>
+          </div>
+          <div class="article-scroll">
+            <div class="paper">
+              <h3>基于知识库回答这个问题：什么 Hareness 工程</h3>
+              <h4>目录纲要</h4>
+              <ul>
+                <li><a href="#">Harness 工程概述</a></li>
+                <li><a href="#">Harness 是操作系统，不是提示词包装器</a></li>
+                <li><a href="#">生产级 Harness 的完整蓝图</a></li>
+                <li><a href="#">防护栏与验证循环</a></li>
+              </ul>
+              <p><strong>结论：</strong>你问的“Hareness 工程”应该是拼写笔误，对应知识库中的 “Harness 工程”。它指的是让大语言模型成为能自主执行任务的智能体而构建的完整软件基础设施。</p>
+              <h4>Harness 工程概述</h4>
+              <p>Harness 不是简单的提示词包装，而是围绕 LLM 构建的操作系统层，负责记忆、工具调用、上下文管理、状态持久化、错误恢复和安全验证。</p>
+              <h4>为什么这个布局更稳</h4>
+              <p>文件栏和 AI 栏都各自有固定入口。即使执行“收起全部侧栏”，也可以通过顶部“视图”菜单或左右边缘恢复入口重新打开，不会出现 AI 对话栏无法展开的问题。</p>
+            </div>
+          </div>
+        </article>
+
+        <aside class="panel ai-panel">
+          <div class="panel-head">
+            <div class="panel-title">AI 对话</div>
+            <button class="icon-button" id="aiClose" title="收起 AI">⇥</button>
+          </div>
+          <div class="ai-body">
+            <div class="message user">帮我解释这篇文章的核心概念。</div>
+            <div class="message">这篇文章的核心是：Agent 能力不是单靠模型参数产生，而是由模型周围的 Harness 基础设施决定。</div>
+            <div class="message">你可以选中文章片段后继续追问；AI 栏收起后也始终可以从顶部或右侧窄轨重新打开。</div>
+          </div>
+          <div class="composer">
+            <input placeholder="问当前文章..." />
+            <button class="primary-button">发送</button>
+          </div>
+        </aside>
+
+        <aside class="panel rail-panel ai-rail">
+          <button class="icon-button edge-handle" id="aiOpen" title="展开 AI">⇤</button>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <section class="focus-overlay" id="focusOverlay">
+    <header class="focus-head">
+      <strong>基于知识库回答这个问题：什么 Hareness 工程</strong>
+      <button class="toolbar-button" id="focusExit">退出沉浸阅读</button>
+    </header>
+    <main class="focus-scroll">
+      <article class="focus-paper">
+        <h2>什么是 Harness 工程</h2>
+        <p><strong>结论：</strong>Harness 工程是让大语言模型成为智能体的完整软件基础设施。它不是提示词包装器，而是围绕模型构建的运行环境。</p>
+        <p>这个沉浸阅读模式隐藏所有侧栏和管理动作，只保留正文。退出后会恢复原来的文件栏与 AI 栏状态。</p>
+        <h3>稳定入口原则</h3>
+        <p>AI 栏不能只依赖右侧边缘入口。顶部“视图”菜单也必须保留明确的 AI 开关，这样即使右侧栏被隐藏，用户也能随时恢复对话。</p>
+      </article>
+    </main>
+  </section>
+
+  <div class="note" id="note"></div>
+
+  <script>
+    const shell = document.getElementById("shell");
+    const workspace = document.getElementById("workspace");
+    const note = document.getElementById("note");
+    const viewMenu = document.getElementById("viewMenu");
+    const viewMenuButton = document.getElementById("viewMenuButton");
+
+    function toast(text) {
+      note.textContent = text;
+      note.classList.add("show");
+      window.clearTimeout(toast.timer);
+      toast.timer = window.setTimeout(() => note.classList.remove("show"), 1500);
+    }
+
+    function setLibrary(open) {
+      workspace.classList.toggle("library-closed", !open);
+    }
+
+    function setAi(open) {
+      workspace.classList.toggle("ai-closed", !open);
+    }
+
+    function libraryOpen() {
+      return !workspace.classList.contains("library-closed");
+    }
+
+    function aiOpen() {
+      return !workspace.classList.contains("ai-closed");
+    }
+
+    function appOpen() {
+      return shell.classList.contains("app-open");
+    }
+
+    function setViewMenu(open) {
+      viewMenu.classList.toggle("open", open);
+      viewMenuButton.setAttribute("aria-expanded", String(open));
+    }
+
+    function closeViewMenu() {
+      setViewMenu(false);
+    }
+
+    function syncLabels() {
+      document.getElementById("appToggle").textContent = appOpen() ? "⇤" : "⇥";
+      document.getElementById("appToggle").title = appOpen() ? "收起全局导航" : "展开全局导航";
+      document.getElementById("appToggleTop").firstChild.nodeValue = appOpen() ? "收起导航 " : "展开导航 ";
+      document.getElementById("libraryToggle").firstChild.nodeValue = libraryOpen() ? "收起文件栏 " : "展开文件栏 ";
+      document.getElementById("aiToggleTop").firstChild.nodeValue = aiOpen() ? "收起 AI " : "展开 AI ";
+    }
+
+    function toggleAppNav() {
+      shell.classList.toggle("app-open");
+      syncLabels();
+      toast(shell.classList.contains("app-open") ? "全局导航已展开" : "全局导航已收起");
+      closeViewMenu();
+    }
+
+    function toggleLibrary() {
+      setLibrary(!libraryOpen());
+      syncLabels();
+      closeViewMenu();
+    }
+
+    function toggleAi() {
+      setAi(!aiOpen());
+      syncLabels();
+      closeViewMenu();
+    }
+
+    document.getElementById("appToggle").onclick = toggleAppNav;
+    document.getElementById("appToggleTop").onclick = toggleAppNav;
+    document.getElementById("libraryToggle").onclick = toggleLibrary;
+    document.getElementById("libraryClose").onclick = () => {
+      setLibrary(false);
+      syncLabels();
+    };
+    document.getElementById("libraryOpen").onclick = () => {
+      setLibrary(true);
+      syncLabels();
+    };
+    document.getElementById("aiToggleTop").onclick = toggleAi;
+    document.getElementById("aiClose").onclick = () => {
+      setAi(false);
+      syncLabels();
+    };
+    document.getElementById("aiOpen").onclick = () => {
+      setAi(true);
+      syncLabels();
+    };
+    document.getElementById("collapseAll").onclick = () => {
+      shell.classList.remove("app-open");
+      setLibrary(false);
+      setAi(false);
+      syncLabels();
+      closeViewMenu();
+      toast("已收起全部侧栏。可从视图菜单或边缘按钮恢复。");
+    };
+    document.getElementById("focusToggle").onclick = () => {
+      document.body.classList.add("focus");
+      closeViewMenu();
+    };
+    document.getElementById("focusExit").onclick = () => {
+      document.body.classList.remove("focus");
+    };
+    viewMenuButton.onclick = (event) => {
+      event.stopPropagation();
+      setViewMenu(!viewMenu.classList.contains("open"));
+    };
+    viewMenu.onclick = (event) => event.stopPropagation();
+    document.addEventListener("click", closeViewMenu);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        document.body.classList.remove("focus");
+        closeViewMenu();
+      }
+    });
+    syncLabels();
+  </script>
+</body>
+</html>

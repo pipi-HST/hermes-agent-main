@@ -7,8 +7,8 @@ def test_theme_scan_schema_describes_index_first_scan():
 
     description = theme_scan_tool.THEME_SCAN_SCHEMA["description"]
 
-    assert "themes/*.md" in description
-    assert "MOC 风格的关系地图" in description
+    assert "默认不生成或更新 themes/*.md" in description
+    assert "Theme View 是关系地图" in description
     assert "索引图谱" in description
     assert "不再逐篇调用 LLM 精筛" in description
     assert "不是扫描失败" in description

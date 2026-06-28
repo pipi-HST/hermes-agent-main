@@ -270,7 +270,7 @@ export function StatusInspector({
       <div className="space-y-3">
         <InfoGrid
           rows={[
-            ["当前对象", answerDetail.title || "学习笔记"],
+            ["当前对象", answerDetail.title || "Capture Note"],
             ["对象类型", answerDraftTypeLabel(answerDetail.output_type)],
             ["Draft ID", answerDetail.id],
             ["文稿状态", statusLabel(answerDetail.status)],

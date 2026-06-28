@@ -21,7 +21,7 @@ def test_save_answer_tool_handler_returns_envelope(monkeypatch):
             "status": "success",
             "agent": "reading",
             "intent": "save_answer_to_knowledge",
-            "chat_preview": "已生成学习笔记草稿",
+            "chat_preview": "已生成 Capture Note 草稿",
             "durable_artifacts": [],
             "source_map": [],
             "next_actions": [],
@@ -46,4 +46,4 @@ def test_save_answer_tool_handler_returns_envelope(monkeypatch):
 
     payload = json.loads(raw)
     assert payload["status"] == "success"
-    assert "已生成学习笔记草稿" in payload["chat_preview"]
+    assert "已生成 Capture Note 草稿" in payload["chat_preview"]

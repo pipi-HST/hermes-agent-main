@@ -1,4 +1,8 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo, type MouseEvent, type ReactNode } from "react";
+import {
+  buildHeadingAnchors,
+  linkKnowledgeOutlineMarkdown,
+} from "@/lib/markdownNavigation";
 
 export interface MarkdownSource {
   ref?: string;
@@ -11,7 +15,7 @@ export interface MarkdownSource {
   path?: string;
   file_path?: string;
   open_url?: string;
-  obsidian_url?: string;
+  file_url?: string;
   section?: string;
 }
 
@@ -26,18 +30,25 @@ export interface MarkdownSource {
  */
 export function Markdown({
   content,
+  enableKnowledgeOutlineLinks,
   highlightTerms,
   onSourceOpen,
   sources,
   streaming,
 }: {
   content: string;
+  enableKnowledgeOutlineLinks?: boolean;
   highlightTerms?: string[];
   onSourceOpen?: (source: MarkdownSource) => void;
   sources?: MarkdownSource[];
   streaming?: boolean;
 }) {
-  const blocks = useMemo(() => parseBlocks(content), [content]);
+  const displayContent = useMemo(
+    () => enableKnowledgeOutlineLinks ? linkKnowledgeOutlineMarkdown(content) : content,
+    [content, enableKnowledgeOutlineLinks],
+  );
+  const blocks = useMemo(() => parseBlocks(displayContent), [displayContent]);
+  const headingIds = useMemo(() => headingIdsForBlocks(blocks), [blocks]);
   const sourceMap = useMemo(() => buildSourceMap(sources), [sources]);
   const caret = streaming ? <StreamingCaret /> : null;
 
@@ -47,6 +58,7 @@ export function Markdown({
         <Block
           key={i}
           block={block}
+          headingId={headingIds[i] ?? undefined}
           highlightTerms={highlightTerms}
           onSourceOpen={onSourceOpen}
           sourceMap={sourceMap}
@@ -174,10 +186,10 @@ function parseBlocks(text: string): BlockNode[] {
     }
 
     // Unordered list
-    if (/^[-*+]\s/.test(line)) {
+    if (/^\s{0,6}[-*+]\s/.test(line)) {
       const items: string[] = [];
-      while (i < lines.length && /^[-*+]\s/.test(lines[i])) {
-        items.push(lines[i].replace(/^[-*+]\s/, ""));
+      while (i < lines.length && /^\s{0,6}[-*+]\s/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s{0,6}[-*+]\s/, ""));
         i++;
       }
       blocks.push({ type: "list", ordered: false, items });
@@ -209,7 +221,7 @@ function parseBlocks(text: string): BlockNode[] {
       !lines[i].match(/^```/) &&
       !lines[i].match(/^#{1,4}\s/) &&
       !lines[i].match(/^>\s?/) &&
-      !lines[i].match(/^[-*+]\s/) &&
+      !lines[i].match(/^\s{0,6}[-*+]\s/) &&
       !lines[i].match(/^\d+[.)]\s/) &&
       !lines[i].match(/^[-*_]{3,}\s*$/) &&
       !lines[i].startsWith("|")
@@ -231,12 +243,14 @@ function parseBlocks(text: string): BlockNode[] {
 
 function Block({
   block,
+  headingId,
   highlightTerms,
   onSourceOpen,
   sourceMap,
   caret,
 }: {
   block: BlockNode;
+  headingId?: string;
   highlightTerms?: string[];
   onSourceOpen?: (source: MarkdownSource) => void;
   sourceMap: Map<string, MarkdownSource>;
@@ -262,7 +276,7 @@ function Block({
         h4: "text-sm font-medium",
       };
       return (
-        <Tag className={sizes[Tag]}>
+        <Tag id={headingId} className={`scroll-mt-4 ${sizes[Tag]}`}>
           <InlineContent text={block.content} highlightTerms={highlightTerms} onSourceOpen={onSourceOpen} sourceMap={sourceMap} />
           {caret}
         </Tag>
@@ -466,8 +480,9 @@ function InlineContent({
               <a
                 key={i}
                 href={node.href}
-                target="_blank"
-                rel="noreferrer"
+                target={node.href.startsWith("#") ? undefined : "_blank"}
+                rel={node.href.startsWith("#") ? undefined : "noreferrer"}
+                onClick={node.href.startsWith("#") ? handleLocalAnchorClick : undefined}
                 className="text-primary underline underline-offset-2 decoration-primary/30 hover:decoration-primary/60 transition-colors"
               >
                 {node.text}
@@ -479,6 +494,27 @@ function InlineContent({
       })}
     </>
   );
+}
+
+function headingIdsForBlocks(blocks: BlockNode[]): Array<string | null> {
+  const headings = blocks
+    .filter((block): block is Extract<BlockNode, { type: "heading" }> => block.type === "heading")
+    .map((block) => ({ level: block.level, content: block.content }));
+  const anchors = buildHeadingAnchors(headings);
+  let headingIndex = 0;
+  return blocks.map((block) => {
+    if (block.type !== "heading") return null;
+    return anchors[headingIndex++]?.id ?? null;
+  });
+}
+
+function handleLocalAnchorClick(event: MouseEvent<HTMLAnchorElement>) {
+  const hash = event.currentTarget.getAttribute("href") ?? "";
+  if (!hash.startsWith("#")) return;
+  const target = document.getElementById(decodeURIComponent(hash.slice(1)));
+  if (!target) return;
+  event.preventDefault();
+  target.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
 function CitationControl({

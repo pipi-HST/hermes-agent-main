@@ -59,7 +59,6 @@ def test_commit_garden_draft_tool_preserves_envelope(monkeypatch):
                 "type": "garden_card",
                 "id": "card1",
                 "title": "观点",
-                "path": "garden/观点-card1.md",
                 "status": "seed",
             }
         ],

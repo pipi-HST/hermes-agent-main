@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlencode, quote, urlparse
+from urllib.parse import urlencode, urlparse
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -1802,7 +1802,7 @@ def _load_knowledge_config() -> tuple[Path, Path] | None:
         logger.debug("failed to load Hermes knowledge config: %s", exc)
         return None
     db_path = Path(str(getattr(config, "db_path", "") or custom_root / "data" / "captures.db")).expanduser()
-    vault_path = Path(str(getattr(config, "vault_path", "") or Path.home() / "Obsidian" / "hermes-vault")).expanduser()
+    vault_path = Path(str(getattr(config, "vault_path", "") or Path.home() / "Hermes" / "knowledge")).expanduser()
     return db_path, vault_path
 
 
@@ -1843,7 +1843,7 @@ def _enrich_gateway_knowledge_source(
             }
         )
         if file_path:
-            enriched["obsidian_url"] = _knowledge_obsidian_url(vault_path, file_path)
+            enriched["file_url"] = _knowledge_file_url(vault_path, file_path)
         return enriched
 
     if source_id:
@@ -1864,12 +1864,10 @@ def _knowledge_source_open_url(kind: str, item_id: str) -> str:
     return "/knowledge-library?" + urlencode({"kind": kind, "item": item_id})
 
 
-def _knowledge_obsidian_url(vault_path: Path, file_path: str) -> str:
-    file_ref = file_path.removesuffix(".md")
-    return "obsidian://open?" + urlencode(
-        {"vault": vault_path.name, "file": file_ref},
-        quote_via=quote,
-    )
+def _knowledge_file_url(vault_path: Path, file_path: str) -> str:
+    if not file_path:
+        return ""
+    return (vault_path / file_path).expanduser().as_uri()
 
 
 def _research_with_web_summary(data: dict, suffix: str) -> str:
