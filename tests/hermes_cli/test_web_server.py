@@ -701,6 +701,7 @@ class TestWebServerEndpoints:
             "source_type": "manual",
             "instruction": "保留例子",
             "title": "用户标题",
+            "organize": True,
             "existing_folders": ["Inbox", "AI 产品", "数据 Agent", "待读", "临时"],
         }
 
@@ -742,6 +743,7 @@ class TestWebServerEndpoints:
             "folder_path": "",
             "folder_suggestion": None,
             "card_suggestion": None,
+            "organize": True,
             "existing_folders": ["Inbox", "AI 产品", "数据 Agent", "待读", "临时"],
         }
 
