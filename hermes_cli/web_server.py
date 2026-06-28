@@ -2692,9 +2692,11 @@ def _read_launchagent_plist(label: str) -> dict[str, Any]:
 
 
 def _launchagent_status(label: str) -> tuple[str, int | None]:
+    if not hasattr(os, "getuid"):
+        return ("unknown", None)
     try:
         proc = subprocess.run(
-            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],  # windows-footgun: ok
             capture_output=True,
             text=True,
             timeout=2,

@@ -26,7 +26,7 @@ def load_env():
         print("❌ 错误：找不到 /Users/pipi/.hermes/.env")
         sys.exit(1)
 
-    with open(env_file) as f:
+    with open(env_file, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
