@@ -1063,6 +1063,17 @@ export default function KnowledgeChatPage() {
       });
   }, [attachments, canSend, gw, handleDraftCommand, input, nextId, reconcileCurrentSession, researchMode, scheduleHistoryReconcile, state.sessionId]);
 
+  const stopGeneration = useCallback(() => {
+    if (!state.sessionId || !state.running) return;
+    gw.request("session.interrupt", { session_id: state.sessionId }, 10_000)
+      .then(() => {
+        scheduleHistoryReconcile("manual-interrupt", 250);
+      })
+      .catch((error: Error) => {
+        dispatch({ type: "error", message: error.message });
+      });
+  }, [gw, scheduleHistoryReconcile, state.running, state.sessionId]);
+
   const reconnect = useCallback(() => {
     dispatch({ type: "reset_error" });
     setVersion((value) => value + 1);
@@ -1825,6 +1836,7 @@ export default function KnowledgeChatPage() {
               }
               onSourceOpen={openGatewaySource}
               onSaveAnswer={createAnswerDraft}
+              onStop={stopGeneration}
               onSubmit={submit}
               onUploadFiles={(files) => void uploadFiles(files)}
             />

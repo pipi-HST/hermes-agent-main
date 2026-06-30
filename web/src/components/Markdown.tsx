@@ -385,7 +385,7 @@ function parseInline(text: string): InlineNode[] {
   const nodes: InlineNode[] = [];
   // Pattern priority: code > link > citation > bold > italic > bare URL > line break
   const pattern =
-    /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\[([KW]?\d+)\])|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/gi;
+    /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\\?\[([KW]?\d+)\])|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/gi;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 

@@ -8,6 +8,7 @@ import {
   Loader2,
   MessageSquareText,
   Paperclip,
+  SquareStop,
   X,
 } from "lucide-react";
 import { KnowledgeAnswerView, type KnowledgeAnswerSource } from "@/components/KnowledgeAnswerView";
@@ -42,6 +43,7 @@ export function GatewayChat({
   onRemoveAttachment,
   onSaveAnswer,
   onSourceOpen,
+  onStop,
   onSubmit,
   onUploadFiles,
 }: {
@@ -63,6 +65,7 @@ export function GatewayChat({
   onRemoveAttachment: (id: string) => void;
   onSaveAnswer: (message: KnowledgeMessage, outputType: AnswerOutputType) => void;
   onSourceOpen?: (source: KnowledgeAnswerSource) => void;
+  onStop: () => void;
   onSubmit: () => void;
   onUploadFiles: (files: FileList | File[]) => void;
 }) {
@@ -167,18 +170,21 @@ export function GatewayChat({
             />
             <button
               type="button"
-              onClick={onSubmit}
-              disabled={!canSend}
+              onClick={running ? onStop : onSubmit}
+              disabled={running ? false : !canSend}
               className={cn(
                 "flex h-16 w-12 shrink-0 items-center justify-center rounded-md border text-sm transition",
-                canSend
+                running
+                  ? "border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15"
+                  : canSend
                   ? "border-primary/50 bg-primary text-primary-foreground shadow-[0_14px_34px_-22px_rgba(47,111,95,0.65)] hover:brightness-105"
                   : "border-border bg-muted/40 text-muted-foreground",
               )}
-              aria-label="发送"
+              aria-label={running ? "停止生成" : "发送"}
+              title={running ? "停止生成" : "发送"}
             >
               {running ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <SquareStop className="h-4 w-4" />
               ) : (
                 <ArrowUp className="h-4 w-4" />
               )}

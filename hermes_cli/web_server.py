@@ -91,6 +91,9 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 MAX_SELECTION_SEARCH_CHARS = 1000
+KNOWLEDGE_SELECTION_CHAT_STREAM_TIMEOUT_SECONDS = float(
+    os.environ.get("HERMES_KNOWLEDGE_SELECTION_CHAT_STREAM_TIMEOUT_SECONDS", "95")
+)
 
 # In-browser terminal Chat tab (/chat, /api/pty, …). Off unless
 # ``hermes dashboard --tui`` or HERMES_DASHBOARD_TUI=1. The JSON-RPC sidecar
@@ -5397,8 +5400,8 @@ def _knowledge_selection_chat_messages(item: dict, body: _KnowledgeLibrarySelect
     heading_path = [part.strip() for part in (body.heading_path or []) if part.strip()]
     if selected_text and not heading_path:
         before = body.surrounding_before
-        if not before and selected_text in article_body:
-            before = article_body.split(selected_text, 1)[0]
+        if not before and _knowledge_selection_offset_matches(article_body, selected_text, body.selection_start, body.selection_end):
+            before = article_body[: body.selection_start or 0]
         heading_path = _knowledge_markdown_heading_path(article_body, before)
     outline = _knowledge_markdown_outline(article_body)
     if selected_text:
@@ -5441,6 +5444,19 @@ def _knowledge_selection_chat_messages(item: dict, body: _KnowledgeLibrarySelect
         },
         {"role": "user", "content": user_context},
     ]
+
+
+def _knowledge_selection_offset_matches(
+    article_body: str,
+    selected_text: str,
+    selection_start: int | None,
+    selection_end: int | None,
+) -> bool:
+    if selection_start is None or selection_end is None:
+        return False
+    if selection_start < 0 or selection_end < selection_start or selection_end > len(article_body):
+        return False
+    return article_body[selection_start:selection_end] == selected_text
 
 
 def _knowledge_call_selection_chat(messages: list[dict[str, str]]) -> str:
@@ -6290,17 +6306,24 @@ async def post_knowledge_library_item_selection_chat_stream(
 
         async def run_research() -> None:
             try:
-                research_kwargs = _knowledge_library_selection_research_kwargs(kind, item_id, body)
-                research_bridge = _knowledge_custom_module("bridge.research_bridge", "Research bridge")
-                async_answer = getattr(research_bridge, "async_web_assist_answer", None)
-                if callable(async_answer):
-                    result = await async_answer(**research_kwargs, event_callback=on_event)
-                else:
+                async def execute_research() -> dict[str, Any]:
+                    research_kwargs = _knowledge_library_selection_research_kwargs(kind, item_id, body)
+                    research_bridge = _knowledge_custom_module("bridge.research_bridge", "Research bridge")
+                    async_answer = getattr(research_bridge, "async_web_assist_answer", None)
+                    if callable(async_answer):
+                        return await async_answer(**research_kwargs, event_callback=on_event)
                     sync_answer = getattr(research_bridge, "web_assist_answer", None)
                     if not callable(sync_answer):
                         raise HTTPException(status_code=503, detail="Web assist answer is unavailable")
-                    result = await asyncio.to_thread(sync_answer, **research_kwargs)
+                    return await asyncio.to_thread(sync_answer, **research_kwargs)
+
+                result = await asyncio.wait_for(
+                    execute_research(),
+                    timeout=max(1.0, float(KNOWLEDGE_SELECTION_CHAT_STREAM_TIMEOUT_SECONDS)),
+                )
                 await queue.put({"event": "complete", "response": _knowledge_library_selection_chat_response(result, body)})
+            except asyncio.TimeoutError:
+                await queue.put({"event": "error", "message": "Selection chat stream 超时，请稍后重试或切换为当前文章模式。"})
             except HTTPException as exc:
                 await queue.put({"event": "error", "message": exc.detail})
             except Exception as exc:

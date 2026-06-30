@@ -533,7 +533,7 @@ function prioritizeSourceHints(
 function sourceRefsFromText(text: string): string[] {
   const refs: string[] = [];
   const seen = new Set<string>();
-  for (const match of text.matchAll(/\[([KW]?\d+)\]/gi)) {
+  for (const match of text.matchAll(/\\?\[([KW]?\d+)\\?\]/gi)) {
     const ref = match[1].toUpperCase();
     if (seen.has(ref)) continue;
     seen.add(ref);
