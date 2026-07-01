@@ -1,13 +1,15 @@
 """Hermes tool: record_life_event — 记录 Life Assistant 生活事件."""
 from __future__ import annotations
 
+import json
 import sys
-sys.path.insert(0, "/Users/pipi/hermes-life")
 
-from hermes_life.bridge.life_bridge import record_life_event as do_record_life_event
-from hermes_life.bridge.result_envelope import envelope_json
 from tools.hermes_custom_envelope import envelope_error_json
 from tools.registry import registry
+
+HERMES_LIFE_ROOT = "/Users/pipi/hermes-life"
+if HERMES_LIFE_ROOT not in sys.path:
+    sys.path.insert(0, HERMES_LIFE_ROOT)
 
 RECORD_LIFE_EVENT_SCHEMA = {
     "name": "record_life_event",
@@ -34,13 +36,27 @@ RECORD_LIFE_EVENT_SCHEMA = {
 }
 
 
+def do_record_life_event(*args, **kwargs):
+    from hermes_life.bridge.life_bridge import record_life_event
+
+    return record_life_event(*args, **kwargs)
+
+
+def _life_envelope_json(payload: dict) -> str:
+    try:
+        from hermes_life.bridge.result_envelope import envelope_json
+    except Exception:
+        return json.dumps(payload, ensure_ascii=False)
+    return envelope_json(payload)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = do_record_life_event(
             args.get("message", ""),
             received_at=args.get("received_at", ""),
         )
-        return envelope_json(result)
+        return _life_envelope_json(result)
     except Exception as exc:
         return envelope_error_json(agent="life", intent="record_life_event", exc=exc)
 

@@ -336,7 +336,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
             ]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, **_kwargs: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "test/model"})
 
@@ -353,7 +353,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     assert resp["result"]["messages"] == [
         {"role": "user", "text": "hello"},
         {"role": "assistant", "text": "yo"},
-        {"role": "tool", "name": "tool", "context": ""},
+        {"role": "tool", "name": "tool", "context": "", "text": "searched"},
     ]
 
 

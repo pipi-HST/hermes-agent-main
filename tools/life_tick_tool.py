@@ -1,13 +1,15 @@
 """Hermes tool: life_tick — Life Assistant reminder scheduler tick."""
 from __future__ import annotations
 
+import json
 import sys
-sys.path.insert(0, "/Users/pipi/hermes-life")
 
-from hermes_life.bridge.life_bridge import life_tick as do_life_tick
-from hermes_life.bridge.result_envelope import envelope_json
 from tools.hermes_custom_envelope import envelope_error_json
 from tools.registry import registry
+
+HERMES_LIFE_ROOT = "/Users/pipi/hermes-life"
+if HERMES_LIFE_ROOT not in sys.path:
+    sys.path.insert(0, HERMES_LIFE_ROOT)
 
 LIFE_TICK_SCHEMA = {
     "name": "life_tick",
@@ -32,13 +34,27 @@ LIFE_TICK_SCHEMA = {
 }
 
 
+def do_life_tick(*args, **kwargs):
+    from hermes_life.bridge.life_bridge import life_tick
+
+    return life_tick(*args, **kwargs)
+
+
+def _life_envelope_json(payload: dict) -> str:
+    try:
+        from hermes_life.bridge.result_envelope import envelope_json
+    except Exception:
+        return json.dumps(payload, ensure_ascii=False)
+    return envelope_json(payload)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = do_life_tick(
             now=args.get("now", ""),
             dry_run=bool(args.get("dry_run", True)),
         )
-        return envelope_json(result)
+        return _life_envelope_json(result)
     except Exception as exc:
         return envelope_error_json(agent="life", intent="life_tick", exc=exc)
 

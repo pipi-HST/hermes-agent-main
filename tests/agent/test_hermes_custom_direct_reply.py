@@ -278,24 +278,29 @@ def test_direct_reply_keeps_weixin_research_preview_short():
 
 
 def test_envelope_adapter_mentions_media_attachment_for_user_requested_artifacts():
-    from bridge.result_envelope import artifact_ref, envelope_json, success_envelope
-
     content = agent_result_envelope_content_for_model(
-        envelope_json(
-            success_envelope(
-                agent="rag",
-                intent="search_knowledge_base",
-                chat_preview="已生成完整报告。",
-                durable_artifacts=[
-                    artifact_ref(
-                        type="rag_answer_report",
-                        id="r1",
-                        title="完整报告",
-                        path="/tmp/rag.md",
-                        status="created",
-                    )
+        json.dumps(
+            {
+                "status": "success",
+                "agent": "rag",
+                "intent": "search_knowledge_base",
+                "chat_preview": "已生成完整报告。",
+                "durable_artifacts": [
+                    {
+                        "type": "rag_answer_report",
+                        "id": "r1",
+                        "title": "完整报告",
+                        "path": "/tmp/rag.md",
+                        "status": "created",
+                    }
                 ],
-            )
+                "source_map": [],
+                "next_actions": [],
+                "warnings": [],
+                "errors": [],
+                "meta": {},
+            },
+            ensure_ascii=False,
         )
     )
 

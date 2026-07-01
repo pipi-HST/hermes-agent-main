@@ -33,8 +33,11 @@ def _sanitize_error(message: str) -> str:
 
 
 def envelope_success_json(payload: dict[str, Any]) -> str:
-    envelope_json, _ = _load_result_envelope()
-    return envelope_json(payload)
+    try:
+        envelope_json, _ = _load_result_envelope()
+        return envelope_json(payload)
+    except Exception:
+        return json.dumps(payload, ensure_ascii=False)
 
 
 def call_custom_bridge(module_name: str, function_name: str, *args, **kwargs):

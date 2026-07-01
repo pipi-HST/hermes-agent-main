@@ -224,7 +224,15 @@ class TestWebServerEndpoints:
 
         assert response.status_code == 200
         assert response.json() == {"ok": True, "path": str(target.resolve())}
-        assert calls == [["open", str(target.resolve())]]
+        if sys.platform == "darwin":
+            expected_cmd = ["open", str(target.resolve())]
+        elif sys.platform.startswith("linux"):
+            expected_cmd = ["xdg-open", str(target.resolve())]
+        elif sys.platform.startswith("win"):
+            expected_cmd = ["cmd", "/c", "start", "", str(target.resolve())]
+        else:
+            expected_cmd = []
+        assert calls == [expected_cmd]
 
     @pytest.mark.parametrize(
         ("kind", "file_path", "expected_status"),
