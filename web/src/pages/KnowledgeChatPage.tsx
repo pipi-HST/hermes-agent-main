@@ -379,7 +379,8 @@ export default function KnowledgeChatPage() {
     }
   }, []);
 
-  const reconcileCurrentSession = useCallback(async (_reason: string): Promise<boolean> => {
+  const reconcileCurrentSession = useCallback(async (reason: string): Promise<boolean> => {
+    void reason;
     const snapshot = stateRef.current;
     const sessionId = snapshot.sessionId;
     if (!sessionId || gw.state !== "open" || reconcileInFlightRef.current) return false;

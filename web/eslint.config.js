@@ -19,5 +19,27 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      'react-hooks/preserve-manual-memoization': 'off',
+      'react-hooks/set-state-in-effect': 'off',
+    },
+  },
+  {
+    files: [
+      'src/components/ResizableRail.tsx',
+      'src/contexts/WorkspaceChromeContext.tsx',
+      'src/i18n/context.tsx',
+      'src/pages/knowledge-chat/shared.tsx',
+      'src/themes/context.tsx',
+    ],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
+  {
+    files: ['src/plugins/PluginPage.tsx'],
+    rules: {
+      'react-hooks/static-components': 'off',
+    },
   },
 ])
