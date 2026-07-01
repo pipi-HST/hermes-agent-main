@@ -43,6 +43,7 @@ import {
   Save,
   Search,
   Send,
+  SquareStop,
   Trash2,
   UploadCloud,
   XCircle,
@@ -97,6 +98,18 @@ interface ArticleSelectionContext {
   selectionConfidence: "offset" | "text_only" | "none";
 }
 
+interface ArticleAiRequestContext {
+  question: string;
+  selected_text: string;
+  surrounding_before: string;
+  surrounding_after: string;
+  heading_path: string[];
+  selection_start?: number;
+  selection_end?: number;
+  selection_confidence: "offset" | "text_only" | "none";
+  mode: KnowledgeResearchMode;
+}
+
 interface ArticleChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -112,6 +125,7 @@ interface ArticleChatMessage {
   researchTrace?: KnowledgeResearchTrace;
   responseMeta?: KnowledgeLibrarySelectionChatResponse["meta"];
   warnings?: string[];
+  requestContext?: ArticleAiRequestContext;
 }
 
 const DEFAULT_SELECTION: LibrarySelection = { type: "all", value: "all" };
@@ -133,6 +147,7 @@ const DEFAULT_KNOWLEDGE_LEFT_WIDTH = 360;
 const DEFAULT_KNOWLEDGE_AI_WIDTH = 380;
 const DEFAULT_KNOWLEDGE_AI_FOCUS_WIDTH = 520;
 const MAX_SELECTION_SEARCH_CHARS = 1000;
+const ARTICLE_AI_STREAM_TIMEOUT_MS = 100_000;
 const SELECTION_TOO_LONG_MESSAGE = "选区超过 1000 字，当前不支持基于超长选区检索。请缩短选区后再试。";
 const LIBRARY_NOT_FOUND_PATTERNS = [
   "Library capture not found",
@@ -210,6 +225,7 @@ export default function KnowledgeLibraryPage() {
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState("");
   const chatStreamAbortRef = useRef<AbortController | null>(null);
+  const chatStreamAssistantIdRef = useRef("");
   const [savingArticleAnswerId, setSavingArticleAnswerId] = useState("");
   const [editableContent, setEditableContent] = useState("");
   const [editableTitle, setEditableTitle] = useState("");
@@ -471,6 +487,7 @@ export default function KnowledgeLibraryPage() {
   useEffect(() => {
     chatStreamAbortRef.current?.abort();
     chatStreamAbortRef.current = null;
+    chatStreamAssistantIdRef.current = "";
     setSelectionContext(null);
     setChatMessages([]);
     setChatQuestion("");
@@ -481,6 +498,7 @@ export default function KnowledgeLibraryPage() {
   useEffect(() => {
     return () => {
       chatStreamAbortRef.current?.abort();
+      chatStreamAssistantIdRef.current = "";
     };
   }, []);
 
@@ -1232,13 +1250,54 @@ export default function KnowledgeLibraryPage() {
     saveEditableCaptureDraftSnapshot,
   ]);
 
-  const askArticleAi = useCallback(async (override?: { question?: string; mode?: KnowledgeResearchMode }) => {
+  const markArticleAiStopped = useCallback((assistantId: string, message = "已停止生成。") => {
+    setChatMessages((messages) =>
+      messages.map((item) =>
+        item.id === assistantId && item.role === "assistant" && item.pending
+          ? {
+              ...item,
+              content: item.content && !item.content.startsWith("正在") ? item.content : message,
+              pending: false,
+              warnings: uniqueStrings([...(item.warnings || []), message]),
+            }
+          : item,
+      ),
+    );
+  }, []);
+
+  const stopArticleAi = useCallback(() => {
+    const streamController = chatStreamAbortRef.current;
+    const assistantId = chatStreamAssistantIdRef.current;
+    if (!streamController) return;
+    streamController.abort();
+    chatStreamAbortRef.current = null;
+    chatStreamAssistantIdRef.current = "";
+    setChatLoading(false);
+    setChatError("");
+    if (assistantId) {
+      markArticleAiStopped(assistantId);
+    }
+  }, [markArticleAiStopped]);
+
+  const askArticleAi = useCallback(async (override?: { question?: string; mode?: KnowledgeResearchMode; requestContext?: ArticleAiRequestContext }) => {
     if (!detail || chatLoading) return;
-    const question = (override?.question ?? chatQuestion).trim();
-    const requestMode = override?.mode ?? articleResearchMode;
+    const requestContext = override?.requestContext;
+    const question = (requestContext?.question ?? override?.question ?? chatQuestion).trim();
+    const requestMode = requestContext?.mode ?? override?.mode ?? articleResearchMode;
     if (!question) return;
     const context = selectionContext;
-    if ((context?.selectedText || "").trim().length > MAX_SELECTION_SEARCH_CHARS) {
+    const requestBody: ArticleAiRequestContext = requestContext || {
+      question,
+      selected_text: context?.selectedText || "",
+      surrounding_before: context?.surroundingBefore || "",
+      surrounding_after: context?.surroundingAfter || "",
+      heading_path: context?.headingPath || [],
+      selection_start: context?.selectionStart,
+      selection_end: context?.selectionEnd,
+      selection_confidence: context?.selectionConfidence || "none",
+      mode: requestMode,
+    };
+    if ((requestBody.selected_text || "").trim().length > MAX_SELECTION_SEARCH_CHARS) {
       setChatError(SELECTION_TOO_LONG_MESSAGE);
       return;
     }
@@ -1248,39 +1307,30 @@ export default function KnowledgeLibraryPage() {
       id: `user-${Date.now()}`,
       role: "user",
       content: question,
-      selectionPreview: context?.selectedText ? context.selectedText.slice(0, 160) : "",
+      selectionPreview: requestBody.selected_text ? requestBody.selected_text.slice(0, 160) : "",
       createdAt: new Date().toISOString(),
+      requestContext: requestBody,
     };
     const pendingMessage: ArticleChatMessage = {
       id: assistantId,
       role: "assistant",
-      content: webResearchMode(requestMode) ? "正在检索公开网页并读取可用材料..." : "正在基于可用材料回答...",
-      selectionPreview: context?.selectedText ? context.selectedText.slice(0, 160) : "",
+      content: requestMode === "web_only" ? "正在检索公开网页并读取可用材料..." : "正在基于可用材料回答...",
+      selectionPreview: requestBody.selected_text ? requestBody.selected_text.slice(0, 160) : "",
       createdAt: new Date().toISOString(),
       pending: true,
       mode: requestMode,
+      requestContext: requestBody,
       researchTrace: pendingTrace,
       responseMeta: {
-        web_queries: webResearchMode(requestMode) ? [question] : [],
+        web_queries: requestMode === "web_only" ? [question] : [],
         research_trace: pendingTrace,
-        web_search_attempted: webResearchMode(requestMode),
+        web_search_attempted: requestMode === "web_only",
       },
     };
     setChatMessages((messages) => [...messages, userMessage, pendingMessage]);
     setChatQuestion("");
     setChatLoading(true);
     setChatError("");
-    const requestBody = {
-        question,
-        selected_text: context?.selectedText || "",
-        surrounding_before: context?.surroundingBefore || "",
-        surrounding_after: context?.surroundingAfter || "",
-        heading_path: context?.headingPath || [],
-        selection_start: context?.selectionStart,
-        selection_end: context?.selectionEnd,
-        selection_confidence: context?.selectionConfidence || "none",
-        mode: requestMode,
-      };
     let sawProgressEvent = false;
     let answerDeltaBuffer = "";
     let answerDeltaFlushTimer: ReturnType<typeof window.setTimeout> | null = null;
@@ -1308,7 +1358,13 @@ export default function KnowledgeLibraryPage() {
       answerDeltaFlushTimer = window.setTimeout(flushAnswerDeltas, 80);
     };
     const streamController = new AbortController();
+    let streamTimedOut = false;
+    const streamTimeoutTimer = window.setTimeout(() => {
+      streamTimedOut = true;
+      streamController.abort();
+    }, ARTICLE_AI_STREAM_TIMEOUT_MS);
     chatStreamAbortRef.current = streamController;
+    chatStreamAssistantIdRef.current = assistantId;
     try {
       const response = await api.streamSelectionChatKnowledgeLibraryItem(
         detail.kind,
@@ -1337,9 +1393,10 @@ export default function KnowledgeLibraryPage() {
         id: assistantId,
         role: "assistant",
         content: response.answer || "AI 没有返回内容。",
-        selectionPreview: response.used_selection && context?.selectedText ? context.selectedText.slice(0, 160) : "",
+        selectionPreview: response.used_selection && requestBody.selected_text ? requestBody.selected_text.slice(0, 160) : "",
         createdAt: new Date().toISOString(),
         mode: response.mode || requestMode,
+        requestContext: requestBody,
         sources: response.sources,
         researchTrace: response.meta?.research_trace,
         responseMeta: response.meta,
@@ -1351,6 +1408,14 @@ export default function KnowledgeLibraryPage() {
         ),
       );
     } catch (err) {
+      if (streamController.signal.aborted) {
+        const stoppedMessage = streamTimedOut ? "生成超时，已停止。" : "已停止生成。";
+        if (streamTimedOut) {
+          setChatError(stoppedMessage);
+        }
+        markArticleAiStopped(assistantId, stoppedMessage);
+        return;
+      }
       try {
         const response = sawProgressEvent
           ? null
@@ -1362,9 +1427,10 @@ export default function KnowledgeLibraryPage() {
           id: assistantId,
           role: "assistant",
           content: response.answer || "AI 没有返回内容。",
-          selectionPreview: response.used_selection && context?.selectedText ? context.selectedText.slice(0, 160) : "",
+          selectionPreview: response.used_selection && requestBody.selected_text ? requestBody.selected_text.slice(0, 160) : "",
           createdAt: new Date().toISOString(),
           mode: response.mode || requestMode,
+          requestContext: requestBody,
           sources: response.sources,
           researchTrace: response.meta?.research_trace,
           responseMeta: response.meta,
@@ -1392,23 +1458,28 @@ export default function KnowledgeLibraryPage() {
         );
       }
     } finally {
+      window.clearTimeout(streamTimeoutTimer);
       flushAnswerDeltas();
       if (chatStreamAbortRef.current === streamController) {
         chatStreamAbortRef.current = null;
+        if (chatStreamAssistantIdRef.current === assistantId) {
+          chatStreamAssistantIdRef.current = "";
+        }
+        setChatLoading(false);
       }
-      setChatLoading(false);
     }
-  }, [articleResearchMode, chatLoading, chatQuestion, detail, selectionContext]);
+  }, [articleResearchMode, chatLoading, chatQuestion, detail, markArticleAiStopped, selectionContext]);
 
-  const refreshArticleAiWithWeb = useCallback(() => {
-    const lastQuestion = [...chatMessages].reverse().find((item) => item.role === "user")?.content || chatQuestion;
-    if (!lastQuestion.trim()) return;
-    setArticleResearchMode("local_web");
+  const rerunArticleAi = useCallback((message: ArticleChatMessage, mode: KnowledgeResearchMode) => {
+    const baseContext = message.requestContext;
+    if (!baseContext?.question.trim()) return;
     void askArticleAi({
-      question: lastQuestion,
-      mode: "local_web",
+      requestContext: {
+        ...baseContext,
+        mode,
+      },
     });
-  }, [askArticleAi, chatMessages, chatQuestion]);
+  }, [askArticleAi]);
 
   const saveArticleAiAnswer = useCallback(async (
     message: ArticleChatMessage,
@@ -1881,24 +1952,23 @@ export default function KnowledgeLibraryPage() {
                       storageKey={aiPanelMode === "focus" ? KNOWLEDGE_AI_FOCUS_WIDTH_KEY : KNOWLEDGE_AI_WIDTH_KEY}
                       variableName="--knowledge-ai-width"
                     />
-	              <ArticleAIPanel
-	                chatError={chatError}
-	                detail={detail}
-	                loading={chatLoading}
-	                messages={chatMessages}
-                    panelMode={aiPanelMode}
-	                researchMode={articleResearchMode}
-	                question={chatQuestion}
-	                savingAnswerId={savingArticleAnswerId}
-	                onAsk={() => void askArticleAi()}
-	                onClose={() => setAiPanelMode("collapsed")}
-                    onPanelModeChange={setAiPanelMode}
-	                onQuestionChange={setChatQuestion}
-	                onResearchModeChange={setArticleResearchMode}
-	                onRefreshWeb={refreshArticleAiWithWeb}
-	                onOpenSource={openKnowledgeSource}
-	                onSaveAnswer={saveArticleAiAnswer}
-	              />
+                    <ArticleAIPanel
+                      chatError={chatError}
+                      detail={detail}
+                      loading={chatLoading}
+                      messages={chatMessages}
+                      researchMode={articleResearchMode}
+                      question={chatQuestion}
+                      savingAnswerId={savingArticleAnswerId}
+                      onAsk={() => void askArticleAi()}
+                      onClose={() => setAiPanelMode("collapsed")}
+                      onQuestionChange={setChatQuestion}
+                      onResearchModeChange={setArticleResearchMode}
+                      onRerun={rerunArticleAi}
+                      onOpenSource={openKnowledgeSource}
+                      onSaveAnswer={saveArticleAiAnswer}
+                      onStop={stopArticleAi}
+                    />
                   </>
 	            ) : detail && workbenchMode === "browse" && aiPanelMode === "collapsed" && !allSidebarsCollapsed ? (
                   <CollapsedAIPanelRail
@@ -2809,13 +2879,20 @@ function ReadonlyMarkdownDocument({
   body: string;
   onSelectionContextChange: (context: ArticleSelectionContext | null) => void;
 }) {
+  const articleRef = useRef<HTMLElement | null>(null);
   const updateSelection = useCallback(() => {
+    const context = selectionContextFromDomSelection(articleRef.current);
+    if (context) {
+      onSelectionContextChange(context);
+      return;
+    }
     const selectedText = window.getSelection()?.toString().trim() ?? "";
     onSelectionContextChange(selectionContextFromSelectedText(body, selectedText));
   }, [body, onSelectionContextChange]);
 
   return (
     <article
+      ref={articleRef}
       className="h-full min-h-[360px] overflow-y-auto rounded-md border border-border bg-background/70 px-5 py-4"
       onKeyUpCapture={updateSelection}
       onMouseUpCapture={updateSelection}
@@ -2827,6 +2904,48 @@ function ReadonlyMarkdownDocument({
       )}
     </article>
   );
+}
+
+function selectionContextFromDomSelection(root: HTMLElement | null): ArticleSelectionContext | null {
+  if (!root) return null;
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return null;
+  const selectedText = selection.toString().trim();
+  if (!selectedText) return null;
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.commonAncestorContainer)) return null;
+  const beforeRange = document.createRange();
+  beforeRange.selectNodeContents(root);
+  beforeRange.setEnd(range.startContainer, range.startOffset);
+  const beforeText = beforeRange.toString();
+  const fullText = root.innerText || root.textContent || "";
+  const selectionStart = beforeText.length;
+  const selectionEnd = selectionStart + selectedText.length;
+  return {
+    selectedText,
+    surroundingBefore: fullText.slice(Math.max(0, selectionStart - 1200), selectionStart),
+    surroundingAfter: fullText.slice(selectionEnd, Math.min(fullText.length, selectionEnd + 1200)),
+    headingPath: headingPathBeforeDomSelection(root, range),
+    selectionStart,
+    selectionEnd,
+    selectionConfidence: "offset",
+  };
+}
+
+function headingPathBeforeDomSelection(root: HTMLElement, range: Range): string[] {
+  const headings = Array.from(root.querySelectorAll("h1, h2, h3, h4, h5, h6"));
+  let stack: Array<{ level: number; text: string }> = [];
+  for (const heading of headings) {
+    const position = heading.compareDocumentPosition(range.startContainer);
+    const isBeforeSelection = Boolean(position & Node.DOCUMENT_POSITION_FOLLOWING);
+    if (!isBeforeSelection) continue;
+    const level = Number(heading.tagName.slice(1)) || 1;
+    const text = (heading.textContent || "").trim();
+    if (!text) continue;
+    stack = stack.filter((item) => item.level < level);
+    stack.push({ level, text });
+  }
+  return stack.map((item) => item.text).slice(-4);
 }
 
 function selectionContextFromOffsets(
@@ -2913,35 +3032,33 @@ function ArticleAIPanel({
   detail,
   loading,
   messages,
-  panelMode,
   researchMode,
   question,
   savingAnswerId,
   onAsk,
   onClose,
-  onPanelModeChange,
   onQuestionChange,
   onResearchModeChange,
-  onRefreshWeb,
+  onRerun,
   onOpenSource,
   onSaveAnswer,
+  onStop,
 }: {
   chatError: string;
   detail: KnowledgeLibraryItem;
   loading: boolean;
   messages: ArticleChatMessage[];
-  panelMode: ArticleAIPanelMode;
   researchMode: KnowledgeResearchMode;
   question: string;
   savingAnswerId: string;
   onAsk: () => void;
   onClose: () => void;
-  onPanelModeChange: (mode: ArticleAIPanelMode) => void;
   onQuestionChange: (value: string) => void;
   onResearchModeChange: (mode: KnowledgeResearchMode) => void;
-  onRefreshWeb: () => void;
+  onRerun: (message: ArticleChatMessage, mode: KnowledgeResearchMode) => void;
   onOpenSource: (source: KnowledgeResearchSource) => void;
   onSaveAnswer: (message: ArticleChatMessage, outputType: "local_learning_note" | "knowledge_card") => void;
+  onStop: () => void;
 }) {
   const hasPendingAssistant = messages.some((message) => message.role === "assistant" && message.pending);
   return (
@@ -2952,15 +3069,6 @@ function ArticleAIPanel({
             <h2 className="truncate text-sm font-semibold" title={detail.title || "未命名文件"}>AI 对话</h2>
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={() => onPanelModeChange(panelMode === "focus" ? "assist" : "focus")}
-              className="rounded p-1 text-muted-foreground transition hover:bg-background/80 hover:text-foreground"
-              title={panelMode === "focus" ? "恢复默认宽度" : "放大 AI 面板"}
-              aria-label={panelMode === "focus" ? "恢复默认宽度" : "放大 AI 面板"}
-            >
-              <PanelRightOpen className="h-4 w-4" />
-            </button>
             <button
               type="button"
               onClick={onClose}
@@ -2997,7 +3105,7 @@ function ArticleAIPanel({
                     content={message.content}
                     message={message}
                     onOpenSource={onOpenSource}
-                    onRefreshWeb={onRefreshWeb}
+                    onRerun={onRerun}
                     saving={savingAnswerId === message.id}
                     onSave={onSaveAnswer}
                   />
@@ -3015,7 +3123,7 @@ function ArticleAIPanel({
             ))}
             {loading && !hasPendingAssistant ? (
               <LoadingState
-                text={researchMode === "local_web" || researchMode === "web_only"
+                text={researchMode === "web_only"
                   ? "正在搜索并读取网页..."
                   : "AI 正在回答..."}
               />
@@ -3036,10 +3144,9 @@ function ArticleAIPanel({
           value={question}
           onChange={(event) => onQuestionChange(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              onAsk();
-            }
+            if (event.key !== "Enter" || event.shiftKey) return;
+            event.preventDefault();
+            if (!loading && question.trim()) onAsk();
           }}
           className="h-24 w-full resize-none rounded-md border border-border bg-background/70 px-3 py-2 text-sm leading-6 outline-none focus:border-primary/40"
           placeholder="问 AI..."
@@ -3047,12 +3154,17 @@ function ArticleAIPanel({
         <div className="mt-2 flex justify-end">
           <button
             type="button"
-            onClick={onAsk}
-            disabled={loading || !question.trim()}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-45"
+            onClick={loading ? onStop : onAsk}
+            disabled={loading ? false : !question.trim()}
+            className={cn(
+              "inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition hover:opacity-90 disabled:opacity-45",
+              loading
+                ? "border border-destructive/35 bg-destructive/10 text-destructive"
+                : "bg-primary text-primary-foreground",
+            )}
           >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            发送
+            {loading ? <SquareStop className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+            {loading ? "停止" : "发送"}
           </button>
         </div>
       </div>
@@ -3128,12 +3240,8 @@ function ResearchModeControl({
   );
 }
 
-function webResearchMode(mode: KnowledgeResearchMode | undefined): boolean {
-  return mode === "local_web" || mode === "web_only";
-}
-
 function pendingResearchTrace(question: string, mode: KnowledgeResearchMode): KnowledgeResearchTrace {
-  const usesWeb = webResearchMode(mode);
+  const usesWeb = mode === "web_only";
   return {
     mode,
     plan_status: usesWeb ? "planned_web_forced_by_mode" : "planned",
@@ -3144,6 +3252,7 @@ function pendingResearchTrace(question: string, mode: KnowledgeResearchMode): Kn
     provider_status: usesWeb ? { stage: "准备发起联网搜索" } : { stage: "准备生成回答" },
     web_sources: [],
     candidate_sources: [],
+    query_statuses: [],
     evidence_sources: [],
     clue_sources: [],
     rejected_sources: [],
@@ -3178,15 +3287,21 @@ function applySelectionChatStreamEvent(
   switch (event.type) {
     case "planning_start":
       providerStatus.stage = "正在规划检索";
-      setProgressContent(webResearchMode(mode) ? "正在规划联网检索..." : "正在规划回答路径...");
+      setProgressContent(mode === "web_only" ? "正在规划联网检索..." : "正在规划回答路径...");
       break;
     case "plan":
       trace.plan_status = event.plan_status || trace.plan_status;
       trace.web_search_attempted = Boolean(event.needs_web);
       trace.web_queries = event.queries || trace.web_queries || [];
+      trace.needs_web = Boolean(event.needs_web);
+      trace.needs_local = Boolean(event.needs_local);
+      trace.complexity = event.complexity || trace.complexity;
+      trace.question_type = event.question_type || trace.question_type;
+      trace.search_budget = event.search_budget ?? trace.search_budget;
+      trace.reason = event.reason || trace.reason;
       trace.query_intent = event.intent_label || trace.query_intent;
-      providerStatus.stage = event.needs_web ? "已规划联网查询" : "已规划本地回答";
-      setProgressContent(event.needs_web ? "已规划联网查询，准备检索公开网页..." : "已规划回答路径，准备检索本地材料...");
+      providerStatus.stage = event.needs_web ? "已规划联网查询" : mode === "local_web" ? "跳过联网" : "已规划回答路径";
+      setProgressContent(event.needs_web ? "已规划联网查询，准备检索公开网页..." : mode === "current_article_only" ? "正在基于当前文章回答..." : "正在基于可用材料回答...");
       break;
     case "queries_ready":
       trace.web_queries = event.queries || trace.web_queries || [];
@@ -3217,12 +3332,14 @@ function applySelectionChatStreamEvent(
     case "web_query_done":
       trace.candidate_sources = mergeResearchSources(trace.candidate_sources, event.web_sources);
       trace.candidate_count = event.candidate_count ?? trace.candidate_sources.length;
+      trace.query_statuses = mergeQueryStatuses(trace.query_statuses, event.query_status);
       providerStatus.stage = event.query ? `已完成搜索：${event.query}` : "网页搜索完成";
       setProgressContent(`已找到 ${event.result_count ?? event.web_sources?.length ?? 0} 个候选网页，正在筛选来源...`);
       break;
     case "web_query_error":
-      providerStatus.stage = event.error || "部分搜索失败";
-      warnings = uniqueStrings([...warnings, event.error || "部分搜索失败"]);
+      trace.query_statuses = mergeQueryStatuses(trace.query_statuses, event.query_status);
+      providerStatus.stage = event.query ? `已跳过搜索：${event.query}` : "部分搜索失败";
+      warnings = uniqueStrings([...warnings, "部分查询失败，已使用可用材料继续回答。"]);
       setProgressContent("部分搜索失败，正在使用可用结果继续...");
       break;
     case "web_ranked":
@@ -3312,7 +3429,7 @@ function applySelectionChatStreamEvent(
       break;
     }
     case "warnings":
-      warnings = uniqueStrings([...warnings, ...(event.warnings || [])]);
+      warnings = uniqueStrings([...warnings, ...readableResearchWarnings(event.warnings || [], trace.query_statuses, trace.provider_status)]);
       break;
   }
 
@@ -3340,6 +3457,26 @@ function applySelectionChatStreamEvent(
   };
 }
 
+function mergeQueryStatuses(
+  current: unknown,
+  incoming: unknown,
+): Array<Record<string, unknown>> {
+  const currentItems = Array.isArray(current)
+    ? current.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    : [];
+  const incomingItems = Array.isArray(incoming)
+    ? incoming.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    : incoming && typeof incoming === "object"
+      ? [incoming as Record<string, unknown>]
+      : [];
+  const merged = new Map<string, Record<string, unknown>>();
+  for (const item of [...currentItems, ...incomingItems]) {
+    const key = String(item.query || item.id || JSON.stringify(item));
+    merged.set(key, { ...merged.get(key), ...item });
+  }
+  return Array.from(merged.values());
+}
+
 function mergeResearchSources(
   current: KnowledgeResearchSource[] | undefined,
   incoming: KnowledgeResearchSource[] | undefined,
@@ -3351,21 +3488,21 @@ function mergeResearchSources(
       merged.set(key, { ...merged.get(key), ...source });
     }
   }
-  return Array.from(merged.values()).slice(0, 5);
+  return Array.from(merged.values());
 }
 
 function ArticleAssistantAnswer({
   content,
   message,
   onOpenSource,
-  onRefreshWeb,
+  onRerun,
   saving,
   onSave,
 }: {
   content: string;
   message: ArticleChatMessage;
   onOpenSource: (source: KnowledgeResearchSource) => void;
-  onRefreshWeb: () => void;
+  onRerun: (message: ArticleChatMessage, mode: KnowledgeResearchMode) => void;
   saving: boolean;
   onSave: (message: ArticleChatMessage, outputType: "local_learning_note" | "knowledge_card") => void;
 }) {
@@ -3374,6 +3511,7 @@ function ArticleAssistantAnswer({
   const showPendingPlaceholder = Boolean(
     message.pending && !streamingAnswer && !message.researchTrace?.web_search_attempted,
   );
+  const rerunAction = articleAssistantRerunAction(message);
 
   const copyAnswer = useCallback(async () => {
     if (!content.trim()) return;
@@ -3427,23 +3565,46 @@ function ArticleAssistantAnswer({
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers3 className="h-3.5 w-3.5" />}
             做卡片
           </button>
-          <button
-            type="button"
-            onClick={onRefreshWeb}
-            className="inline-flex items-center gap-1 transition hover:text-foreground"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            重新联网检索
-          </button>
+          {rerunAction ? (
+            <button
+              type="button"
+              onClick={() => onRerun(message, rerunAction.mode)}
+              className="inline-flex items-center gap-1 transition hover:text-foreground"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              {rerunAction.label}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>
   );
 }
 
+function articleAssistantRerunAction(message: ArticleChatMessage): { label: string; mode: KnowledgeResearchMode } | null {
+  if (!message.requestContext) return null;
+  switch (message.mode) {
+    case "current_article_only":
+      return null;
+    case "local_only":
+      return { label: "重新检索知识库", mode: "local_only" };
+    case "web_only":
+      return { label: "重新联网检索", mode: "web_only" };
+    case "local_web": {
+      const webAttempted = Boolean(message.researchTrace?.web_search_attempted ?? message.responseMeta?.web_search_attempted);
+      return webAttempted
+        ? { label: "重新联网检索", mode: "local_web" }
+        : { label: "联网补充", mode: "web_only" };
+    }
+    default:
+      return null;
+  }
+}
+
 const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }: { message: ArticleChatMessage }) {
   const trace = message.researchTrace;
   const meta = message.responseMeta;
+  const providerStatusRecord = trace?.provider_status ?? meta?.provider_status;
   const webQueries = uniqueStrings([
     ...stringArray(trace?.rewritten_web_queries),
     ...stringArray(trace?.rewritten_queries),
@@ -3452,15 +3613,21 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
     ...stringArray(meta?.rewritten_web_queries),
     ...stringArray(meta?.web_queries),
   ]);
-  const providerStatus = providerStatusLabels(trace?.provider_status ?? meta?.provider_status);
+  const queryStatuses = queryStatusArray(trace?.query_statuses || providerStatusRecord?.query_statuses);
+  const providerStatus = providerStatusLabels(providerStatusRecord);
   const currentStage =
     typeof trace?.provider_status === "object" && trace.provider_status && "stage" in trace.provider_status
       ? String((trace.provider_status as Record<string, unknown>).stage || "")
       : "";
   const status = typeof trace?.plan_status === "string" ? trace.plan_status : "";
   const webSearchAttempted = Boolean(trace?.web_search_attempted ?? meta?.web_search_attempted);
-  const webStatus = message.pending && webResearchMode(message.mode) ? "准备中" : webSearchAttempted ? "已发起" : "未发起";
   const knowledgeCount = message.sources?.knowledge?.length ?? traceSourceCount(trace?.knowledge_sources);
+  const webStatus = researchProgressFallback({
+    mode: message.mode,
+    pending: Boolean(message.pending),
+    webSearchAttempted,
+    knowledgeCount,
+  });
   const evidenceSources = message.sources?.web?.length
     ? message.sources.web
     : sourceArray(trace?.evidence_sources).length
@@ -3479,10 +3646,11 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
     candidateSources.length;
   const readCount =
     numberField(trace?.opened_pages) ||
-    providerNumber(trace?.provider_status ?? meta?.provider_status, "opened_pages") ||
-    providerNumber(trace?.provider_status ?? meta?.provider_status, "extracted_pages") ||
+    providerNumber(providerStatusRecord, "opened_pages") ||
+    providerNumber(providerStatusRecord, "extracted_pages") ||
     numberField(trace?.extracted_pages);
   const elapsedLabel = researchElapsedLabel(trace, meta);
+  const displayWarnings = readableResearchWarnings(message.warnings || [], queryStatuses, providerStatusRecord);
   const summaryText = researchSummaryText({
     candidateCount,
     mode: message.mode,
@@ -3490,8 +3658,8 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
     queryCount,
     readCount,
     sourceCount: webCount || knowledgeCount,
-    webSearchAttempted,
     elapsedLabel,
+    webSearchAttempted,
   });
   const shouldRender = Boolean(
     message.mode ||
@@ -3504,7 +3672,7 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
       candidateSources.length ||
       clueSources.length ||
       rejectedSources.length ||
-      message.warnings?.length,
+      displayWarnings.length,
   );
   if (!shouldRender) return null;
 
@@ -3527,6 +3695,7 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
         candidateSources={candidateSources}
         clueSources={clueSources}
         providerStatus={providerStatus}
+        queryStatuses={queryStatuses}
         queries={webQueries}
         rejectedSources={rejectedSources}
         progress={
@@ -3537,7 +3706,8 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
             webStatus={webStatus}
           />
         }
-        warnings={message.warnings || []}
+        statusTitle={researchStatusTitle(message.mode, webSearchAttempted)}
+        warnings={displayWarnings}
       />
     </div>
   );
@@ -3611,19 +3781,23 @@ function ResearchAuditDetails({
   clueSources,
   providerStatus,
   progress,
+  queryStatuses,
   queries,
   rejectedSources,
+  statusTitle,
   warnings,
 }: {
   candidateSources: KnowledgeResearchSource[];
   clueSources: KnowledgeResearchSource[];
   providerStatus: string[];
   progress: ReactNode;
+  queryStatuses: Array<Record<string, unknown>>;
   queries: string[];
   rejectedSources: KnowledgeResearchSource[];
+  statusTitle: string;
   warnings: string[];
 }) {
-  const hasDetails = queries.length || candidateSources.length || clueSources.length || rejectedSources.length || providerStatus.length || warnings.length;
+  const hasDetails = queries.length || queryStatuses.length || candidateSources.length || clueSources.length || rejectedSources.length || providerStatus.length || warnings.length;
   if (!hasDetails) return null;
   return (
     <details className="mt-1.5">
@@ -3633,7 +3807,30 @@ function ResearchAuditDetails({
       </summary>
       <div className="mt-2 border-t border-border/50 pt-2">
         {progress}
-        {queries.length ? (
+        {queryStatuses.length ? (
+          <div className="mt-2 space-y-1">
+            <div className="font-medium text-foreground">查询词</div>
+            <div className="space-y-1">
+              {queryStatuses.map((status, index) => (
+                <div key={`${String(status.query || "")}-${index}`} className="rounded border border-border bg-background/70 px-1.5 py-0.5">
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <span className="min-w-0 truncate font-mono text-[0.68rem] text-foreground">
+                      {String(status.query || "未命名查询")}
+                    </span>
+                    <span className={cn("shrink-0 text-[0.68rem]", queryStatusTone(status.status))}>
+                      {queryStatusLabel(status.status)}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 truncate text-[0.68rem] text-muted-foreground">
+                    {status.status === "skipped"
+                      ? "未执行"
+                      : `结果 ${numberOrZero(status.result_count)} · 耗时 ${formatElapsedMs(numberOrZero(status.duration_ms))}`}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : queries.length ? (
           <div className="mt-2 space-y-1">
             <div className="font-medium text-foreground">查询词</div>
             <div className="space-y-1">
@@ -3650,7 +3847,7 @@ function ResearchAuditDetails({
         <ResearchSourceGroup title="未采用" sources={rejectedSources} showReason />
         {providerStatus.length ? (
           <div className="mt-2 space-y-1">
-            <div className="font-medium text-foreground">搜索状态</div>
+            <div className="font-medium text-foreground">{statusTitle}</div>
             <div className="space-y-1">
               {providerStatus.map((statusText) => (
                 <div key={statusText} className="truncate rounded border border-border bg-background/70 px-1.5 py-0.5">
@@ -3681,6 +3878,67 @@ function uniqueStrings(values: string[]): string[] {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function queryStatusArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    : [];
+}
+
+function numberOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function queryStatusLabel(value: unknown): string {
+  switch (String(value || "")) {
+    case "success":
+      return "成功";
+    case "timeout":
+      return "超时";
+    case "failed":
+      return "失败";
+    case "skipped":
+      return "已跳过";
+    default:
+      return "未知";
+  }
+}
+
+function queryStatusTone(value: unknown): string {
+  switch (String(value || "")) {
+    case "success":
+      return "text-emerald-600";
+    case "timeout":
+      return "text-warning";
+    case "failed":
+      return "text-destructive";
+    case "skipped":
+      return "text-muted-foreground";
+    default:
+      return "text-muted-foreground";
+  }
+}
+
+function readableResearchWarnings(
+  warnings: string[],
+  queryStatuses: unknown,
+  providerStatus?: Record<string, unknown>,
+): string[] {
+  const statusRows = queryStatusArray(queryStatuses || providerStatus?.query_statuses);
+  const timeoutCount = statusRows.filter((item) => item.status === "timeout").length;
+  const failureCount = statusRows.filter((item) => item.status === "failed").length;
+  const usedSourceCount = providerNumber(providerStatus, "used_sources") || providerNumber(providerStatus, "summary_only_pages");
+  const suffix = usedSourceCount ? `已用 ${usedSourceCount} 个可用来源继续回答。` : "已用可用材料继续回答。";
+  const derived: string[] = [];
+  if (timeoutCount) derived.push(`${timeoutCount} 条查询超时，已跳过；${suffix}`);
+  if (failureCount) derived.push(`${failureCount} 条查询失败，已跳过；${suffix}`);
+  const cleaned = warnings.filter((warning) => {
+    if (!warning) return false;
+    if (/网页搜索失败|搜索超时：|部分查询失败/.test(warning)) return false;
+    return true;
+  });
+  return uniqueStrings([...derived, ...cleaned]);
 }
 
 function traceSourceCount(sources: unknown): number {
@@ -3728,18 +3986,49 @@ function researchSummaryText({
   webSearchAttempted: boolean;
 }): string {
   if (pending) {
-    if (!webResearchMode(mode)) return "正在回答";
+    if (!webSearchAttempted) {
+      if (mode === "current_article_only") return "正在基于当前文章回答";
+      if (mode === "local_only" || mode === "local_web") return "正在检索知识库";
+      return "正在回答";
+    }
     const parts = ["联网搜索中"];
     if (queryCount) parts.push(`关键词 ${queryCount}`);
     if (candidateCount) parts.push(`找到 ${candidateCount} 页`);
     if (readCount) parts.push(`阅读 ${readCount} 页`);
     return parts.join(" · ");
   }
-  const scope = webSearchAttempted || webResearchMode(mode) ? "联网搜索完成" : researchModeLabel(mode || "current_article_only");
+  const scope = "回答完成";
   const parts = [scope];
-  if (sourceCount) parts.push(`${sourceCount} 个引用来源`);
-  if (elapsedLabel) parts.push(elapsedLabel);
+  if (sourceCount) parts.push(`使用 ${sourceCount} 个来源`);
+  if (elapsedLabel) parts.push(`总耗时 ${elapsedLabel}`);
   return parts.join(" · ");
+}
+
+function researchProgressFallback({
+  knowledgeCount,
+  mode,
+  pending,
+  webSearchAttempted,
+}: {
+  knowledgeCount: number;
+  mode?: KnowledgeResearchMode;
+  pending: boolean;
+  webSearchAttempted: boolean;
+}): string {
+  if (webSearchAttempted) return pending ? "联网检索中" : "已联网补充";
+  if (mode === "current_article_only") return pending ? "正在基于当前文章回答" : "当前文章回答完成";
+  if (mode === "local_only") return pending ? "正在检索知识库" : "知识库检索完成";
+  if (mode === "local_web") {
+    if (pending) return "正在检索知识库";
+    return knowledgeCount ? "未联网，已用知识库回答" : "未联网";
+  }
+  return pending ? "正在回答" : "回答完成";
+}
+
+function researchStatusTitle(mode: KnowledgeResearchMode | undefined, webSearchAttempted: boolean): string {
+  if (webSearchAttempted || mode === "web_only") return "搜索状态";
+  if (mode === "local_only" || mode === "local_web") return "检索状态";
+  return "生成状态";
 }
 
 function researchElapsedLabel(
@@ -3747,11 +4036,13 @@ function researchElapsedLabel(
   meta: KnowledgeLibrarySelectionChatResponse["meta"] | undefined,
 ): string {
   const providerStatus = trace?.provider_status ?? meta?.provider_status;
-  const rawElapsed = providerStatus && typeof providerStatus === "object" ? (providerStatus as Record<string, unknown>).search_elapsed_ms : undefined;
+  const rawElapsed = providerStatus && typeof providerStatus === "object"
+    ? (providerStatus as Record<string, unknown>).total_elapsed_ms ?? (providerStatus as Record<string, unknown>).search_elapsed_ms
+    : undefined;
   if (typeof rawElapsed === "number" && rawElapsed > 0) return formatElapsedMs(rawElapsed);
   const timings = trace?.stage_timings;
   if (!timings || typeof timings !== "object") return "";
-  const total = ["search_ms", "extract_ms", "synthesis_ms"].reduce((sum, key) => {
+  const total = ["planning_ms", "local_search_ms", "search_ms", "extract_ms", "synthesis_ms"].reduce((sum, key) => {
     const value = (timings as Record<string, unknown>)[key];
     return sum + (typeof value === "number" ? value : 0);
   }, 0);
@@ -3839,22 +4130,42 @@ function providerStatusLabels(status: Record<string, unknown> | undefined): stri
   const preferred = [
     "search_backend",
     "extract_backend",
-    "search_elapsed_ms",
+    "total_elapsed_ms",
+    "stage_timings",
     "extracted_pages",
     "summary_only_pages",
     "fallback_attempts",
     "retrieval_health",
-    "warnings",
   ];
   const entries = preferred
     .filter((name) => name in status)
     .map((name) => [name, status[name]] as [string, unknown]);
   return entries
     .slice(0, 8)
-    .map(([name, value]) => `${name}: ${providerStatusValue(value)}`);
+    .map(([name, value]) => `${providerStatusName(name)}: ${providerStatusValue(name, value)}`);
 }
 
-function providerStatusValue(value: unknown): string {
+function providerStatusName(name: string): string {
+  const labels: Record<string, string> = {
+    search_backend: "搜索后端",
+    extract_backend: "抽取后端",
+    total_elapsed_ms: "总耗时",
+    stage_timings: "阶段耗时",
+    extracted_pages: "全文页",
+    summary_only_pages: "摘要页",
+    fallback_attempts: "fallback",
+    retrieval_health: "检索健康",
+  };
+  return labels[name] ?? name;
+}
+
+function providerStatusValue(name: string, value: unknown): string {
+  if (name.endsWith("_elapsed_ms") && typeof value === "number") {
+    return formatElapsedMs(value);
+  }
+  if (name === "stage_timings" && value && typeof value === "object" && !Array.isArray(value)) {
+    return stageTimingLabel(value as Record<string, unknown>);
+  }
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return String(value);
   }
@@ -3882,6 +4193,23 @@ function providerStatusValue(value: unknown): string {
     }
   }
   return "已记录";
+}
+
+function stageTimingLabel(timings: Record<string, unknown>): string {
+  const labels: Array<[string, string]> = [
+    ["planning_ms", "规划"],
+    ["local_search_ms", "知识库"],
+    ["search_ms", "联网搜索"],
+    ["extract_ms", "网页整理"],
+    ["synthesis_ms", "生成答案"],
+  ];
+  return labels
+    .map(([key, label]) => {
+      const value = timings[key];
+      return typeof value === "number" && value > 0 ? `${label} ${formatElapsedMs(value)}` : "";
+    })
+    .filter(Boolean)
+    .join(" · ") || "已记录";
 }
 
 function FilterButton({

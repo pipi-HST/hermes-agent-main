@@ -62,16 +62,30 @@ function KnowledgeSourceList({
   const knowledge = orderSources(sources.knowledge, citedRefs);
   const web = orderSources(sources.web, citedRefs);
   const allSources = [...knowledge, ...web];
-  if (!allSources.length) return null;
+  if (!allSources.length) {
+    return citedRefs.length ? (
+      <div className="mt-3 text-xs text-warning">
+        部分引用来源缺失，已以普通文本显示。
+      </div>
+    ) : null;
+  }
+  const sourceListLabel = citedRefs.length ? "引用来源" : "使用来源";
+  const availableRefs = new Set(allSources.flatMap((source) => sourceRefAliases(sourceRef(source))));
+  const missingRefs = citedRefs.filter((ref) => !availableRefs.has(ref));
 
   return (
     <details className="mt-3 text-xs text-muted-foreground">
       <summary className="inline-flex cursor-pointer list-none items-center gap-1 font-medium text-muted-foreground transition hover:text-foreground">
         <Link2 className="h-3 w-3" />
-        引用来源 {allSources.length}
+        {sourceListLabel} {allSources.length}
         <ChevronDown className="h-3 w-3" />
       </summary>
       <div className="mt-2 border-t border-border/50 pt-2">
+        {missingRefs.length ? (
+          <div className="mb-2 text-warning">
+            部分引用来源缺失，已以普通文本显示。
+          </div>
+        ) : null}
         {orderedGroups(knowledge, web, citedRefs).map((group) => (
           <SourceListGroup
             key={group.label}
@@ -283,7 +297,7 @@ function withDisplayRefs(
 
 function rewriteCitationRefs(content: string, displayMap: Map<string, string>): string {
   if (!displayMap.size) return content;
-  return content.replace(/\[([KW]?\d+)\]/gi, (match, ref: string) => {
+  return content.replace(/\\?\[([KW]?\d+)\]/gi, (match, ref: string) => {
     const displayRef = displayMap.get(ref.toUpperCase());
     return displayRef ? `[${displayRef}]` : match;
   });
@@ -292,7 +306,7 @@ function rewriteCitationRefs(content: string, displayMap: Map<string, string>): 
 function sourceRefsFromContent(content: string): string[] {
   const refs: string[] = [];
   const seen = new Set<string>();
-  for (const match of content.matchAll(/\[([KW]?\d+)\]/gi)) {
+  for (const match of content.matchAll(/\\?\[([KW]?\d+)\]/gi)) {
     const ref = match[1].toUpperCase();
     if (seen.has(ref)) continue;
     seen.add(ref);

@@ -964,9 +964,14 @@ export interface KnowledgeLibrarySelectionChatStreamEvent {
   plan_status?: string;
   intent_label?: string;
   needs_web?: boolean;
+  needs_local?: boolean;
+  complexity?: string;
+  question_type?: string;
+  search_budget?: number;
   queries?: string[];
   query?: string;
   query_count?: number;
+  query_status?: Record<string, unknown>;
   result_count?: number;
   candidate_count?: number;
   material_count?: number;

@@ -1,6 +1,7 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
 import base64
+import asyncio
 import os
 import json
 import tempfile
@@ -532,6 +533,33 @@ class TestWebServerEndpoints:
         }
         assert calls["count"] == 0
 
+    def test_knowledge_selection_chat_uses_offsets_for_duplicate_short_selection(self):
+        import hermes_cli.web_server as ws
+
+        article_body = "# 测试文章\n\n## 第一节\nterm 在这里不是目标。\n\n## 第二节\n这里的 term 才是用户选中的目标。"
+        selected_start = article_body.rfind("term")
+        body = ws._KnowledgeLibrarySelectionChatBody(
+            question="这是什么意思",
+            selected_text="term",
+            selection_start=selected_start,
+            selection_end=selected_start + len("term"),
+            selection_confidence="offset",
+        )
+
+        messages = ws._knowledge_selection_chat_messages(
+            {
+                "title": "测试文章",
+                "kind": "capture",
+                "folder_path": "Inbox",
+                "summary": "",
+                "tags": [],
+                "body": article_body,
+            },
+            body,
+        )
+
+        assert "标题路径：测试文章 > 第二节" in messages[1]["content"]
+
     def test_knowledge_library_selection_chat_streams_progress_before_final_answer(self, monkeypatch, tmp_path):
         import sqlite3
 
@@ -659,6 +687,82 @@ class TestWebServerEndpoints:
         assert events[4] == {"event": "progress", "type": "answer_delta", "delta": " 是"}
         assert events[-1]["response"]["answer"].startswith("Coding agent 是")
         assert events[-1]["response"]["sources"]["web"][0]["ref"] == "W1"
+
+    def test_knowledge_library_selection_chat_stream_times_out_stuck_research(self, monkeypatch, tmp_path):
+        import sqlite3
+        import hermes_cli.web_server as web_server
+
+        custom_root = tmp_path / "hermes-custom"
+        data_dir = custom_root / "data"
+        data_dir.mkdir(parents=True)
+        db_path = data_dir / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """CREATE TABLE capture_drafts (
+               id TEXT PRIMARY KEY,
+               raw_text TEXT NOT NULL DEFAULT '',
+               source TEXT NOT NULL DEFAULT '',
+               source_type TEXT NOT NULL DEFAULT '',
+               title TEXT NOT NULL DEFAULT '',
+               word_count INTEGER NOT NULL DEFAULT 0,
+               draft_text TEXT NOT NULL DEFAULT '',
+               instruction TEXT NOT NULL DEFAULT '',
+               summary TEXT NOT NULL DEFAULT '',
+               tags TEXT NOT NULL DEFAULT '[]',
+               status TEXT NOT NULL DEFAULT 'draft_ready',
+               committed_capture_id TEXT NOT NULL DEFAULT '',
+               created_at TEXT NOT NULL DEFAULT (datetime('now')),
+               updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+               capture_intent TEXT NOT NULL DEFAULT '{}'
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO capture_drafts
+               (id, raw_text, title, word_count, draft_text, summary, tags, status, capture_intent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "draft-timeout-1",
+                "原文",
+                "测试文章",
+                2,
+                "# 测试文章\n\nvibecoder",
+                "摘要",
+                '["test"]',
+                "draft_ready",
+                '{"folder_path":"Inbox"}',
+            ),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+
+        async def fake_async_web_assist_answer(**_kwargs):
+            await asyncio.sleep(1.0)
+            return {"status": "success", "chat_preview": "too late", "warnings": [], "meta": {}}
+
+        fake_module = types.ModuleType("bridge.research_bridge")
+        fake_module.async_web_assist_answer = fake_async_web_assist_answer
+        monkeypatch.setitem(sys.modules, "bridge.research_bridge", fake_module)
+        monkeypatch.setattr(web_server, "KNOWLEDGE_SELECTION_CHAT_STREAM_TIMEOUT_SECONDS", 0.05, raising=False)
+
+        resp = self.client.post(
+            "/api/knowledge/library/items/capture_draft/draft-timeout-1/selection-chat/stream",
+            json={
+                "question": "这是什么意思",
+                "selected_text": "vibecoder",
+                "mode": "local_web",
+            },
+        )
+
+        assert resp.status_code == 200
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in resp.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert events[0] == {"event": "start", "mode": "local_web"}
+        assert events[-1]["event"] == "error"
+        assert "超时" in events[-1]["message"]
 
     def test_knowledge_editable_capture_draft_api_delegates_to_bridge(self, monkeypatch, tmp_path):
         custom_root = tmp_path / "hermes-custom"
