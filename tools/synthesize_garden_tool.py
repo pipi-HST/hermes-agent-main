@@ -1,15 +1,11 @@
 """Hermes tool: synthesize_garden — 合成 Knowledge Card 草稿."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.garden_bridge import synthesize_garden as do_synthesize
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import (
+    ensure_hermes_custom_path,
+    envelope_error_json,
+    envelope_success_json,
+)
 from tools.registry import registry
 
 SYNTHESIZE_GARDEN_SCHEMA = {
@@ -57,6 +53,13 @@ SYNTHESIZE_GARDEN_SCHEMA = {
 }
 
 
+def do_synthesize(**kwargs):
+    ensure_hermes_custom_path()
+    from bridge.garden_bridge import synthesize_garden
+
+    return synthesize_garden(**kwargs)
+
+
 def _handler(params: dict, **kw) -> str:
     try:
         result = do_synthesize(
@@ -66,7 +69,7 @@ def _handler(params: dict, **kw) -> str:
             card_kind=params.get("card_kind", ""),
             export_file=bool(params.get("export_file", False)),
         )
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="garden", intent="synthesize_garden", exc=exc)
 

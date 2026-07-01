@@ -1,15 +1,7 @@
 """Hermes tool: audit_library — 手动触发知识库审计/安全修复."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.librarian_bridge import run_librarian_audit
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 LIBRARIAN_SCHEMA = {
@@ -38,13 +30,17 @@ LIBRARIAN_SCHEMA = {
 }
 
 
+def run_librarian_audit(**kwargs):
+    return call_custom_bridge("librarian_bridge", "run_librarian_audit", **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = run_librarian_audit(
             apply=bool(args.get("apply", False)),
             export_file=bool(args.get("export_file", False)),
         )
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="librarian", intent="audit_library", exc=exc)
 

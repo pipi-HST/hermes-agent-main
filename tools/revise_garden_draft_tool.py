@@ -1,15 +1,11 @@
 """Hermes tool: revise_garden_draft — 修改 Knowledge Card 草稿."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.garden_bridge import revise_garden_draft as do_revise
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import (
+    ensure_hermes_custom_path,
+    envelope_error_json,
+    envelope_success_json,
+)
 from tools.registry import registry
 
 REVISE_GARDEN_DRAFT_SCHEMA = {
@@ -36,13 +32,20 @@ REVISE_GARDEN_DRAFT_SCHEMA = {
 }
 
 
+def do_revise(**kwargs):
+    ensure_hermes_custom_path()
+    from bridge.garden_bridge import revise_garden_draft
+
+    return revise_garden_draft(**kwargs)
+
+
 def _handler(params: dict, **kw) -> str:
     try:
         result = do_revise(
             draft_id=params.get("draft_id", ""),
             instruction=params.get("instruction", ""),
         )
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="garden", intent="revise_garden_draft", exc=exc)
 

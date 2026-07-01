@@ -1,15 +1,7 @@
 """Hermes tool: capture_content — 内容捕获入库."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.capture_bridge import capture_content as do_capture
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 CAPTURE_SCHEMA = {
@@ -74,10 +66,14 @@ CAPTURE_SCHEMA = {
 }
 
 
+def do_capture(content: str, **kwargs):
+    return call_custom_bridge("capture_bridge", "capture_content", content, **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = do_capture(args.get("content", ""), instruction=args.get("instruction", ""))
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="capture", intent="create_capture_draft", exc=exc)
 

@@ -1,15 +1,7 @@
 """Hermes tool: review_feedback — record knowledge review feedback."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.review_bridge import record_review_feedback
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 REVIEW_FEEDBACK_SCHEMA = {
@@ -39,13 +31,17 @@ REVIEW_FEEDBACK_SCHEMA = {
 }
 
 
+def record_review_feedback(**kwargs):
+    return call_custom_bridge("review_bridge", "record_review_feedback", **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = record_review_feedback(
             item_id=str(args.get("item_id") or "").strip(),
             outcome=str(args.get("outcome") or "").strip(),
         )
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="review", intent="record_review_feedback", exc=exc)
 

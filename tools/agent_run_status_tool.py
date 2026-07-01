@@ -1,15 +1,7 @@
 """Hermes tool: agent_run_status — show recent Hermes Agent runs."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.agent_run_bridge import get_agent_run_status
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 AGENT_RUN_STATUS_SCHEMA = {
@@ -35,10 +27,14 @@ AGENT_RUN_STATUS_SCHEMA = {
 }
 
 
+def get_agent_run_status(**kwargs):
+    return call_custom_bridge("agent_run_bridge", "get_agent_run_status", **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = get_agent_run_status(limit=int(args.get("limit") or 5))
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="system", intent="agent_run_status", exc=exc)
 

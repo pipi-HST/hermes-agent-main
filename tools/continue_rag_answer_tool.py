@@ -1,15 +1,7 @@
 """Hermes tool: continue_rag_answer — continue latest RAG answer."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.rag_continue_bridge import continue_latest_rag_answer
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 CONTINUE_RAG_ANSWER_SCHEMA = {
@@ -34,13 +26,17 @@ CONTINUE_RAG_ANSWER_SCHEMA = {
 }
 
 
+def continue_latest_rag_answer(**kwargs):
+    return call_custom_bridge("rag_continue_bridge", "continue_latest_rag_answer", **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         if bool(args.get("export_file", False)):
             result = continue_latest_rag_answer(export_file=True)
         else:
             result = continue_latest_rag_answer()
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="rag", intent="continue_rag_answer", exc=exc)
 

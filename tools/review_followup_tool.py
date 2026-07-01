@@ -1,15 +1,7 @@
 """Hermes tool: review_followup — expand the latest daily review item."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.result_envelope import envelope_json
-from bridge.review_bridge import expand_latest_review_followup
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 REVIEW_FOLLOWUP_SCHEMA = {
@@ -34,10 +26,14 @@ REVIEW_FOLLOWUP_SCHEMA = {
 }
 
 
+def expand_latest_review_followup(question: str):
+    return call_custom_bridge("review_bridge", "expand_latest_review_followup", question)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = expand_latest_review_followup(args.get("question", ""))
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="review", intent="expand_latest_review_followup", exc=exc)
 

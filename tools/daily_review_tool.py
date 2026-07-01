@@ -1,12 +1,7 @@
 """Hermes tool: daily_review — 手动触发艾宾浩斯每日复习."""
 from __future__ import annotations
 
-import sys
-sys.path.insert(0, "/Users/pipi/hermes-custom")
-
-from bridge.review_bridge import run_daily_review
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 REVIEW_SCHEMA = {
@@ -25,10 +20,14 @@ REVIEW_SCHEMA = {
 }
 
 
+def run_daily_review():
+    return call_custom_bridge("review_bridge", "run_daily_review")
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = run_daily_review()
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="review", intent="run_daily_review", exc=exc)
 

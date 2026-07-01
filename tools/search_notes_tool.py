@@ -1,15 +1,7 @@
 """Hermes tool: search_my_notes — 知识库搜索."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.rag_bridge import search_knowledge_base as do_search
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 SEARCH_SCHEMA = {
@@ -42,6 +34,10 @@ SEARCH_SCHEMA = {
 }
 
 
+def do_search(query: str, **kwargs):
+    return call_custom_bridge("rag_bridge", "search_knowledge_base", query=query, **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         if bool(args.get("export_file", False)):
@@ -52,7 +48,7 @@ def _handler(args: dict, **kw) -> str:
             **result.get("meta", {}),
             "handler_instruction": "最终回答使用 chat_preview，并保留所有引用标注和 source_map。",
         }
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(
             agent="rag",

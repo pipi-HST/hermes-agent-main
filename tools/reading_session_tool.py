@@ -1,21 +1,11 @@
 """Hermes tools: Reading Session — 阅读讨论会话."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.reading_bridge import (
-    commit_reading_artifact as do_commit,
-    discuss_reading as do_discuss,
-    show_reading_session as do_show,
-    start_reading_session as do_start,
-    summarize_reading_session as do_summarize,
+from tools.hermes_custom_envelope import (
+    ensure_hermes_custom_path,
+    envelope_error_json,
+    envelope_success_json,
 )
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
 from tools.registry import registry
 
 START_SCHEMA = {
@@ -128,9 +118,48 @@ COMMIT_SCHEMA = {
 }
 
 
+def _reading_bridge():
+    ensure_hermes_custom_path()
+    from bridge.reading_bridge import (
+        commit_reading_artifact,
+        discuss_reading,
+        show_reading_session,
+        start_reading_session,
+        summarize_reading_session,
+    )
+
+    return {
+        "commit": commit_reading_artifact,
+        "discuss": discuss_reading,
+        "show": show_reading_session,
+        "start": start_reading_session,
+        "summarize": summarize_reading_session,
+    }
+
+
+def do_start(**kwargs):
+    return _reading_bridge()["start"](**kwargs)
+
+
+def do_discuss(**kwargs):
+    return _reading_bridge()["discuss"](**kwargs)
+
+
+def do_show(**kwargs):
+    return _reading_bridge()["show"](**kwargs)
+
+
+def do_summarize(**kwargs):
+    return _reading_bridge()["summarize"](**kwargs)
+
+
+def do_commit(**kwargs):
+    return _reading_bridge()["commit"](**kwargs)
+
+
 def _start_handler(args: dict, **kw) -> str:
     try:
-        return envelope_json(
+        return envelope_success_json(
             do_start(
                 message=args.get("message", ""),
                 source_url=args.get("source_url", ""),
@@ -147,7 +176,7 @@ def _start_handler(args: dict, **kw) -> str:
 
 def _discuss_handler(args: dict, **kw) -> str:
     try:
-        return envelope_json(
+        return envelope_success_json(
             do_discuss(
                 session_id=args.get("session_id", ""),
                 message=args.get("message", ""),
@@ -162,14 +191,14 @@ def _discuss_handler(args: dict, **kw) -> str:
 
 def _show_handler(args: dict, **kw) -> str:
     try:
-        return envelope_json(do_show(session_id=args.get("session_id", "")))
+        return envelope_success_json(do_show(session_id=args.get("session_id", "")))
     except Exception as exc:
         return envelope_error_json(agent="reading", intent="show_reading_session", exc=exc)
 
 
 def _summarize_handler(args: dict, **kw) -> str:
     try:
-        return envelope_json(
+        return envelope_success_json(
             do_summarize(
                 session_id=args.get("session_id", ""),
                 output_type=args.get("output_type", ""),
@@ -182,7 +211,7 @@ def _summarize_handler(args: dict, **kw) -> str:
 
 def _commit_handler(args: dict, **kw) -> str:
     try:
-        return envelope_json(do_commit(draft_id=args.get("draft_id", "")))
+        return envelope_success_json(do_commit(draft_id=args.get("draft_id", "")))
     except Exception as exc:
         return envelope_error_json(agent="reading", intent="commit_reading_artifact", exc=exc)
 

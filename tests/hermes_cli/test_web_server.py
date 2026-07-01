@@ -442,7 +442,11 @@ class TestWebServerEndpoints:
         if str(custom_root) not in sys.path:
             sys.path.insert(0, str(custom_root))
 
-        import bridge.research_bridge as research_bridge
+        fake_bridge = types.ModuleType("bridge")
+        fake_bridge.__path__ = []
+        research_bridge = types.ModuleType("bridge.research_bridge")
+        monkeypatch.setitem(sys.modules, "bridge", fake_bridge)
+        monkeypatch.setitem(sys.modules, "bridge.research_bridge", research_bridge)
 
         called = {}
 
@@ -609,7 +613,11 @@ class TestWebServerEndpoints:
         if str(custom_root) not in sys.path:
             sys.path.insert(0, str(custom_root))
 
-        import bridge.research_bridge as research_bridge
+        fake_bridge = types.ModuleType("bridge")
+        fake_bridge.__path__ = []
+        research_bridge = types.ModuleType("bridge.research_bridge")
+        monkeypatch.setitem(sys.modules, "bridge", fake_bridge)
+        monkeypatch.setitem(sys.modules, "bridge.research_bridge", research_bridge)
 
         async def fake_async_web_assist_answer(**kwargs):
             event_callback = kwargs.get("event_callback")

@@ -1,13 +1,7 @@
 """Hermes tool: theme_candidates — existing Theme map candidates."""
 from __future__ import annotations
 
-import sys
-
-sys.path.insert(0, "/Users/pipi/hermes-custom")
-
-from bridge.result_envelope import envelope_json
-from bridge.theme_bridge import list_theme_candidates
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 THEME_CANDIDATES_SCHEMA = {
@@ -34,10 +28,14 @@ THEME_CANDIDATES_SCHEMA = {
 }
 
 
+def list_theme_candidates(**kwargs):
+    return call_custom_bridge("theme_bridge", "list_theme_candidates", **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = list_theme_candidates(limit=int(args.get("limit") or 5))
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="theme", intent="list_theme_candidates", exc=exc)
 

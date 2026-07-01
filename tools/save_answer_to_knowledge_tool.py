@@ -1,15 +1,7 @@
 """Hermes tool: save_answer_to_knowledge — 保存优秀回答为可审阅知识草稿."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.answer_bridge import save_answer_to_knowledge as do_save
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 SAVE_ANSWER_SCHEMA = {
@@ -55,9 +47,13 @@ SAVE_ANSWER_SCHEMA = {
 }
 
 
+def do_save(**kwargs):
+    return call_custom_bridge("answer_bridge", "save_answer_to_knowledge", **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
-        return envelope_json(
+        return envelope_success_json(
             do_save(
                 hermes_session_id=args.get("hermes_session_id", ""),
                 user_message=args.get("user_message", ""),

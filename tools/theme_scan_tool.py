@@ -1,12 +1,7 @@
 """Hermes tool: theme_scan — Theme View scan."""
 from __future__ import annotations
 
-import sys
-sys.path.insert(0, "/Users/pipi/hermes-custom")
-
-from bridge.theme_bridge import run_theme_scan
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 THEME_SCAN_SCHEMA = {
@@ -56,13 +51,17 @@ THEME_SCAN_SCHEMA = {
 }
 
 
+def run_theme_scan(**kwargs):
+    return call_custom_bridge("theme_bridge", "run_theme_scan", **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = run_theme_scan(
             rescan_all=bool(args.get("rescan_all")),
             export_file=bool(args.get("export_file", False)),
         )
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="theme", intent="run_theme_scan", exc=exc)
 

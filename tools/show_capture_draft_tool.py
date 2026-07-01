@@ -1,15 +1,7 @@
 """Hermes tool: show_capture_draft — 查看待确认捕获草稿."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.capture_bridge import show_capture_draft
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 SHOW_CAPTURE_DRAFT_SCHEMA = {
@@ -47,6 +39,10 @@ SHOW_CAPTURE_DRAFT_SCHEMA = {
 }
 
 
+def show_capture_draft(*args, **kwargs):
+    return call_custom_bridge("capture_bridge", "show_capture_draft", *args, **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         if bool(args.get("as_file", False)):
@@ -60,7 +56,7 @@ def _handler(args: dict, **kw) -> str:
                 args.get("draft_id", ""),
                 args.get("page", 1),
             )
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="capture", intent="show_capture_draft", exc=exc)
 

@@ -2,29 +2,33 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import sys
 import threading
 from typing import Any
 
-HERMES_CUSTOM = os.environ.get("HERMES_CUSTOM_ROOT", "/Users/pipi/hermes-custom")
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-try:
-    from bridge.research_bridge import async_web_assist_answer as _async_research_entry
-except ImportError:  # pragma: no cover - compatibility with older hermes-custom checkouts
-    from bridge.research_bridge import async_light_web_answer as _async_research_entry
-try:
-    from bridge.web_context_answer import WEB_CONTEXT_ANSWER_STYLE_CONTRACT
-except Exception:  # pragma: no cover - compatibility with older hermes-custom checkouts
-    WEB_CONTEXT_ANSWER_STYLE_CONTRACT = (
-        "回答应以解决用户问题为第一目标；如果表格有助于比较、分类或辅助扫描，可以使用表格；"
-        "表格只能辅助理解，不能替代回答。"
-    )
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import (
+    ensure_hermes_custom_path,
+    envelope_error_json,
+    envelope_success_json,
+)
 from tools.registry import registry
+
+WEB_CONTEXT_ANSWER_STYLE_CONTRACT = (
+    "回答应以解决用户问题为第一目标；如果表格有助于比较、分类或辅助扫描，可以使用表格；"
+    "表格只能辅助理解，不能替代回答。"
+)
+
+
+async def async_web_assist_answer(**kwargs):
+    ensure_hermes_custom_path()
+    try:
+        from bridge.research_bridge import async_web_assist_answer as entry
+    except ImportError:  # pragma: no cover - compatibility with older hermes-custom checkouts
+        from bridge.research_bridge import async_light_web_answer as entry
+
+    return await entry(**kwargs)
+
+
+_async_research_entry = async_web_assist_answer
 
 RESEARCH_WITH_WEB_SCHEMA = {
     "name": "research_with_web",
@@ -90,7 +94,7 @@ def _handler(args: dict, **kw) -> str:
                 "保留 [K]/[W] 引用；保存为笔记或卡片时把 source_map/meta.sources 一起传给 save_answer_to_knowledge。"
             ),
         }
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="research", intent="research_answer", exc=exc)
 

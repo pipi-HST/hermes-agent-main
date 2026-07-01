@@ -1,15 +1,11 @@
 """Hermes tool: commit_garden_draft — 确认 Knowledge Card 草稿入库."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.garden_bridge import commit_garden_draft as do_commit
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import (
+    ensure_hermes_custom_path,
+    envelope_error_json,
+    envelope_success_json,
+)
 from tools.registry import registry
 
 COMMIT_GARDEN_DRAFT_SCHEMA = {
@@ -32,10 +28,17 @@ COMMIT_GARDEN_DRAFT_SCHEMA = {
 }
 
 
+def do_commit(**kwargs):
+    ensure_hermes_custom_path()
+    from bridge.garden_bridge import commit_garden_draft
+
+    return commit_garden_draft(**kwargs)
+
+
 def _handler(params: dict, **kw) -> str:
     try:
         result = do_commit(draft_id=params.get("draft_id", ""))
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="garden", intent="commit_garden_draft", exc=exc)
 

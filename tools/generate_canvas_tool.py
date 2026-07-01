@@ -1,15 +1,7 @@
 """Hermes tool: generate_canvas — advanced Knowledge Canvas relationship maps."""
 from __future__ import annotations
 
-import sys
-
-HERMES_CUSTOM = "/Users/pipi/hermes-custom"
-if HERMES_CUSTOM not in sys.path:
-    sys.path.insert(0, HERMES_CUSTOM)
-
-from bridge.canvas_bridge import generate_canvas
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 GENERATE_CANVAS_SCHEMA = {
@@ -43,6 +35,10 @@ GENERATE_CANVAS_SCHEMA = {
 }
 
 
+def generate_canvas(**kwargs):
+    return call_custom_bridge("canvas_bridge", "generate_canvas", **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = generate_canvas(
@@ -52,7 +48,7 @@ def _handler(args: dict, **kw) -> str:
             garden_card_ids=args.get("garden_card_ids"),
             export_file=bool(args.get("export_file", False)),
         )
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="canvas", intent="generate_canvas", exc=exc)
 

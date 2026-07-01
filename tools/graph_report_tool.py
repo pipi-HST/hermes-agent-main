@@ -1,12 +1,7 @@
 """Hermes tool: graph_report — 知识图谱健康报告."""
 from __future__ import annotations
 
-import sys
-sys.path.insert(0, "/Users/pipi/hermes-custom")
-
-from bridge.theme_bridge import run_graph_report
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 GRAPH_REPORT_SCHEMA = {
@@ -20,10 +15,14 @@ GRAPH_REPORT_SCHEMA = {
 }
 
 
+def run_graph_report():
+    return call_custom_bridge("theme_bridge", "run_graph_report")
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         result = run_graph_report()
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="theme", intent="run_graph_report", exc=exc)
 

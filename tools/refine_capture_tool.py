@@ -1,12 +1,7 @@
 """Hermes tool: refine_capture — 兼容旧名，修改待确认草稿."""
 from __future__ import annotations
 
-import sys
-sys.path.insert(0, "/Users/pipi/hermes-custom")
-
-from bridge.capture_bridge import revise_capture_draft as do_revise
-from bridge.result_envelope import envelope_json
-from tools.hermes_custom_envelope import envelope_error_json
+from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
 REFINE_SCHEMA = {
@@ -49,11 +44,15 @@ REFINE_SCHEMA = {
 }
 
 
+def do_revise(*args, **kwargs):
+    return call_custom_bridge("capture_bridge", "revise_capture_draft", *args, **kwargs)
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         inst = args.get("instruction", "重新生成准确的摘要和标签")
         result = do_revise(args.get("capture_id", ""), inst)
-        return envelope_json(result)
+        return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="capture", intent="revise_capture_draft", exc=exc)
 
