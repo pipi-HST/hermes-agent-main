@@ -657,7 +657,7 @@ export default function KnowledgeChatPage() {
       offError();
       gw.close();
     };
-  }, [gw, loadAnswerDrafts, loadDrafts, loadSessions, nextId, openAnswerDraft, reconcileCurrentSession, scheduleHistoryReconcile]);
+  }, [gw, loadAnswerDrafts, loadDrafts, loadSessions, nextId, openAnswerDraft, reconcileCurrentSession, researchMode, scheduleHistoryReconcile]);
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({

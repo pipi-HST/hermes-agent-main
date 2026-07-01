@@ -58,6 +58,22 @@ export default function PluginsPage() {
     void loadHub().finally(() => setLoading(false));
   }, [loadHub]);
 
+  const onRescan = useCallback(async () => {
+    setRescanBusy(true);
+    try {
+      const rc = await api.rescanPlugins();
+      showToast(
+        `${t.pluginsPage.refreshDashboard} (${rc.count})`,
+        "success",
+      );
+      await loadHub();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Rescan failed", "error");
+    } finally {
+      setRescanBusy(false);
+    }
+  }, [loadHub, showToast, t.pluginsPage.refreshDashboard]);
+
   useEffect(() => {
     setEnd(
       <Button
@@ -72,7 +88,7 @@ export default function PluginsPage() {
       </Button>,
     );
     return () => setEnd(null);
-  }, [loading, rescanBusy, setEnd, t.pluginsPage.refreshDashboard]);
+  }, [loading, onRescan, rescanBusy, setEnd, t.pluginsPage.refreshDashboard]);
 
   const onInstall = async () => {
     const id = installId.trim();
@@ -97,22 +113,6 @@ export default function PluginsPage() {
       showToast(e instanceof Error ? e.message : "Install failed", "error");
     } finally {
       setInstallBusy(false);
-    }
-  };
-
-  const onRescan = async () => {
-    setRescanBusy(true);
-    try {
-      const rc = await api.rescanPlugins();
-      showToast(
-        `${t.pluginsPage.refreshDashboard} (${rc.count})`,
-        "success",
-      );
-      await loadHub();
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : "Rescan failed", "error");
-    } finally {
-      setRescanBusy(false);
     }
   };
 

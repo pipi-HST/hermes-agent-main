@@ -1245,6 +1245,7 @@ export default function KnowledgeLibraryPage() {
     editableFolder,
     editableGenerateCard,
     ensureEditableFolder,
+    applyEditableDraftSuggestion,
     maybeGenerateGardenCardAfterCommit,
     refreshAll,
     saveEditableCaptureDraftSnapshot,
