@@ -3340,7 +3340,6 @@ function applySelectionChatStreamEvent(
     case "web_query_error":
       trace.query_statuses = mergeQueryStatuses(trace.query_statuses, event.query_status);
       providerStatus.stage = event.query ? `已跳过搜索：${event.query}` : "部分搜索失败";
-      warnings = uniqueStrings([...warnings, "部分查询失败，已使用可用材料继续回答。"]);
       setProgressContent("部分搜索失败，正在使用可用结果继续...");
       break;
     case "web_ranked":
@@ -3413,13 +3412,20 @@ function applySelectionChatStreamEvent(
       providerStatus.stage = "证据核验完成";
       setProgressContent("证据核验完成，正在组织回答...");
       break;
-    case "synthesis_start":
+    case "synthesis_start": {
+      const eventProviderStatus = event.provider_status && typeof event.provider_status === "object"
+        ? event.provider_status as Record<string, unknown>
+        : {};
+      if (trace.synthesis_skipped || providerStatus.synthesis_skipped || eventProviderStatus.synthesis_skipped) {
+        break;
+      }
       providerStatus.stage = "正在生成答案";
       if (!trace.answer_streaming) {
         content = "";
         trace.answer_streaming = false;
       }
       break;
+    }
     case "answer_delta": {
       const delta = event.delta || "";
       if (!delta) break;
