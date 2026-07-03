@@ -1,4 +1,4 @@
-import { ArrowRight, Loader2, Send, Sparkles, Trash2 } from "lucide-react";
+import { ArrowRight, Loader2, Send, Sparkles, SquareStop, Trash2 } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
 import type { KnowledgeReadingDraft } from "@/lib/api";
 import {
@@ -20,6 +20,8 @@ export function ReadingDraftReview({
   onDelete,
   onRevise,
   onRevisionChange,
+  onStopAiOperation,
+  stoppingAiOperation,
 }: {
   actionLoading: AnswerDraftActionLoading;
   detail: KnowledgeReadingDraft | null;
@@ -30,6 +32,8 @@ export function ReadingDraftReview({
   onDelete: () => void;
   onRevise: () => void;
   onRevisionChange: (value: string) => void;
+  onStopAiOperation?: () => void;
+  stoppingAiOperation?: boolean;
 }) {
   if (loading) return <LoadingBlock text="读取回答沉淀草稿..." />;
   if (!detail) return <PanelEmpty text="请选择一条 Hermes 回答，生成可审阅的知识草稿。" />;
@@ -51,6 +55,7 @@ export function ReadingDraftReview({
     detail.output_type === "local_learning_note"
     && detail.status === "committed"
     && Boolean(readingDraftCaptureId(detail));
+  const canStop = Boolean(onStopAiOperation) && ["commit", "revise", "card"].includes(actionLoading || "");
 
   return (
     <>
@@ -92,6 +97,17 @@ export function ReadingDraftReview({
                 </ActionButton>
               </>
             )}
+            {canStop ? (
+              <button
+                type="button"
+                onClick={onStopAiOperation}
+                disabled={stoppingAiOperation}
+                className="inline-flex items-center gap-1.5 rounded-md border border-destructive/35 bg-background/60 px-3 py-2 text-sm text-destructive transition hover:bg-destructive/10 disabled:opacity-45"
+              >
+                {stoppingAiOperation ? <Loader2 className="h-4 w-4 animate-spin" /> : <SquareStop className="h-4 w-4" />}
+                {stoppingAiOperation ? "正在停止" : "停止"}
+              </button>
+            ) : null}
             {canCreateCard && (
               <button
                 type="button"

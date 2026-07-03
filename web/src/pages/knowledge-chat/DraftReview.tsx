@@ -1,4 +1,4 @@
-import { ArrowRight, Edit3, Loader2, Send, Sparkles, Trash2 } from "lucide-react";
+import { ArrowRight, Edit3, Loader2, Send, Sparkles, SquareStop, Trash2 } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
 import type { KnowledgeCaptureDraft } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -27,6 +27,8 @@ export function DraftReview({
   onOpenCardFlow,
   onRevise,
   onRevisionChange,
+  onStopAiOperation,
+  stoppingAiOperation,
   onViewChange,
 }: {
   actionLoading: "commit" | "revise" | "card" | "delete" | null;
@@ -40,6 +42,8 @@ export function DraftReview({
   onOpenCardFlow: () => void;
   onRevise: () => void;
   onRevisionChange: (value: string) => void;
+  onStopAiOperation?: () => void;
+  stoppingAiOperation?: boolean;
   onViewChange: (view: DraftView) => void;
 }) {
   if (detailLoading) return <LoadingBlock text="读取草稿详情..." />;
@@ -56,6 +60,8 @@ export function DraftReview({
       onOpenCardFlow={onOpenCardFlow}
       onRevise={onRevise}
       onRevisionChange={onRevisionChange}
+      onStopAiOperation={onStopAiOperation}
+      stoppingAiOperation={stoppingAiOperation}
       onViewChange={onViewChange}
     />
   );
@@ -72,6 +78,8 @@ function DraftReviewLoaded({
   onOpenCardFlow,
   onRevise,
   onRevisionChange,
+  onStopAiOperation,
+  stoppingAiOperation,
   onViewChange,
 }: {
   actionLoading: "commit" | "revise" | "card" | "delete" | null;
@@ -84,11 +92,27 @@ function DraftReviewLoaded({
   onOpenCardFlow: () => void;
   onRevise: () => void;
   onRevisionChange: (value: string) => void;
+  onStopAiOperation?: () => void;
+  stoppingAiOperation?: boolean;
   onViewChange: (view: DraftView) => void;
 }) {
   const isOpenDraft = OPEN_STATUSES.has(detail.status);
   const isCommitted = detail.status === "committed" && Boolean(detail.committed_capture_id);
   const canCreateCard = detail.status === "committed" && Boolean(detail.committed_capture_id?.trim());
+  const hasFinalDraft = Boolean(detail.draft_text?.trim());
+  const needsFinalization = detail.status === "raw_extracted" && !hasFinalDraft;
+  const isFullTextIntent =
+    detail.user_intent === "verbatim_full_text" ||
+    (Array.isArray(detail.capture_intent.output_shape) &&
+      detail.capture_intent.output_shape.includes("full_text"));
+  const commitLabel = needsFinalization
+    ? isFullTextIntent
+      ? "全文高保真入库"
+      : "整理并入库"
+    : isFullTextIntent
+      ? "生成整理稿并入库"
+      : "确认入库";
+  const canStop = Boolean(onStopAiOperation) && ["commit", "revise", "card"].includes(actionLoading || "");
 
   return (
     <>
@@ -130,10 +154,21 @@ function DraftReviewLoaded({
                   disabled={!isOpenDraft || Boolean(actionLoading)}
                   loading={actionLoading === "commit"}
                 >
-                  确认入库
+                  {actionLoading === "commit" && needsFinalization ? "正在整理..." : commitLabel}
                 </ActionButton>
               </>
             )}
+            {canStop ? (
+              <button
+                type="button"
+                onClick={onStopAiOperation}
+                disabled={stoppingAiOperation}
+                className="inline-flex items-center gap-1.5 rounded-md border border-destructive/35 bg-background/60 px-3 py-2 text-sm text-destructive transition hover:bg-destructive/10 disabled:opacity-45"
+              >
+                {stoppingAiOperation ? <Loader2 className="h-4 w-4 animate-spin" /> : <SquareStop className="h-4 w-4" />}
+                {stoppingAiOperation ? "正在停止" : "停止"}
+              </button>
+            ) : null}
             {isCommitted && (
               <button
                 type="button"
@@ -190,11 +225,16 @@ function DraftReviewLoaded({
             这份材料已入库。需要调整内容时，请进入知识库编辑页。
           </div>
         )}
+        {needsFinalization && (
+          <div className="mb-3 rounded-md border border-primary/20 bg-primary/10 px-3 py-2 text-sm leading-6 text-foreground">
+            原文已提取，正在等待确认。确认后再生成高保真 Markdown 正文并入库。
+          </div>
+        )}
         {view === "draft" && (
-          detail.draft_text ? (
-            <Markdown content={detail.draft_text} />
+          hasFinalDraft ? (
+            <Markdown content={detail.draft_text || ""} enableKnowledgeOutlineLinks />
           ) : (
-            <PanelEmpty text="这个草稿还没有整理稿，可能只完成了原文提取。" />
+            <PanelEmpty text="原文已提取，尚未生成最终整理稿。" />
           )
         )}
         {view === "raw" && (
@@ -218,9 +258,9 @@ function DraftReviewLoaded({
               placeholder="写修改意见，比如：把第二部分展开，保留更多原文例子，删掉模板化表达..."
               className="min-h-20 flex-1 resize-none rounded-md border border-border bg-background/80 px-3 py-2 text-sm leading-6 text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
             />
-            <button
-              type="button"
-              onClick={onRevise}
+          <button
+            type="button"
+            onClick={onRevise}
               disabled={!revision.trim() || !isOpenDraft || Boolean(actionLoading)}
               className="inline-flex min-h-20 items-center justify-center gap-2 rounded-md border border-primary/45 bg-primary px-4 text-sm font-medium text-primary-foreground shadow-[0_14px_34px_-22px_rgba(47,111,95,0.65)] transition hover:brightness-105 disabled:border-border disabled:bg-muted/40 disabled:text-muted-foreground"
             >

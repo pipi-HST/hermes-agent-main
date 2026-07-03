@@ -1,4 +1,4 @@
-import { useMemo, type MouseEvent, type ReactNode } from "react";
+import { useMemo, type ClipboardEvent, type MouseEvent, type ReactNode } from "react";
 import {
   buildHeadingAnchors,
   linkKnowledgeOutlineMarkdown,
@@ -53,7 +53,11 @@ export function Markdown({
   const caret = streaming ? <StreamingCaret /> : null;
 
   return (
-    <div className="text-sm text-foreground leading-relaxed space-y-2">
+    <div
+      data-markdown-root
+      className="text-sm text-foreground leading-relaxed space-y-2"
+      onCopy={handleMarkdownCopy}
+    >
       {blocks.map((block, i) => (
         <Block
           key={i}
@@ -68,6 +72,22 @@ export function Markdown({
       {blocks.length === 0 && caret}
     </div>
   );
+}
+
+function handleMarkdownCopy(event: ClipboardEvent<HTMLDivElement>) {
+  const selectedText = window.getSelection()?.toString() ?? "";
+  if (!selectedText) return;
+  const normalized = normalizeCopiedKnowledgeOutlineLinks(selectedText);
+  if (normalized === selectedText) return;
+  event.clipboardData.setData("text/plain", normalized);
+  event.preventDefault();
+}
+
+function normalizeCopiedKnowledgeOutlineLinks(text: string): string {
+  const currentPagePrefix = `${window.location.origin}${window.location.pathname}#`;
+  return text
+    .replaceAll(currentPagePrefix, "#")
+    .replace(/https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/knowledge-library#/gi, "#");
 }
 
 function StreamingCaret() {
@@ -511,7 +531,10 @@ function headingIdsForBlocks(blocks: BlockNode[]): Array<string | null> {
 function handleLocalAnchorClick(event: MouseEvent<HTMLAnchorElement>) {
   const hash = event.currentTarget.getAttribute("href") ?? "";
   if (!hash.startsWith("#")) return;
-  const target = document.getElementById(decodeURIComponent(hash.slice(1)));
+  const id = decodeURIComponent(hash.slice(1));
+  const root = event.currentTarget.closest("[data-markdown-root]");
+  const target = Array.from((root ?? document).querySelectorAll<HTMLElement>("[id]"))
+    .find((element) => element.id === id);
   if (!target) return;
   event.preventDefault();
   target.scrollIntoView({ block: "start", behavior: "smooth" });

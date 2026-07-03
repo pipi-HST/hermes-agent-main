@@ -11,6 +11,7 @@ import type { ToolEntry } from "@/components/ToolCall";
 import { ResizableRail, readStoredWidth } from "@/components/ResizableRail";
 import {
   api,
+  createAiOperationId,
   type KnowledgeCaptureDraft,
   type KnowledgeGardenDraftResponse,
   type KnowledgeLibraryFolder,
@@ -25,18 +26,31 @@ import {
   extractSourceHints,
   initialKnowledgeChatState,
   knowledgeChatReducer,
+  toolProgressEventsFromSummary,
   type KnowledgeMessage,
 } from "@/lib/knowledgeChatState";
 import { cn } from "@/lib/utils";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 type DraftActionLoading = "commit" | "revise" | "card" | "delete" | null;
+type AiOperationState = { id: string; label: string; controller: AbortController; stopping: boolean } | null;
+
+function isAiCancelledResult(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return record.cancelled === true || record.status === "cancelled";
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
 
 import { WorkbenchSidebar } from "@/pages/knowledge-chat/WorkbenchSidebar";
 import { ReadingDraftReview } from "@/pages/knowledge-chat/ReadingDraftReview";
 import { DraftReview } from "@/pages/knowledge-chat/DraftReview";
 import {
   EditableCaptureWorkbench,
+  type EditableCardCommitStatus,
   type EditableCaptureStatus,
 } from "@/pages/knowledge-chat/EditableCaptureWorkbench";
 import { KnowledgeInspector } from "@/pages/knowledge-chat/Inspector";
@@ -212,6 +226,8 @@ export default function KnowledgeChatPage() {
   const [draftActionLoading, setDraftActionLoading] = useState<DraftActionLoading>(null);
   const [draftError, setDraftError] = useState("");
   const [draftNotice, setDraftNotice] = useState("");
+  const [aiOperation, setAiOperation] = useState<AiOperationState>(null);
+  const cancelledAiOperationsRef = useRef<Set<string>>(new Set());
   const [answerDrafts, setAnswerDrafts] = useState<KnowledgeReadingDraft[]>([]);
   const [answerDraftsLoading, setAnswerDraftsLoading] = useState(true);
   const [selectedAnswerDraftId, setSelectedAnswerDraftId] = useState("");
@@ -230,12 +246,14 @@ export default function KnowledgeChatPage() {
   const [editableContent, setEditableContent] = useState("");
   const [editableSource, setEditableSource] = useState("");
   const [editableTitle, setEditableTitle] = useState("");
+  const [editableTitleSource, setEditableTitleSource] = useState<"ai" | "user">("ai");
   const [editableSummary, setEditableSummary] = useState("");
   const [editableTagsText, setEditableTagsText] = useState("");
   const [editableFolder, setEditableFolder] = useState("Inbox");
   const [editableFolderSuggestionMode, setEditableFolderSuggestionMode] = useState<"existing" | "new">("existing");
   const [editableFolderSuggestionReason, setEditableFolderSuggestionReason] = useState("");
   const [editableGenerateCard, setEditableGenerateCard] = useState(false);
+  const [editableCardCommitStatus, setEditableCardCommitStatus] = useState<EditableCardCommitStatus>("idle");
   const [editableCardReason, setEditableCardReason] = useState("");
   const [editableCardSuggestionsText, setEditableCardSuggestionsText] = useState("");
   const [editableProgressMessage, setEditableProgressMessage] = useState("");
@@ -270,6 +288,37 @@ export default function KnowledgeChatPage() {
     () => Array.from(new Set(["Inbox", ...libraryFolders.map((folder) => folder.path).filter(Boolean)])).slice(0, 80),
     [libraryFolders],
   );
+
+  const beginAiOperation = useCallback((label: string) => {
+    const operationId = createAiOperationId(label);
+    const controller = new AbortController();
+    cancelledAiOperationsRef.current.delete(operationId);
+    setAiOperation({ id: operationId, label, controller, stopping: false });
+    return {
+      operationId,
+      signal: controller.signal,
+      isCancelled: () => controller.signal.aborted || cancelledAiOperationsRef.current.has(operationId),
+      finish: () => {
+        setAiOperation((current) => (current?.id === operationId ? null : current));
+        cancelledAiOperationsRef.current.delete(operationId);
+      },
+    };
+  }, []);
+
+  const stopAiOperation = useCallback(() => {
+    if (!aiOperation || aiOperation.stopping) return;
+    cancelledAiOperationsRef.current.add(aiOperation.id);
+    aiOperation.controller.abort();
+    setAiOperation(null);
+    setDraftNotice("已请求停止。你可以继续编辑或重试。");
+    setEditableProgressMessage("已请求停止，可继续编辑或重试");
+    setEditableStatus((current) => (
+      current === "organizing" ? "editing" : current === "committing" ? "ready_to_commit" : current
+    ));
+    void api.cancelKnowledgeAiOperation(aiOperation.id).catch((error) => {
+      setDraftError(error instanceof Error ? error.message : String(error));
+    });
+  }, [aiOperation]);
 
   const loadDrafts = useCallback(async (options?: { selectLatestOpen?: boolean }) => {
     setDraftsLoading(true);
@@ -713,11 +762,16 @@ export default function KnowledgeChatPage() {
 
   const commitDraftById = useCallback(async (draftId: string, title?: string): Promise<boolean> => {
     if (!draftId) return false;
+    const operation = beginAiOperation("capture-commit");
     setDraftActionLoading("commit");
     setDraftError("");
     setDraftNotice("");
     try {
-      await api.commitKnowledgeCaptureDraft(draftId);
+      const result = await api.commitKnowledgeCaptureDraft(draftId, { operationId: operation.operationId });
+      if (isAiCancelledResult(result)) {
+        setDraftNotice("已停止。草稿仍保留，可继续修改或重试入库。");
+        return false;
+      }
       setDraftNotice(title ? `已入库到知识库：《${title}》。` : "已入库到知识库，草稿状态已刷新。");
       await loadDrafts();
       await loadDraftDetail(draftId);
@@ -727,8 +781,9 @@ export default function KnowledgeChatPage() {
       return false;
     } finally {
       setDraftActionLoading(null);
+      operation.finish();
     }
-  }, [loadDraftDetail, loadDrafts]);
+  }, [beginAiOperation, loadDraftDetail, loadDrafts]);
 
   const deleteDraftById = useCallback(async (draftId: string, title?: string): Promise<boolean> => {
     if (!draftId) return false;
@@ -775,6 +830,7 @@ export default function KnowledgeChatPage() {
       .find((item) => item.role === "user");
     const sourceHints = message.sourceHints ?? [];
 
+    const operation = beginAiOperation("answer-draft");
     setAnswerDraftActionLoading("create");
     setAnswerDraftLoading(true);
     setDraftError("");
@@ -802,7 +858,11 @@ export default function KnowledgeChatPage() {
           path: source.path || source.filePath,
         })),
         answer_source: sourceHints.length ? "latest_rag_full_answer" : "provided",
-      });
+      }, { operationId: operation.operationId });
+      if (isAiCancelledResult(result)) {
+        setDraftNotice("已停止。回答沉淀草稿未生成。");
+        return;
+      }
       const draftId =
         typeof result.meta?.reading_draft_id === "string"
           ? result.meta.reading_draft_id
@@ -821,16 +881,22 @@ export default function KnowledgeChatPage() {
     } finally {
       setAnswerDraftActionLoading(null);
       setAnswerDraftLoading(false);
+      operation.finish();
     }
-  }, [loadAnswerDrafts, state.messages, state.sessionId]);
+  }, [beginAiOperation, loadAnswerDrafts, state.messages, state.sessionId]);
 
   const commitAnswerDraft = useCallback(async () => {
     if (!answerDraftDetail) return;
+    const operation = beginAiOperation("reading-commit");
     setAnswerDraftActionLoading("commit");
     setDraftError("");
     setDraftNotice("");
     try {
-      await api.commitKnowledgeReadingDraft(answerDraftDetail.id);
+      const result = await api.commitKnowledgeReadingDraft(answerDraftDetail.id, { operationId: operation.operationId });
+      if (isAiCancelledResult(result)) {
+        setDraftNotice("已停止。草稿仍保留，可继续修改或重试保存。");
+        return;
+      }
       setDraftNotice(`已保存：《${answerDraftDetail.title || "回答沉淀草稿"}》。`);
       const payload = await api.getKnowledgeReadingDraft(answerDraftDetail.id);
       setAnswerDraftDetail(payload.draft);
@@ -840,16 +906,26 @@ export default function KnowledgeChatPage() {
       setDraftError(error instanceof Error ? error.message : String(error));
     } finally {
       setAnswerDraftActionLoading(null);
+      operation.finish();
     }
-  }, [answerDraftDetail, loadAnswerDrafts, loadDrafts]);
+  }, [answerDraftDetail, beginAiOperation, loadAnswerDrafts, loadDrafts]);
 
   const reviseAnswerDraft = useCallback(async () => {
     if (!answerDraftDetail || !answerRevision.trim()) return;
+    const operation = beginAiOperation("reading-revise");
     setAnswerDraftActionLoading("revise");
     setDraftError("");
     setDraftNotice("");
     try {
-      await api.reviseKnowledgeReadingDraft(answerDraftDetail.id, answerRevision.trim());
+      const result = await api.reviseKnowledgeReadingDraft(
+        answerDraftDetail.id,
+        answerRevision.trim(),
+        { operationId: operation.operationId },
+      );
+      if (isAiCancelledResult(result)) {
+        setDraftNotice("已停止。草稿内容未被覆盖。");
+        return;
+      }
       setDraftNotice("已修改文稿草稿，正在刷新。");
       const payload = await api.getKnowledgeReadingDraft(answerDraftDetail.id);
       setAnswerDraftDetail(payload.draft);
@@ -859,8 +935,9 @@ export default function KnowledgeChatPage() {
       setDraftError(error instanceof Error ? error.message : String(error));
     } finally {
       setAnswerDraftActionLoading(null);
+      operation.finish();
     }
-  }, [answerDraftDetail, answerRevision, loadAnswerDrafts]);
+  }, [answerDraftDetail, answerRevision, beginAiOperation, loadAnswerDrafts]);
 
   const convertAnswerDraftToCard = useCallback(async () => {
     if (!answerDraftDetail) return;
@@ -869,11 +946,19 @@ export default function KnowledgeChatPage() {
       setDraftError("只有已入库的 Capture Note 可以转换成知识卡片。");
       return;
     }
+    const operation = beginAiOperation("reading-card");
     setAnswerDraftActionLoading("card");
     setDraftError("");
     setDraftNotice("");
     try {
-      const result = await api.createKnowledgeGardenDraft({ capture_ids: [captureId] });
+      const result = await api.createKnowledgeGardenDraft(
+        { capture_ids: [captureId] },
+        { operationId: operation.operationId },
+      );
+      if (isAiCancelledResult(result)) {
+        setDraftNotice("已停止。知识卡片未生成。");
+        return;
+      }
       if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
         throw new Error(gardenDraftError(result));
       }
@@ -883,8 +968,9 @@ export default function KnowledgeChatPage() {
       setDraftError(error instanceof Error ? error.message : String(error));
     } finally {
       setAnswerDraftActionLoading(null);
+      operation.finish();
     }
-  }, [answerDraftDetail]);
+  }, [answerDraftDetail, beginAiOperation]);
 
   const deleteAnswerDraftById = useCallback(async (draftId: string, title?: string): Promise<boolean> => {
     if (!draftId) return false;
@@ -1065,15 +1151,17 @@ export default function KnowledgeChatPage() {
   }, [attachments, canSend, gw, handleDraftCommand, input, nextId, reconcileCurrentSession, researchMode, scheduleHistoryReconcile, state.sessionId]);
 
   const stopGeneration = useCallback(() => {
-    if (!state.sessionId || !state.running) return;
+    if (!state.sessionId || !state.running || state.interruptRequested) return;
+    dispatch({ type: "interrupt_requested" });
     gw.request("session.interrupt", { session_id: state.sessionId }, 10_000)
       .then(() => {
+        void loadDrafts({ selectLatestOpen: true });
         scheduleHistoryReconcile("manual-interrupt", 250);
       })
       .catch((error: Error) => {
         dispatch({ type: "error", message: error.message });
       });
-  }, [gw, scheduleHistoryReconcile, state.running, state.sessionId]);
+  }, [gw, loadDrafts, scheduleHistoryReconcile, state.interruptRequested, state.running, state.sessionId]);
 
   const reconnect = useCallback(() => {
     dispatch({ type: "reset_error" });
@@ -1153,6 +1241,7 @@ export default function KnowledgeChatPage() {
     setEditableDraft(draft);
     setEditableContent(draft.draft_text || options.fallbackContent || "");
     setEditableTitle(draft.title || "");
+    setEditableTitleSource(editableDraftTitleSource(draft));
     setEditableSummary(draft.summary || "");
     setEditableTagsText((draft.tags || []).join(", "));
     setEditableFolder(folderPath);
@@ -1179,6 +1268,7 @@ export default function KnowledgeChatPage() {
     reason,
     suggestionsText,
     onStage,
+    operationId,
   }: {
     draft: KnowledgeCaptureDraft;
     commitResult: Record<string, unknown>;
@@ -1186,6 +1276,7 @@ export default function KnowledgeChatPage() {
     reason: string;
     suggestionsText: string;
     onStage?: (message: string) => void;
+    operationId?: string;
   }): Promise<{ generated: boolean; error?: string }> => {
     if (!shouldGenerate) return { generated: false };
     const captureId = (
@@ -1204,7 +1295,10 @@ export default function KnowledgeChatPage() {
         title: cardHint.title,
         card_kind: cardHint.card_kind,
         instruction: buildGardenDraftInstruction(reason, suggestionsText),
-      });
+      }, operationId ? { operationId } : undefined);
+      if (isAiCancelledResult(result)) {
+        return { generated: false, error: "已停止。" };
+      }
       if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
         throw new Error(gardenDraftError(result));
       }
@@ -1230,9 +1324,10 @@ export default function KnowledgeChatPage() {
     setDraftNotice("");
     try {
       const result = editableDraft?.id
-        ? await api.updateKnowledgeEditableCaptureDraft(editableDraft.id, {
+          ? await api.updateKnowledgeEditableCaptureDraft(editableDraft.id, {
             content,
             title: editableTitle,
+            title_source: editableTitleSource,
             summary: editableSummary,
             tags: parseTagsText(editableTagsText),
             folder_path: folderPath,
@@ -1254,6 +1349,7 @@ export default function KnowledgeChatPage() {
             source: editableSource,
             source_type: "manual",
             title: editableTitle,
+            title_source: editableTitleSource,
             folder_path: folderPath,
             organize: false,
             existing_folders: visibleFolderPaths,
@@ -1293,6 +1389,7 @@ export default function KnowledgeChatPage() {
     editableSummary,
     editableTagsText,
     editableTitle,
+    editableTitleSource,
     loadDrafts,
     visibleFolderPaths,
   ]);
@@ -1300,79 +1397,119 @@ export default function KnowledgeChatPage() {
   const organizeEditableCaptureDraft = useCallback(async (): Promise<KnowledgeCaptureDraft | null> => {
     const content = editableContent.trim();
     if (!content) return null;
+    const operation = beginAiOperation("editable-organize");
     setEditableStatus("organizing");
-    setEditableProgressMessage("正在整理正文...");
+    setEditableCardCommitStatus("idle");
+    setEditableProgressMessage("正在生成 AI 建议...");
     setEditableError("");
     setDraftError("");
     setDraftNotice("");
     try {
       const result = editableDraft?.id
-        ? await api.updateKnowledgeEditableCaptureDraft(editableDraft.id, {
+          ? await api.updateKnowledgeEditableCaptureDraft(editableDraft.id, {
             content,
             title: editableTitle,
+            title_source: editableTitleSource,
             folder_path: editableFolder,
             organize: true,
             existing_folders: visibleFolderPaths,
-          })
+          }, { operationId: operation.operationId, signal: operation.signal })
         : await api.createKnowledgeEditableCaptureDraft({
             content,
             source: editableSource,
             source_type: "manual",
             title: editableTitle,
+            title_source: editableTitleSource,
             folder_path: editableFolder,
             organize: true,
             existing_folders: visibleFolderPaths,
-          });
+          }, { operationId: operation.operationId, signal: operation.signal });
+      if (operation.isCancelled() || isAiCancelledResult(result)) {
+        setEditableStatus("editing");
+        setEditableProgressMessage("已停止，正文未被 AI 建议覆盖");
+        setDraftNotice("已停止。你可以继续编辑或重新生成 AI 建议。");
+        return null;
+      }
       const draftId = bridgeMetaString(result, "draft_id") || editableDraft?.id || "";
       if (!draftId) throw new Error("没有返回草稿编号。");
-      setEditableProgressMessage("正在生成标题摘要标签...");
       const payload = await api.getKnowledgeCaptureDraft(draftId);
-      setEditableProgressMessage("正在生成文件夹和卡片建议...");
+      if (operation.isCancelled()) return null;
       applyEditableDraftSuggestion(payload.draft, {
         fallbackContent: content,
         fallbackFolder: editableFolder,
       });
       setSelectedDraftId(draftId);
       setSelection({ type: "draft", draftId });
+      if (editableAiSuggestionsStatus(payload.draft) === "failed") {
+        setEditableStatus("editing");
+        setEditableProgressMessage("AI 建议生成失败，可手动填写或重试");
+        setDraftNotice("AI 建议生成失败，正文已保存为草稿。");
+        await loadDrafts();
+        return payload.draft;
+      }
       setEditableStatus("ready_to_commit");
       setEditableProgressMessage("整理完成，可以入库");
       setDraftNotice("已生成 AI 建议，可以继续编辑或入库。");
       await loadDrafts();
       return payload.draft;
     } catch (error) {
+      if (operation.isCancelled() || isAbortError(error)) {
+        setEditableStatus("editing");
+        setEditableProgressMessage("已请求停止，可继续编辑或重试");
+        setDraftNotice("已请求停止。你可以继续编辑或重新生成 AI 建议。");
+        return null;
+      }
       const message = error instanceof Error ? error.message : String(error);
       setEditableError(message);
       setEditableStatus("error");
       setEditableProgressMessage("");
       return null;
+    } finally {
+      operation.finish();
     }
   }, [
     applyEditableDraftSuggestion,
+    beginAiOperation,
     editableContent,
     editableDraft,
     editableFolder,
     editableSource,
     editableTitle,
+    editableTitleSource,
     loadDrafts,
     visibleFolderPaths,
   ]);
 
   const commitEditableCaptureDraft = useCallback(async () => {
+    const operation = beginAiOperation("editable-commit");
     setEditableStatus("committing");
+    setEditableCardCommitStatus("idle");
     setEditableProgressMessage("正在保存当前修改...");
     setEditableError("");
     setDraftError("");
     setDraftNotice("");
     try {
       const targetFolder = await ensureEditableFolder(editableFolder);
+      if (operation.isCancelled()) return;
       if (targetFolder !== editableFolder) setEditableFolder(targetFolder);
       const draft = await saveEditableCaptureDraftSnapshot({ folderPath: targetFolder });
+      if (operation.isCancelled()) return;
       if (!draft) return;
       setEditableStatus("committing");
       setEditableProgressMessage("正在写入知识库文件...");
-      const commitResult = await api.commitKnowledgeCaptureDraft(draft.id);
+      const commitResult = await api.commitKnowledgeCaptureDraft(draft.id, {
+        operationId: operation.operationId,
+        signal: operation.signal,
+      });
+      if (operation.isCancelled() || isAiCancelledResult(commitResult)) {
+        setEditableStatus("ready_to_commit");
+        setEditableProgressMessage("已停止，草稿仍保留");
+        setDraftNotice("已停止。草稿仍保留，可继续编辑或重试入库。");
+        return;
+      }
       setEditableProgressMessage("正在重建索引和大纲...");
       const payload = await api.getKnowledgeCaptureDraft(draft.id);
+      if (operation.isCancelled()) return;
       applyEditableDraftSuggestion(payload.draft, {
         fallbackContent: "",
         fallbackFolder: targetFolder,
@@ -1380,6 +1517,7 @@ export default function KnowledgeChatPage() {
       setDraftDetail(payload.draft);
       setSelectedDraftId(draft.id);
       setSelection({ type: "draft", draftId: draft.id });
+      setEditableCardCommitStatus(editableGenerateCard ? "generating" : "skipped");
       const cardResult = await maybeGenerateGardenCardAfterCommit({
         draft: payload.draft,
         commitResult,
@@ -1387,8 +1525,11 @@ export default function KnowledgeChatPage() {
         reason: editableCardReason,
         suggestionsText: editableCardSuggestionsText,
         onStage: setEditableProgressMessage,
+        operationId: operation.operationId,
       });
+      if (operation.isCancelled()) return;
       setEditableStatus("committed");
+      setEditableCardCommitStatus(cardResult.generated ? "generated" : cardResult.error ? "failed" : "skipped");
       setEditableProgressMessage("入库完成");
       if (cardResult.generated) {
         setDraftNotice(`已入库并生成知识卡片：《${payload.draft.title || "未命名草稿"}》。`);
@@ -1399,13 +1540,22 @@ export default function KnowledgeChatPage() {
       }
       await loadDrafts();
     } catch (error) {
+      if (operation.isCancelled() || isAbortError(error)) {
+        setEditableStatus("ready_to_commit");
+        setEditableProgressMessage("已请求停止，可继续编辑或重试");
+        setDraftNotice("已请求停止。草稿仍保留，可继续编辑或重试入库。");
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       setEditableError(message);
       setEditableStatus("error");
       setEditableProgressMessage("");
+    } finally {
+      operation.finish();
     }
   }, [
     applyEditableDraftSuggestion,
+    beginAiOperation,
     editableCardReason,
     editableCardSuggestionsText,
     editableFolder,
@@ -1557,11 +1707,20 @@ export default function KnowledgeChatPage() {
 
   const reviseDraft = useCallback(async () => {
     if (!draftDetail || !revision.trim()) return;
+    const operation = beginAiOperation("capture-revise");
     setDraftActionLoading("revise");
     setDraftError("");
     setDraftNotice("");
     try {
-      await api.reviseKnowledgeCaptureDraft(draftDetail.id, revision.trim());
+      const result = await api.reviseKnowledgeCaptureDraft(
+        draftDetail.id,
+        revision.trim(),
+        { operationId: operation.operationId },
+      );
+      if (isAiCancelledResult(result)) {
+        setDraftNotice("已停止。草稿内容未被覆盖。");
+        return;
+      }
       setDraftNotice("已提交修改，正在刷新草稿。");
       await loadDrafts();
       await loadDraftDetail(draftDetail.id);
@@ -1569,8 +1728,9 @@ export default function KnowledgeChatPage() {
       setDraftError(error instanceof Error ? error.message : String(error));
     } finally {
       setDraftActionLoading(null);
+      operation.finish();
     }
-  }, [draftDetail, loadDraftDetail, loadDrafts, revision]);
+  }, [beginAiOperation, draftDetail, loadDraftDetail, loadDrafts, revision]);
 
   const editCommittedCaptureInLibrary = useCallback(() => {
     const captureId = draftDetail?.committed_capture_id?.trim() ?? "";
@@ -1586,11 +1746,19 @@ export default function KnowledgeChatPage() {
       setDraftError("请先入库到知识库后再转换成知识卡片。");
       return;
     }
+    const operation = beginAiOperation("capture-card");
     setDraftActionLoading("card");
     setDraftError("");
     setDraftNotice("");
     try {
-      const result = await api.createKnowledgeGardenDraft({ capture_ids: [captureId] });
+      const result = await api.createKnowledgeGardenDraft(
+        { capture_ids: [captureId] },
+        { operationId: operation.operationId },
+      );
+      if (isAiCancelledResult(result)) {
+        setDraftNotice("已停止。知识卡片未生成。");
+        return;
+      }
       if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
         throw new Error(gardenDraftError(result));
       }
@@ -1600,8 +1768,9 @@ export default function KnowledgeChatPage() {
       setDraftError(error instanceof Error ? error.message : String(error));
     } finally {
       setDraftActionLoading(null);
+      operation.finish();
     }
-  }, [draftDetail]);
+  }, [beginAiOperation, draftDetail]);
 
   const composerPlaceholder =
     mode === "answer_draft_review"
@@ -1643,7 +1812,7 @@ export default function KnowledgeChatPage() {
               active={state.connection === "open"}
             />
             {state.running && (
-              <StatusPill icon={Loader2} label="思考中" active spin />
+              <StatusPill icon={Loader2} label={state.interruptRequested ? "正在停止" : "思考中"} active spin />
             )}
             {latestOpenDraft && (
               <button
@@ -1758,6 +1927,8 @@ export default function KnowledgeChatPage() {
               onDelete={() => void deleteAnswerDraftById(answerDraftDetail?.id ?? "", answerDraftDetail?.title)}
               onRevise={() => void reviseAnswerDraft()}
               onRevisionChange={setAnswerRevision}
+              onStopAiOperation={stopAiOperation}
+              stoppingAiOperation={Boolean(aiOperation?.stopping)}
             />
           ) : mode === "draft_review" ? (
             <DraftReview
@@ -1772,6 +1943,8 @@ export default function KnowledgeChatPage() {
               onOpenCardFlow={openCardFlow}
               onRevise={() => void reviseDraft()}
               onRevisionChange={setRevision}
+              onStopAiOperation={stopAiOperation}
+              stoppingAiOperation={Boolean(aiOperation?.stopping)}
               onViewChange={setDraftView}
             />
           ) : mode === "editable_capture" ? (
@@ -1785,6 +1958,7 @@ export default function KnowledgeChatPage() {
               folderSuggestionReason={editableFolderSuggestionReason}
               folderOptions={visibleFolderPaths.map((path) => ({ path, name: path }))}
               folderPath={editableFolder}
+              cardCommitStatus={editableCardCommitStatus}
               generateCard={editableGenerateCard}
               progressMessage={editableProgressMessage}
               source={editableSource}
@@ -1799,6 +1973,7 @@ export default function KnowledgeChatPage() {
                 setEditableContent(value);
                 if (editableStatus !== "committed") {
                   setEditableStatus(value.trim() ? "editing" : "empty");
+                  setEditableCardCommitStatus("idle");
                 }
               }}
               onFolderChange={setEditableFolder}
@@ -1806,12 +1981,14 @@ export default function KnowledgeChatPage() {
               onFolderSuggestionReasonChange={setEditableFolderSuggestionReason}
               onGenerateCardChange={setEditableGenerateCard}
               onOrganizeDraft={() => void organizeEditableCaptureDraft()}
-              onSaveDraft={() => void saveEditableCaptureDraftSnapshot()}
+              onStopAiOperation={stopAiOperation}
+              stoppingAiOperation={Boolean(aiOperation?.stopping)}
               onSourceChange={setEditableSource}
               onSummaryChange={setEditableSummary}
               onTagsTextChange={setEditableTagsText}
               onTitleChange={(value) => {
                 setEditableTitle(value);
+                setEditableTitleSource("user");
                 if (editableStatus !== "committed") setEditableStatus("editing");
               }}
             />
@@ -1826,6 +2003,7 @@ export default function KnowledgeChatPage() {
               input={input}
               messages={state.messages}
               researchMode={researchMode}
+              interruptRequested={state.interruptRequested}
               running={state.running}
               transcriptRef={transcriptRef}
               uploading={uploading}
@@ -2034,6 +2212,28 @@ function formatEditableCardSuggestions(value: unknown): string {
     .join("\n");
 }
 
+function editableAiSuggestionsStatus(draft: KnowledgeCaptureDraft): "generated" | "failed" | "not_generated" {
+  const value = String(draft.capture_intent?.ai_suggestions_status || "");
+  if (value === "generated" || value === "failed") return value;
+  return "not_generated";
+}
+
+function editableDraftTitleSource(draft: KnowledgeCaptureDraft): "ai" | "user" {
+  const source = draft.capture_intent?.title_source === "user" ? "user" : "ai";
+  if (
+    source === "user" &&
+    editableAiSuggestionsStatus(draft) !== "generated" &&
+    isGenericEditableTitle(draft.title || "")
+  ) {
+    return "ai";
+  }
+  return source;
+}
+
+function isGenericEditableTitle(title: string): boolean {
+  return /^(?:整理稿|文字稿|未命名|无标题)(?:[ _-]?(?:副本|copy)|[（(]\d+[）)]|[ _-]?\d+)?$/i.test(title.trim());
+}
+
 function parseCardSuggestionsText(text: string): Array<{ title: string; card_kind: string; reason: string }> {
   return text
     .split("\n")
@@ -2103,6 +2303,7 @@ function gatewayMessagesToWorkbench(messages: GatewayResumeMessage[]): {
         name: message.name || message.tool_name || "tool",
         context: message.context,
         summary: summary || undefined,
+        progressEvents: toolProgressEventsFromSummary(summary, now - (messages.length - index) * 1000),
         status: "done",
         startedAt: 0,
       });

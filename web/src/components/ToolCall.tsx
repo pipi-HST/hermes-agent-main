@@ -70,7 +70,7 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
   // This lets a running tool flip to expanded automatically when it errors,
   // without mirroring state in an effect.
   const [userOverride, setUserOverride] = useState<boolean | null>(null);
-  const open = userOverride ?? (tool.status === "error" || (isResearchTool && (tool.status === "running" || hasProgressEvents)));
+  const open = userOverride ?? (tool.status === "error" || tool.status === "running" || hasProgressEvents);
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

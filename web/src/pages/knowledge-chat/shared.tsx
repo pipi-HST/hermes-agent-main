@@ -238,7 +238,7 @@ export function answerDraftTypeLabel(type: string): string {
 export function statusLabel(status: string): string {
   return ({
     open: "待保存",
-    raw_extracted: "已提取",
+    raw_extracted: "待确认",
     draft_ready: "待审阅",
     revision_requested: "修改中",
     draft_incomplete: "未完成",

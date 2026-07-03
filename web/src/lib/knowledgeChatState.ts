@@ -35,6 +35,7 @@ export interface KnowledgeChatState {
   connection: ConnectionState;
   sessionId: string | null;
   running: boolean;
+  interruptRequested: boolean;
   messages: KnowledgeMessage[];
   draftAssistant: KnowledgeMessage | null;
   tools: ToolEntry[];
@@ -51,6 +52,7 @@ export type KnowledgeChatAction =
   | { type: "connection"; connection: ConnectionState }
   | { type: "session_created"; sessionId: string }
   | { type: "submit_user"; id: string; text: string; createdAt: number }
+  | { type: "interrupt_requested" }
   | { type: "message_start"; id: string; createdAt: number }
   | { type: "message_delta"; text: string }
   | {
@@ -68,6 +70,7 @@ export type KnowledgeChatAction =
       summary?: string;
       error?: string;
       inlineDiff?: string;
+      progressEvents?: ToolEntry["progressEvents"];
       answerText?: string;
       knowledgeSources?: Array<Record<string, unknown>>;
       sourceMap?: Array<Record<string, unknown>>;
@@ -92,6 +95,7 @@ export const initialKnowledgeChatState: KnowledgeChatState = {
   connection: "idle",
   sessionId: null,
   running: false,
+  interruptRequested: false,
   messages: [],
   draftAssistant: null,
   tools: [],
@@ -113,12 +117,13 @@ export function knowledgeChatReducer(
       return { ...state, connection: action.connection };
 
     case "session_created":
-      return { ...state, sessionId: action.sessionId };
+      return { ...state, sessionId: action.sessionId, interruptRequested: false };
 
     case "submit_user":
       return {
         ...state,
         running: true,
+        interruptRequested: false,
         error: null,
         toolSourceHints: [],
         toolCandidateSourceHints: [],
@@ -136,6 +141,9 @@ export function knowledgeChatReducer(
           },
         ],
       };
+
+    case "interrupt_requested":
+      return { ...state, interruptRequested: true };
 
     case "message_start":
       return {
@@ -193,6 +201,7 @@ export function knowledgeChatReducer(
       return {
         ...state,
         running: false,
+        interruptRequested: false,
         currentToolName: null,
         draftAssistant: null,
         messages: [...state.messages, message],
@@ -255,6 +264,10 @@ export function knowledgeChatReducer(
               error: action.error,
               inline_diff: action.inlineDiff,
               completedAt: Date.now(),
+              progressEvents: mergeToolProgressEvents(
+                tool.progressEvents,
+                action.progressEvents ?? toolProgressEventsFromSummary(action.summary),
+              ),
             }
           : tool,
       );
@@ -305,6 +318,7 @@ export function knowledgeChatReducer(
       return {
         ...state,
         running: false,
+        interruptRequested: false,
         currentToolName: null,
         draftAssistant: null,
         messages,
@@ -322,6 +336,7 @@ export function knowledgeChatReducer(
       return {
         ...state,
         running: false,
+        interruptRequested: false,
         draftAssistant: null,
         messages: [],
         sourceHints: [],
@@ -334,7 +349,7 @@ export function knowledgeChatReducer(
       };
 
     case "error":
-      return { ...state, error: action.message, running: false, currentToolName: null };
+      return { ...state, error: action.message, running: false, interruptRequested: false, currentToolName: null };
 
     case "reset_error":
       return { ...state, error: null };
@@ -443,6 +458,124 @@ export function extractFullAnswerText(
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return "";
+}
+
+export function toolProgressEventsFromSummary(
+  summary: string | undefined,
+  at: number = Date.now(),
+): ToolEntry["progressEvents"] {
+  if (!summary?.trim()) return undefined;
+  const events = extractStructuredPayloads(summary).flatMap((payload) => {
+    const meta = objectRecord(payload.meta);
+    const items: NonNullable<ToolEntry["progressEvents"]> = [];
+    const intent = stringField(payload.intent) || stringField(meta.intent);
+    const status = stringField(payload.status);
+    const draftStatus = stringField(meta.draft_status);
+    const title = stringField(meta.title);
+    const wordCount = numberField(meta.word_count);
+    const captureIntent = objectRecord(meta.capture_intent);
+    const materialIntent = stringField(captureIntent.material_intent);
+    const outputShape = Array.isArray(captureIntent.output_shape)
+      ? captureIntent.output_shape.map(String).join(", ")
+      : "";
+
+    if (intent || status) {
+      items.push({
+        preview: ["工具合同", intent, status ? `状态 ${status}` : ""].filter(Boolean).join(" · "),
+        stage: "tool_contract",
+        status: status === "error" ? "warning" : "completed",
+        at,
+      });
+    }
+    if (title || draftStatus || wordCount !== null) {
+      items.push({
+        preview: [
+          title ? `标题：${title}` : "",
+          draftStatus ? `草稿状态：${draftStatus}` : "",
+          wordCount !== null ? `${wordCount} 字` : "",
+        ].filter(Boolean).join(" · "),
+        stage: "draft_state",
+        status: "completed",
+        at: at + items.length,
+      });
+    }
+    if (materialIntent || outputShape) {
+      items.push({
+        preview: [
+          materialIntent ? `材料意图：${materialIntent}` : "",
+          outputShape ? `输出形态：${outputShape}` : "",
+        ].filter(Boolean).join(" · "),
+        stage: "capture_intent",
+        status: "completed",
+        at: at + items.length,
+      });
+    }
+
+    const timings = objectRecord(meta.stage_timings_ms);
+    for (const [key, value] of Object.entries(timings)) {
+      const ms = numberField(value);
+      if (ms === null || ms <= 0) continue;
+      items.push({
+        preview: `${captureStageLabel(key)}：${formatDuration(ms)}`,
+        stage: key,
+        status: "completed",
+        at: at + items.length,
+      });
+    }
+
+    const artifacts = Array.isArray(payload.durable_artifacts) ? payload.durable_artifacts.length : 0;
+    const actions = Array.isArray(payload.next_actions) ? payload.next_actions.length : 0;
+    if (artifacts || actions) {
+      items.push({
+        preview: [`生成材料 ${artifacts} 个`, `可选动作 ${actions} 个`].join(" · "),
+        stage: "tool_outputs",
+        status: "completed",
+        at: at + items.length,
+      });
+    }
+    return items;
+  });
+  return events.length ? events.slice(-20) : undefined;
+}
+
+function mergeToolProgressEvents(
+  existing: ToolEntry["progressEvents"],
+  next: ToolEntry["progressEvents"],
+): ToolEntry["progressEvents"] {
+  if (!next?.length) return existing;
+  return [...(existing ?? []), ...next].slice(-20);
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function numberField(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
+function captureStageLabel(key: string): string {
+  const labels: Record<string, string> = {
+    extract_clean: "提取与清洗",
+    intent_planning: "意图规划",
+    draft_create: "创建草稿",
+    finalize_for_commit: "确认前整理",
+    revision_llm: "生成整理稿",
+    metadata_summary: "生成摘要标签",
+    repo_update: "保存状态",
+    total: "总耗时",
+  };
+  return labels[key] ?? key;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`;
 }
 
 function mergeSourceHints(

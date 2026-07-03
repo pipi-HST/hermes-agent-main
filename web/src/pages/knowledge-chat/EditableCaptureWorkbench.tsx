@@ -1,4 +1,4 @@
-import { CheckCircle2, Loader2, NotebookPen, Save, Trash2, UploadCloud } from "lucide-react";
+import { CheckCircle2, Loader2, NotebookPen, SquareStop, Trash2, UploadCloud } from "lucide-react";
 import type { KnowledgeCaptureDraft } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ActionButton, PanelEmpty, StatusBadge, TinyPill } from "./shared";
@@ -13,6 +13,8 @@ export type EditableCaptureStatus =
   | "committed"
   | "error";
 
+export type EditableCardCommitStatus = "idle" | "generating" | "generated" | "skipped" | "failed";
+
 export function EditableCaptureWorkbench({
   content,
   draft,
@@ -23,6 +25,7 @@ export function EditableCaptureWorkbench({
   folderSuggestionReason = "",
   folderOptions,
   folderPath,
+  cardCommitStatus = "idle",
   generateCard = false,
   progressMessage = "",
   source,
@@ -39,7 +42,8 @@ export function EditableCaptureWorkbench({
   onFolderSuggestionReasonChange,
   onGenerateCardChange,
   onOrganizeDraft,
-  onSaveDraft,
+  onStopAiOperation,
+  stoppingAiOperation = false,
   onDeleteDraft,
   onSourceChange,
   onSummaryChange,
@@ -55,6 +59,7 @@ export function EditableCaptureWorkbench({
   folderSuggestionReason?: string;
   folderOptions?: Array<{ path: string; name: string }>;
   folderPath?: string;
+  cardCommitStatus?: EditableCardCommitStatus;
   generateCard?: boolean;
   progressMessage?: string;
   source: string;
@@ -71,7 +76,8 @@ export function EditableCaptureWorkbench({
   onFolderSuggestionReasonChange?: (value: string) => void;
   onGenerateCardChange?: (value: boolean) => void;
   onOrganizeDraft: () => void;
-  onSaveDraft: () => void;
+  onStopAiOperation?: () => void;
+  stoppingAiOperation?: boolean;
   onDeleteDraft?: () => void;
   onSourceChange: (value: string) => void;
   onSummaryChange?: (value: string) => void;
@@ -83,10 +89,12 @@ export function EditableCaptureWorkbench({
   const committing = status === "committing";
   const locked = status === "committed";
   const busy = saving || organizing || committing;
+  const canStop = (organizing || committing) && Boolean(onStopAiOperation);
   const canSave = Boolean(content.trim()) && !busy && !locked;
   const canCommit = Boolean(draft?.id) && !busy && status !== "committed";
   const canDeleteDraft = Boolean(draft?.id) && Boolean(onDeleteDraft) && !busy && !locked;
   const titleSource = String(draft?.capture_intent?.title_source || "ai");
+  const aiSuggestionsStatus = editableAiSuggestionsStatus(draft);
 
   return (
     <>
@@ -106,21 +114,12 @@ export function EditableCaptureWorkbench({
           <div className="flex shrink-0 flex-wrap gap-2">
             <button
               type="button"
-              onClick={onSaveDraft}
-              disabled={!canSave}
-              className="inline-flex items-center gap-1.5 rounded-md border border-primary/35 bg-background/60 px-3 py-2 text-sm text-foreground transition hover:bg-primary/10 disabled:opacity-45"
-            >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              保存草稿
-            </button>
-            <button
-              type="button"
               onClick={onOrganizeDraft}
               disabled={!canSave}
               className="inline-flex items-center gap-1.5 rounded-md border border-primary/35 bg-background/60 px-3 py-2 text-sm text-foreground transition hover:bg-primary/10 disabled:opacity-45"
             >
               {organizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <NotebookPen className="h-4 w-4" />}
-              生成 AI 建议
+              {aiSuggestionsStatus === "generated" ? "重新生成 AI 建议" : "生成 AI 建议"}
             </button>
             {draft ? (
               <button
@@ -131,6 +130,17 @@ export function EditableCaptureWorkbench({
               >
                 <Trash2 className="h-4 w-4" />
                 删除草稿
+              </button>
+            ) : null}
+            {canStop ? (
+              <button
+                type="button"
+                onClick={onStopAiOperation}
+                disabled={stoppingAiOperation}
+                className="inline-flex items-center gap-1.5 rounded-md border border-destructive/35 bg-background/60 px-3 py-2 text-sm text-destructive transition hover:bg-destructive/10 disabled:opacity-45"
+              >
+                {stoppingAiOperation ? <Loader2 className="h-4 w-4 animate-spin" /> : <SquareStop className="h-4 w-4" />}
+                {stoppingAiOperation ? "正在停止" : "停止"}
               </button>
             ) : null}
             <ActionButton
@@ -233,7 +243,9 @@ export function EditableCaptureWorkbench({
                   className="mt-2 w-full rounded-md border border-current/10 bg-background/55 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary/50 disabled:opacity-60"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {titleSource === "user" ? "用户标题" : "Hermes 自动生成"}
+                  {aiSuggestionsStatus === "generated"
+                    ? titleSource === "user" ? "用户标题" : "Hermes 自动生成"
+                    : aiSuggestionsStatus === "failed" ? "AI 建议生成失败，可手动填写或重试" : "尚未生成 AI 建议"}
                 </p>
               </section>
               <section>
@@ -328,7 +340,16 @@ export function EditableCaptureWorkbench({
               <section>
                 <h3 className="text-sm font-semibold tracking-normal text-foreground">状态</h3>
                 <div className="mt-2 space-y-2">
-                  {editableStatusSteps(status).map((step) => (
+                  {editableStatusSteps(
+                    status,
+                    aiSuggestionsStatus,
+                    Boolean(title.trim()),
+                    Boolean(summary.trim()),
+                    Boolean(tagsText.trim()),
+                    Boolean((folderPath || "Inbox").trim()),
+                    generateCard,
+                    cardCommitStatus,
+                  ).map((step) => (
                     <div
                       key={step.label}
                       className={cn(
@@ -358,21 +379,55 @@ export function EditableCaptureWorkbench({
   );
 }
 
-function editableStatusSteps(status: EditableCaptureStatus): Array<{ label: string; active?: boolean; done?: boolean; loading?: boolean }> {
+function editableStatusSteps(
+  status: EditableCaptureStatus,
+  aiSuggestionsStatus: "generated" | "failed" | "not_generated",
+  hasTitle: boolean,
+  hasSummary: boolean,
+  hasTags: boolean,
+  hasFolder: boolean,
+  generateCard: boolean,
+  cardCommitStatus: EditableCardCommitStatus,
+): Array<{ label: string; active?: boolean; done?: boolean; loading?: boolean }> {
   const saving = status === "saving_draft";
   const organizing = status === "organizing";
   const committing = status === "committing";
   const committed = status === "committed";
-  return [
-    { label: "正在保存当前修改...", active: saving, done: status === "ready_to_commit" || committing || committed, loading: saving },
-    { label: "正在整理正文...", active: organizing, done: status === "ready_to_commit" || committing || committed, loading: organizing },
-    { label: "正在生成标题摘要标签...", done: status === "ready_to_commit" || committing || committed },
-    { label: "正在生成文件夹和卡片建议...", done: status === "ready_to_commit" || committing || committed },
-    { label: "整理完成，可以入库", done: status === "ready_to_commit" || committing || committed },
-    { label: "正在保存当前修改...", active: committing, done: committed, loading: committing },
-    { label: "正在写入知识库文件...", done: committed },
-    { label: "正在重建索引和大纲...", done: committed },
-    { label: "正在生成知识卡片...", done: committed },
-    { label: "入库完成", done: committed },
+  const aiGenerated = aiSuggestionsStatus === "generated" && hasTitle && hasSummary && hasTags && hasFolder;
+  const aiFailed = aiSuggestionsStatus === "failed";
+  const cardLabel = generateCard
+    ? cardCommitStatus === "failed"
+      ? "知识卡片生成失败"
+      : cardCommitStatus === "generated"
+        ? "知识卡片已生成"
+        : "等待生成知识卡片"
+    : "未生成知识卡片/已跳过";
+  const aiLabel = organizing
+    ? "正在生成 AI 建议..."
+    : aiFailed
+      ? "AI 建议生成失败，可重试或手动填写"
+      : aiGenerated
+        ? "AI 建议已生成"
+        : "待生成 AI 建议";
+  const steps: Array<{ label: string; active?: boolean; done?: boolean; loading?: boolean }> = [
+    { label: aiLabel, active: organizing || aiFailed, done: aiGenerated || committing || committed, loading: organizing },
   ];
+  if (aiGenerated || committing || committed) {
+    steps.push({ label: "整理完成，可以入库", done: aiGenerated || committing || committed });
+  }
+  if (saving) {
+    steps.push({ label: "正在保存当前修改...", active: true, loading: true });
+  }
+  if (aiGenerated || committing || committed) {
+    steps.push({ label: committing ? "正在入库到知识库..." : "入库到知识库", active: committing, done: committed, loading: committing });
+    steps.push({ label: cardLabel, done: cardCommitStatus === "generated" || cardCommitStatus === "skipped", active: cardCommitStatus === "generating", loading: cardCommitStatus === "generating" });
+    steps.push({ label: "入库完成", done: committed });
+  }
+  return steps;
+}
+
+function editableAiSuggestionsStatus(draft: KnowledgeCaptureDraft | null): "generated" | "failed" | "not_generated" {
+  const value = String(draft?.capture_intent?.ai_suggestions_status || "");
+  if (value === "generated" || value === "failed") return value;
+  return "not_generated";
 }

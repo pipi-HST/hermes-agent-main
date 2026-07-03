@@ -11,6 +11,7 @@ const toolCallPath = fileURLToPath(new URL("../src/components/ToolCall.tsx", imp
 const markdownPath = fileURLToPath(new URL("../src/components/Markdown.tsx", import.meta.url));
 const answerViewPath = fileURLToPath(new URL("../src/components/KnowledgeAnswerView.tsx", import.meta.url));
 const gatewayChatPath = fileURLToPath(new URL("../src/pages/knowledge-chat/GatewayChat.tsx", import.meta.url));
+const libraryPagePath = fileURLToPath(new URL("../src/pages/KnowledgeLibraryPage.tsx", import.meta.url));
 
 function assert(condition, message) {
   if (!condition) {
@@ -338,10 +339,17 @@ const answerViewSource = readFileSync(answerViewPath, "utf8");
 assert(answerViewSource.includes("rewriteCitationRefs(content, displayMap)"), "Answer view should rewrite raw refs to display refs");
 assert(answerViewSource.includes("sourceRefAliases(originalRef)"), "Answer view should map original refs to display refs");
 assert(answerViewSource.includes("file_url"), "Answer view should render file source links");
+assert(answerViewSource.includes("onSourceOpenLocal"), "Answer view should separate local file open from source navigation");
+assert(answerViewSource.includes("canOpenKnowledgeSourceLocal"), "Answer view should prefer backend local-open for committed captures");
+assert(answerViewSource.includes("source.url && !isKnowledge"), "Knowledge sources with original URLs should still open inside Hermes");
 
 const gatewayChatSource = readFileSync(gatewayChatPath, "utf8");
 assert(gatewayChatSource.includes("onSourceOpen={onSourceOpen}"), "Gateway chat should pass source open handler into answer view");
 assert(gatewayChatSource.includes("isKnowledgeSourceHint(source)"), "Gateway chat should group sources by source type, not by URL presence");
 assert(gatewayChatSource.includes("url: isKnowledge ? undefined : source.url"), "Knowledge citations should not pass original URL as markdown href");
+
+const libraryPageSource = readFileSync(libraryPagePath, "utf8");
+assert(libraryPageSource.includes("openKnowledgeSourceLocal"), "Knowledge library should provide a local-open source handler");
+assert(libraryPageSource.includes("api.openKnowledgeLibraryItemLocal(\"capture\", itemId)"), "Knowledge source file buttons should call backend open-local");
 
 console.log("research progress UI contract: ok");

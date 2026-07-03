@@ -499,6 +499,131 @@ class TestWebServerEndpoints:
         assert called["mode"] == "web_only"
         assert called["selection_context"]["selected_text"] == "苹" * 1000
 
+    def test_knowledge_library_selection_chat_merges_and_enriches_source_map(self, monkeypatch, tmp_path):
+        import sqlite3
+
+        custom_root = tmp_path / "hermes-custom"
+        data_dir = custom_root / "data"
+        vault = tmp_path / "vault"
+        data_dir.mkdir(parents=True)
+        (vault / "captures").mkdir(parents=True)
+        (vault / "captures" / "source.md").write_text("# 来源笔记\n", encoding="utf-8")
+        (custom_root / "config.yaml").write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
+        db_path = data_dir / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE capture_drafts (
+                id TEXT PRIMARY KEY,
+                raw_text TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                word_count INTEGER NOT NULL DEFAULT 0,
+                draft_text TEXT NOT NULL DEFAULT '',
+                instruction TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'draft_ready',
+                committed_capture_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                capture_intent TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE captures (
+                id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL DEFAULT '',
+                raw_path TEXT NOT NULL DEFAULT '',
+                review_state TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                embedding BLOB
+            );
+            """
+        )
+        conn.execute(
+            """INSERT INTO capture_drafts
+               (id, raw_text, title, word_count, draft_text, summary, tags, status, capture_intent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "draft-chat-1",
+                "原文",
+                "测试文章",
+                2,
+                "# 测试文章\n\nLLM 是什么",
+                "摘要",
+                '["test"]',
+                "draft_ready",
+                '{"folder_path":"Inbox"}',
+            ),
+        )
+        conn.execute(
+            "INSERT INTO captures (id, file_path, review_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            ("cap-1", "captures/source.md", "captured", "2026-06-20T00:00:00+00:00", "2026-06-20T00:00:00+00:00"),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        if str(custom_root) not in sys.path:
+            sys.path.insert(0, str(custom_root))
+
+        fake_bridge = types.ModuleType("bridge")
+        fake_bridge.__path__ = []
+        research_bridge = types.ModuleType("bridge.research_bridge")
+        monkeypatch.setitem(sys.modules, "bridge", fake_bridge)
+        monkeypatch.setitem(sys.modules, "bridge.research_bridge", research_bridge)
+
+        async def fake_async_web_assist_answer(**kwargs):
+            return {
+                "status": "success",
+                "chat_preview": "合并来源回答 [K1][W1]",
+                "warnings": [],
+                "source_map": [
+                    {
+                        "ref": "K1",
+                        "type": "capture_note",
+                        "id": "cap-1",
+                        "title": "来源笔记",
+                        "file_path": "captures/source.md",
+                    },
+                    {
+                        "ref": "W1",
+                        "type": "web",
+                        "title": "网页来源",
+                        "url": "https://example.com/source",
+                        "excerpt": "网页材料",
+                    },
+                ],
+                "meta": {
+                    "mode": kwargs["mode"],
+                    "knowledge_sources": [{"ref": "K1", "title": "来源笔记"}],
+                    "web_sources": [],
+                },
+            }
+
+        monkeypatch.setattr(research_bridge, "async_web_assist_answer", fake_async_web_assist_answer, raising=False)
+
+        resp = self.client.post(
+            "/api/knowledge/library/items/capture_draft/draft-chat-1/selection-chat",
+            json={
+                "question": "LLM 是什么",
+                "selected_text": "",
+                "mode": "local_web",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        knowledge = data["sources"]["knowledge"][0]
+        web = data["sources"]["web"][0]
+        assert knowledge["ref"] == "K1"
+        assert knowledge["item_kind"] == "capture"
+        assert knowledge["item_id"] == "cap-1"
+        assert knowledge["open_url"] == "/knowledge-library?kind=capture&item=cap-1"
+        assert knowledge["file_url"].startswith("file://")
+        assert web["ref"] == "W1"
+        assert web["url"] == "https://example.com/source"
+
     def test_knowledge_library_selection_chat_rejects_overlong_selection_before_research(self, monkeypatch):
         calls = {"count": 0}
 
@@ -821,9 +946,88 @@ class TestWebServerEndpoints:
             "source_type": "manual",
             "instruction": "保留例子",
             "title": "用户标题",
+            "title_source": "",
             "organize": True,
             "existing_folders": ["Inbox", "AI 产品", "数据 Agent", "待读", "临时"],
         }
+
+    def test_knowledge_ai_operation_header_and_cancel_endpoint(self, monkeypatch, tmp_path):
+        custom_root = tmp_path / "hermes-custom"
+        custom_root.mkdir()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+
+        bridge_pkg = types.ModuleType("bridge")
+        bridge_pkg.__path__ = []
+        ai_cancel = types.ModuleType("bridge.ai_cancel")
+        capture_bridge = types.ModuleType("bridge.capture_bridge")
+        state = {"current": "", "cancelled": set()}
+        calls = {}
+
+        class AIOperationCancelled(RuntimeError):
+            def __init__(self, operation_id: str, stage: str = ""):
+                super().__init__(f"cancelled {operation_id} {stage}")
+                self.operation_id = operation_id
+                self.stage = stage
+
+        class operation_context:
+            def __init__(self, operation_id: str):
+                self.operation_id = operation_id
+                self.previous = ""
+
+            def __enter__(self):
+                self.previous = state["current"]
+                state["current"] = self.operation_id
+                return self.operation_id
+
+            def __exit__(self, *_exc):
+                state["current"] = self.previous
+                return False
+
+        def normalize_operation_id(operation_id):
+            return str(operation_id or "").strip()
+
+        def cancel_operation(operation_id):
+            state["cancelled"].add(normalize_operation_id(operation_id))
+            return True
+
+        def raise_if_cancelled(stage=""):
+            if state["current"] in state["cancelled"]:
+                raise AIOperationCancelled(state["current"], stage)
+
+        ai_cancel.AIOperationCancelled = AIOperationCancelled
+        ai_cancel.operation_context = operation_context
+        ai_cancel.normalize_operation_id = normalize_operation_id
+        ai_cancel.cancel_operation = cancel_operation
+        ai_cancel.raise_if_cancelled = raise_if_cancelled
+
+        def create_editable_capture_draft(**kwargs):
+            calls["operation_id"] = state["current"]
+            calls["create"] = kwargs
+            return {
+                "status": "success",
+                "intent": "create_editable_capture_draft",
+                "meta": {"draft_id": "draft-editable"},
+            }
+
+        capture_bridge.create_editable_capture_draft = create_editable_capture_draft
+        monkeypatch.setitem(sys.modules, "bridge", bridge_pkg)
+        monkeypatch.setitem(sys.modules, "bridge.ai_cancel", ai_cancel)
+        monkeypatch.setitem(sys.modules, "bridge.capture_bridge", capture_bridge)
+
+        cancel_resp = self.client.post("/api/knowledge/ai-operations/op-create/cancel")
+        assert cancel_resp.status_code == 200
+        assert cancel_resp.json()["status"] == "cancel_requested"
+        assert "op-create" in state["cancelled"]
+
+        resp = self.client.post(
+            "/api/knowledge/capture-drafts/editable",
+            headers={"X-Hermes-AI-Operation-Id": "op-create-2"},
+            json={"content": "自由粘贴正文", "title": "用户标题"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["meta"]["draft_id"] == "draft-editable"
+        assert calls["operation_id"] == "op-create-2"
 
     def test_knowledge_editable_capture_draft_update_api_delegates_to_bridge(self, monkeypatch, tmp_path):
         custom_root = tmp_path / "hermes-custom"
@@ -858,6 +1062,7 @@ class TestWebServerEndpoints:
             "draft_id": "draft-editable",
             "content": "用户编辑后的正文",
             "title": "用户标题",
+            "title_source": "",
             "summary": None,
             "tags": None,
             "folder_path": "",
@@ -1267,6 +1472,14 @@ class TestWebServerEndpoints:
             ("draft-1", "历史草稿", "committed", "cap-1"),
         )
         conn.execute(
+            "INSERT INTO garden_cards (id, title, status, capture_ids) VALUES (?, ?, ?, ?)",
+            ("card-archived", "已归档卡片", "archived", json.dumps(["cap-1"])),
+        )
+        conn.execute(
+            "INSERT INTO garden_drafts (id, title, status, capture_ids) VALUES (?, ?, ?, ?)",
+            ("garden-draft-committed", "已提交卡片草稿", "committed", json.dumps(["cap-1"])),
+        )
+        conn.execute(
             "INSERT INTO agent_run_objects (run_id, object_id) VALUES (?, ?)",
             ("run-1", "cap-1"),
         )
@@ -1420,6 +1633,14 @@ class TestWebServerEndpoints:
             ("draft-1", "历史草稿", "committed", "cap-1"),
         )
         conn.execute(
+            "INSERT INTO garden_cards (id, title, status, capture_ids) VALUES (?, ?, ?, ?)",
+            ("card-archived", "已归档卡片", "archived", json.dumps(["cap-1"])),
+        )
+        conn.execute(
+            "INSERT INTO garden_drafts (id, title, status, capture_ids) VALUES (?, ?, ?, ?)",
+            ("garden-draft-committed", "已提交卡片草稿", "committed", json.dumps(["cap-1"])),
+        )
+        conn.execute(
             "INSERT INTO agent_run_objects (run_id, object_id) VALUES (?, ?)",
             ("run-1", "cap-1"),
         )
@@ -1437,7 +1658,73 @@ class TestWebServerEndpoints:
         assert conn.execute("SELECT committed_capture_id FROM capture_drafts WHERE id = 'draft-1'").fetchone()[0] == ""
         assert conn.execute("SELECT status FROM capture_drafts WHERE id = 'draft-1'").fetchone()[0] == "abandoned"
         assert conn.execute("SELECT COUNT(*) FROM agent_run_objects WHERE object_id = 'cap-1'").fetchone()[0] == 0
+        assert conn.execute("SELECT status FROM garden_cards WHERE id = 'card-archived'").fetchone()[0] == "archived"
+        assert conn.execute("SELECT status FROM garden_drafts WHERE id = 'garden-draft-committed'").fetchone()[0] == "committed"
         conn.close()
+
+    @pytest.mark.parametrize("draft_status", ["draft_ready", "revision_requested", "open"])
+    def test_knowledge_library_capture_permanent_delete_rejects_active_garden_draft(self, monkeypatch, tmp_path, draft_status):
+        import sqlite3
+
+        custom_root = tmp_path / "hermes-custom"
+        data_dir = custom_root / "data"
+        vault = tmp_path / "vault"
+        data_dir.mkdir(parents=True)
+        (vault / "notes").mkdir(parents=True)
+        (vault / "notes" / "cap-1.md").write_text("# 入库文件\n", encoding="utf-8")
+        (custom_root / "config.yaml").write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
+        db_path = data_dir / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE captures (
+                id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL DEFAULT '',
+                raw_path TEXT NOT NULL DEFAULT '',
+                review_state TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE garden_cards (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                capture_ids TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE garden_drafts (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                capture_ids TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE capture_drafts (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                committed_capture_id TEXT NOT NULL DEFAULT ''
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO captures (id, file_path, review_state) VALUES (?, ?, ?)",
+            ("cap-1", "notes/cap-1.md", "captured"),
+        )
+        conn.execute(
+            "INSERT INTO garden_drafts (id, title, status, capture_ids) VALUES (?, ?, ?, ?)",
+            ("garden-draft-1", "待提交卡片草稿", draft_status, json.dumps(["cap-1"])),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        monkeypatch.setenv("HERMES_KNOWLEDGE_DB", str(db_path))
+
+        response = self.client.delete("/api/knowledge/library/items/capture/cap-1/permanent")
+
+        assert response.status_code == 409
+        data = response.json()
+        assert data["detail"]["dependencies"]["garden_drafts"][0]["id"] == "garden-draft-1"
+        assert data["detail"]["dependencies"]["garden_drafts"][0]["status"] == draft_status
+        assert (vault / "notes" / "cap-1.md").exists()
 
     def test_knowledge_library_capture_permanent_delete_removes_isolated_capture_and_files(self, monkeypatch, tmp_path):
         import sqlite3

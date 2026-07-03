@@ -34,6 +34,7 @@ const chatSource = readFileSync(chatPagePath, "utf8");
 const workbenchSource = readFileSync(workbenchPath, "utf8");
 
 assert(apiSource.includes("organize?: boolean"), "Editable draft update request should expose organize?: boolean");
+assert(apiSource.includes("title_source?: \"ai\" | \"user\""), "Editable draft requests should expose title_source ownership");
 
 for (const [label, source] of [
   ["KnowledgeLibraryPage", librarySource],
@@ -43,6 +44,11 @@ for (const [label, source] of [
   assert(source.includes("saveEditableCaptureDraftSnapshot"), `${label} should have a non-AI snapshot save path`);
   assert(source.includes("organize: true"), `${label} organize path should request organize: true`);
   assert(source.includes("organize: false"), `${label} snapshot path should request organize: false`);
+  assert(source.includes("editableTitleSource"), `${label} should track whether the title is AI-owned or user-owned`);
+  assert(source.includes("title_source: editableTitleSource"), `${label} should pass title_source to editable draft APIs`);
+  assert(source.includes("setEditableTitleSource(\"user\")"), `${label} should mark manually edited titles as user-owned`);
+  assert(source.includes("editableDraftTitleSource(draft)"), `${label} should derive title ownership from the loaded draft`);
+  assert(source.includes("isGenericEditableTitle"), `${label} should not preserve generic placeholder titles as user-owned`);
 
   const commitBody = functionBody(source, "commitEditableCaptureDraft");
   assert(
@@ -56,6 +62,18 @@ for (const [label, source] of [
   assert(!commitBody.includes("正在整理正文"), `${label} commit progress should not mention body organizing`);
   assert(!commitBody.includes("正在生成标题摘要标签"), `${label} commit progress should not mention metadata generation`);
   assert(commitBody.includes("正在保存当前修改"), `${label} commit progress should start with saving current edits`);
+
+  const workbenchStart = source.indexOf("<EditableCaptureWorkbench");
+  const workbenchEnd = source.indexOf("/>", workbenchStart);
+  const workbenchCall = source.slice(workbenchStart, workbenchEnd >= 0 ? workbenchEnd : source.length);
+  assert(
+    workbenchCall.includes("onOrganizeDraft={() => void organizeEditableCaptureDraft()}"),
+    `${label} workbench should expose the single AI suggestion action`,
+  );
+  assert(
+    !workbenchCall.includes("onSaveDraft"),
+    `${label} workbench should not wire a duplicate save-and-organize action`,
+  );
 }
 
 const menuArea = librarySource.slice(librarySource.indexOf("newMenuOpen"), librarySource.indexOf("input", librarySource.indexOf("newMenuOpen")));
@@ -64,12 +82,25 @@ assert(!menuArea.includes("粘贴整理"), "New menu should not expose a separat
 assert(!menuArea.includes("新建空白文件"), "New menu should not expose a separate blank-file entry");
 
 assert(workbenchSource.includes("生成 AI 建议"), "Editable workbench should label AI organization as generating AI suggestions");
-assert(workbenchSource.includes("保存草稿"), "Editable workbench should support saving without AI organization");
+assert(!workbenchSource.includes("保存草稿并生成 AI 建议"), "Editable workbench should not render a duplicate save-and-organize button");
+assert(workbenchSource.includes("ai_suggestions_status"), "Editable workbench should read AI suggestion completion status");
+assert(workbenchSource.includes("正在生成 AI 建议..."), "Editable workbench should show one real AI suggestion running state");
+assert(!workbenchSource.includes("正在生成标题摘要标签"), "Editable workbench should not show fake metadata sub-stages");
+assert(!workbenchSource.includes("正在生成文件夹和卡片建议"), "Editable workbench should not show fake suggestion sub-stages");
+assert(
+  workbenchSource.includes("if (aiGenerated || committing || committed)") &&
+    workbenchSource.includes('steps.push({ label: "整理完成，可以入库"'),
+  "Editable workbench should only show ready-to-commit status after AI suggestions are generated",
+);
 assert(!workbenchSource.includes("整理成草稿"), "Editable workbench should not imply every save runs organization");
 
 const fileWorkbench = componentBody(librarySource, "FileWorkbench");
 assert(!fileWorkbench.includes("<StatusTile"), "FileWorkbench should not render the old status tile row");
 assert(fileWorkbench.includes("元信息"), "FileWorkbench should expose metadata through a compact drawer or menu");
 assert(fileWorkbench.includes("更多"), "FileWorkbench should group low-frequency actions under a more menu");
+assert(
+  librarySource.includes("没有活跃知识卡片、待提交卡片草稿和其他文件引用"),
+  "Permanent delete confirmation should describe only active blocking dependencies",
+);
 
 console.log("knowledge editor workflow contract: ok");

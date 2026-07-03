@@ -8,11 +8,13 @@ export interface KnowledgeAnswerSource extends MarkdownSource {
 export function KnowledgeAnswerView({
   content,
   onSourceOpen,
+  onSourceOpenLocal,
   sources,
   streaming,
 }: {
   content: string;
   onSourceOpen?: (source: KnowledgeAnswerSource) => void;
+  onSourceOpenLocal?: (source: KnowledgeAnswerSource) => void;
   sources?: {
     knowledge?: KnowledgeAnswerSource[];
     web?: KnowledgeAnswerSource[];
@@ -39,6 +41,7 @@ export function KnowledgeAnswerView({
         <KnowledgeSourceList
           content={presentation.content}
           onSourceOpen={onSourceOpen}
+          onSourceOpenLocal={onSourceOpenLocal}
           sources={{ knowledge: presentation.knowledge, web: presentation.web }}
         />
       ) : null}
@@ -49,10 +52,12 @@ export function KnowledgeAnswerView({
 function KnowledgeSourceList({
   content,
   onSourceOpen,
+  onSourceOpenLocal,
   sources,
 }: {
   content: string;
   onSourceOpen?: (source: KnowledgeAnswerSource) => void;
+  onSourceOpenLocal?: (source: KnowledgeAnswerSource) => void;
   sources: {
     knowledge: KnowledgeAnswerSource[];
     web: KnowledgeAnswerSource[];
@@ -91,6 +96,7 @@ function KnowledgeSourceList({
             key={group.label}
             label={group.label}
             onSourceOpen={onSourceOpen}
+            onSourceOpenLocal={onSourceOpenLocal}
             sources={group.sources}
           />
         ))}
@@ -102,10 +108,12 @@ function KnowledgeSourceList({
 function SourceListGroup({
   label,
   onSourceOpen,
+  onSourceOpenLocal,
   sources,
 }: {
   label: string;
   onSourceOpen?: (source: KnowledgeAnswerSource) => void;
+  onSourceOpenLocal?: (source: KnowledgeAnswerSource) => void;
   sources: KnowledgeAnswerSource[];
 }) {
   return (
@@ -114,7 +122,12 @@ function SourceListGroup({
       <ul className="space-y-1">
         {sources.map((source, index) => (
           <li key={`${source.ref || index}-${source.url || source.id || source.title}`} className="break-words">
-            <SourceLink onSourceOpen={onSourceOpen} source={source} fallbackRef={source.ref || `${index + 1}`} />
+            <SourceLink
+              onSourceOpen={onSourceOpen}
+              onSourceOpenLocal={onSourceOpenLocal}
+              source={source}
+              fallbackRef={source.ref || `${index + 1}`}
+            />
           </li>
         ))}
       </ul>
@@ -125,19 +138,22 @@ function SourceListGroup({
 function SourceLink({
   fallbackRef,
   onSourceOpen,
+  onSourceOpenLocal,
   source,
 }: {
   fallbackRef: string;
   onSourceOpen?: (source: KnowledgeAnswerSource) => void;
+  onSourceOpenLocal?: (source: KnowledgeAnswerSource) => void;
   source: KnowledgeAnswerSource;
 }) {
   const label = source.title || source.id || source.url || "未命名来源";
+  const isKnowledge = isKnowledgeAnswerSource(source);
   const suffix = source.section
     ? ` / ${source.section}`
-    : source.url
+    : source.url && !isKnowledge
       ? ` · ${source.domain || hostLabel(source.url)}`
       : "";
-  if (source.url) {
+  if (source.url && !isKnowledge) {
     return (
       <a
         href={source.url}
@@ -153,8 +169,9 @@ function SourceLink({
 
   const text = `[${source.ref || fallbackRef}] ${label}${suffix}`;
   const canOpen = canOpenKnowledgeSource(source, onSourceOpen);
+  const canOpenLocal = canOpenKnowledgeSourceLocal(source, onSourceOpenLocal);
   const fileUrl = source.file_url || "";
-  if (!canOpen && !fileUrl) return <span>{text}</span>;
+  if (!canOpen && !canOpenLocal && !fileUrl) return <span>{text}</span>;
 
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
@@ -169,7 +186,15 @@ function SourceLink({
       ) : (
         <span>{text}</span>
       )}
-      {fileUrl ? (
+      {canOpenLocal ? (
+        <button
+          type="button"
+          onClick={() => onSourceOpenLocal?.(source)}
+          className="rounded border border-border px-1.5 py-0.5 text-[0.68rem] text-muted-foreground no-underline hover:border-primary/30 hover:text-foreground"
+        >
+          文件
+        </button>
+      ) : fileUrl ? (
         <a
           href={fileUrl}
           className="rounded border border-border px-1.5 py-0.5 text-[0.68rem] text-muted-foreground no-underline hover:border-primary/30 hover:text-foreground"
@@ -200,6 +225,13 @@ function canOpenKnowledgeSource(
   onSourceOpen?: (source: KnowledgeAnswerSource) => void,
 ): boolean {
   return Boolean(onSourceOpen || source.open_url || inferredOpenUrl(source));
+}
+
+function canOpenKnowledgeSourceLocal(
+  source: KnowledgeAnswerSource,
+  onSourceOpenLocal?: (source: KnowledgeAnswerSource) => void,
+): boolean {
+  return Boolean(onSourceOpenLocal && source.item_kind === "capture" && source.item_id);
 }
 
 function inferredOpenUrl(source: KnowledgeAnswerSource): string | undefined {

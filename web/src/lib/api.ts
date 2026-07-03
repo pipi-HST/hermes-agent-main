@@ -29,6 +29,12 @@ declare global {
 }
 let _sessionToken: string | null = null;
 const SESSION_HEADER = "X-Hermes-Session-Token";
+export const AI_OPERATION_HEADER = "X-Hermes-AI-Operation-Id";
+
+export interface AiOperationOptions {
+  operationId?: string;
+  signal?: AbortSignal;
+}
 
 function setSessionHeader(headers: Headers, token: string): void {
   if (!headers.has(SESSION_HEADER)) {
@@ -49,6 +55,26 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
     throw new Error(`${res.status}: ${text}`);
   }
   return res.json();
+}
+
+export function createAiOperationId(prefix = "ai"): string {
+  const random =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${random}`;
+}
+
+function withAiOperation(init: RequestInit, options?: AiOperationOptions): RequestInit {
+  const headers = new Headers(init.headers);
+  if (options?.operationId) {
+    headers.set(AI_OPERATION_HEADER, options.operationId);
+  }
+  return {
+    ...init,
+    headers,
+    signal: options?.signal ?? init.signal,
+  };
 }
 
 async function getSessionToken(): Promise<string> {
@@ -501,6 +527,11 @@ export const api = {
       `/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/permanent`,
       { method: "DELETE" },
     ),
+  cancelKnowledgeAiOperation: (operationId: string) =>
+    fetchJSON<{ ok: boolean; operation_id: string; status: string }>(
+      `/api/knowledge/ai-operations/${encodeURIComponent(operationId)}/cancel`,
+      { method: "POST" },
+    ),
   getKnowledgeCaptureDrafts: (limit = 50) =>
     fetchJSON<KnowledgeCaptureDraftsResponse>(
       `/api/knowledge/capture-drafts?limit=${limit}`,
@@ -509,34 +540,34 @@ export const api = {
     fetchJSON<KnowledgeCaptureDraftResponse>(
       `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}`,
     ),
-  createKnowledgeEditableCaptureDraft: (body: KnowledgeEditableCaptureDraftRequest) =>
-    fetchJSON<Record<string, unknown>>("/api/knowledge/capture-drafts/editable", {
+  createKnowledgeEditableCaptureDraft: (body: KnowledgeEditableCaptureDraftRequest, options?: AiOperationOptions) =>
+    fetchJSON<Record<string, unknown>>("/api/knowledge/capture-drafts/editable", withAiOperation({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }),
-  updateKnowledgeEditableCaptureDraft: (draftId: string, body: KnowledgeEditableCaptureDraftUpdateRequest) =>
+    }, options)),
+  updateKnowledgeEditableCaptureDraft: (draftId: string, body: KnowledgeEditableCaptureDraftUpdateRequest, options?: AiOperationOptions) =>
     fetchJSON<Record<string, unknown>>(
       `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}/editable`,
-      {
+      withAiOperation({
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-      },
+      }, options),
     ),
-  commitKnowledgeCaptureDraft: (draftId: string) =>
+  commitKnowledgeCaptureDraft: (draftId: string, options?: AiOperationOptions) =>
     fetchJSON<Record<string, unknown>>(
       `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}/commit`,
-      { method: "POST" },
+      withAiOperation({ method: "POST" }, options),
     ),
-  reviseKnowledgeCaptureDraft: (draftId: string, instruction: string) =>
+  reviseKnowledgeCaptureDraft: (draftId: string, instruction: string, options?: AiOperationOptions) =>
     fetchJSON<Record<string, unknown>>(
       `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}/revise`,
-      {
+      withAiOperation({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ instruction }),
-      },
+      }, options),
     ),
   reviseKnowledgeCapture: (captureId: string, instruction: string) =>
     fetchJSON<KnowledgeCaptureRevisionResponse>(
@@ -561,23 +592,23 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
-  createKnowledgeAnswerDraft: (body: KnowledgeAnswerDraftRequest) =>
+  createKnowledgeAnswerDraft: (body: KnowledgeAnswerDraftRequest, options?: AiOperationOptions) =>
     fetchJSON<{
       ok: boolean;
       USER_VISIBLE_REPLY?: string;
       chat_preview?: string;
       meta?: Record<string, unknown>;
-    }>("/api/knowledge/answer-drafts", {
+    }>("/api/knowledge/answer-drafts", withAiOperation({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }),
-  createKnowledgeGardenDraft: (body: KnowledgeGardenDraftRequest) =>
-    fetchJSON<KnowledgeGardenDraftResponse>("/api/knowledge/garden-drafts", {
+    }, options)),
+  createKnowledgeGardenDraft: (body: KnowledgeGardenDraftRequest, options?: AiOperationOptions) =>
+    fetchJSON<KnowledgeGardenDraftResponse>("/api/knowledge/garden-drafts", withAiOperation({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }),
+    }, options)),
   getKnowledgeReadingDraft: (draftId: string) =>
     fetchJSON<KnowledgeReadingDraftResponse>(
       `/api/knowledge/reading-drafts/${encodeURIComponent(draftId)}`,
@@ -590,19 +621,19 @@ export const api = {
     fetchJSON<KnowledgeObjectEventsResponse>(
       `/api/knowledge/object-events?object_type=${encodeURIComponent(objectType)}&object_id=${encodeURIComponent(objectId)}&limit=${limit}`,
     ),
-  commitKnowledgeReadingDraft: (draftId: string) =>
+  commitKnowledgeReadingDraft: (draftId: string, options?: AiOperationOptions) =>
     fetchJSON<Record<string, unknown>>(
       `/api/knowledge/reading-drafts/${encodeURIComponent(draftId)}/commit`,
-      { method: "POST" },
+      withAiOperation({ method: "POST" }, options),
     ),
-  reviseKnowledgeReadingDraft: (draftId: string, instruction: string) =>
+  reviseKnowledgeReadingDraft: (draftId: string, instruction: string, options?: AiOperationOptions) =>
     fetchJSON<Record<string, unknown>>(
       `/api/knowledge/reading-drafts/${encodeURIComponent(draftId)}/revise`,
-      {
+      withAiOperation({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ instruction }),
-      },
+      }, options),
     ),
   deleteKnowledgeReadingDraft: (draftId: string) =>
     fetchJSON<Record<string, unknown>>(
@@ -1041,6 +1072,7 @@ export interface KnowledgeEditableCaptureDraftRequest {
   source_type?: string;
   instruction?: string;
   title?: string;
+  title_source?: "ai" | "user";
   folder_path?: string;
   organize?: boolean;
   existing_folders?: string[];
@@ -1049,6 +1081,7 @@ export interface KnowledgeEditableCaptureDraftRequest {
 export interface KnowledgeEditableCaptureDraftUpdateRequest {
   content: string;
   title?: string;
+  title_source?: "ai" | "user";
   summary?: string | null;
   tags?: string[] | null;
   folder_path?: string;

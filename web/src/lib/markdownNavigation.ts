@@ -16,6 +16,18 @@ export interface KnowledgeOutlineAnalysis {
   missing: KnowledgeOutlineIssue[];
 }
 
+interface OutlineCandidate {
+  title: string;
+  suffix: string;
+  keys: string[];
+}
+
+interface OutlineTargetMatch<T> {
+  target: T;
+  title: string;
+  suffix: string;
+}
+
 export function markdownHeadingId(text: string): string {
   const cleaned = stripInlineMarkdown(text)
     .normalize("NFKC")
@@ -52,11 +64,13 @@ export function linkKnowledgeOutlineMarkdown(markdown: string): string {
       ...heading,
       lineIndex: headingMatches[index].lineIndex,
       matchKey: normalizeMatchText(stripLeadingSectionNumber(heading.content)),
+      targetIndex: index,
     }))
     .filter((heading) => heading.lineIndex >= outline.end);
 
   if (targets.length === 0) return markdown;
 
+  const usedTargets = new Set<number>();
   return lines
     .map((line, index) => {
       if (index <= outline.start || index >= outline.end) return line;
@@ -64,16 +78,25 @@ export function linkKnowledgeOutlineMarkdown(markdown: string): string {
       if (!match) return line;
       const [, marker, item] = match;
       if (/^\[[^\]]+\]\(#[^)]+\)/.test(item.trim())) return line;
-      const target = findOutlineTarget(item, targets);
-      if (!target) return line;
-      return `${marker}[${item}](#${target.id})`;
+      const matched = findOutlineTarget(item, targets, usedTargets);
+      if (!matched) return line;
+      if (matched.target.targetIndex !== undefined) {
+        usedTargets.add(matched.target.targetIndex);
+      }
+      return `${marker}[${matched.title}](#${matched.target.id})${matched.suffix}`;
     })
     .join("\n");
 }
 
 function collectHeadings(lines: string[]): Array<MarkdownHeading & { lineIndex: number }> {
   const headings: Array<MarkdownHeading & { lineIndex: number }> = [];
+  let inFence = false;
   lines.forEach((line, lineIndex) => {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      return;
+    }
+    if (inFence) return;
     const match = /^(#{1,4})\s+(.+?)\s*$/.exec(line);
     if (!match) return;
     headings.push({
@@ -102,27 +125,25 @@ function findOutlineRange(lines: string[]): { start: number; end: number } | nul
   return { start, end };
 }
 
-function findOutlineTarget<T extends { content: string; matchKey: string }>(
+function findOutlineTarget<T extends { content: string; matchKey: string; targetIndex?: number }>(
   item: string,
   targets: T[],
-): T | null {
-  const itemKeys = outlineItemMatchKeys(item);
-  let best: { target: T; score: number } | null = null;
-
-  for (const target of targets) {
-    for (const key of itemKeys) {
-      if (!key) continue;
-      const targetContainsKey = target.matchKey.includes(key);
-      const keyContainsTarget = key.includes(target.matchKey);
-      if (!targetContainsKey && !keyContainsTarget) continue;
-      const score = Math.min(key.length, target.matchKey.length);
-      if (!best || score > best.score) {
-        best = { target, score };
+  usedTargets?: Set<number>,
+): OutlineTargetMatch<T> | null {
+  for (const candidate of outlineItemCandidates(item)) {
+    const itemKeys = new Set(candidate.keys);
+    for (const target of targets) {
+      if (target.targetIndex !== undefined && usedTargets?.has(target.targetIndex)) continue;
+      if (itemKeys.has(target.matchKey)) {
+        return {
+          target,
+          title: candidate.title,
+          suffix: candidate.suffix,
+        };
       }
     }
   }
-
-  return best?.target ?? null;
+  return null;
 }
 
 export function analyzeKnowledgeOutlineMarkdown(markdown: string): KnowledgeOutlineAnalysis {
@@ -136,6 +157,13 @@ export function analyzeKnowledgeOutlineMarkdown(markdown: string): KnowledgeOutl
     const match = /^(\s*[-*+]\s+)(.+?)\s*$/.exec(lines[index]);
     if (!match) continue;
     const item = match[2];
+    const explicitLink = explicitOutlineLink(item);
+    if (explicitLink) {
+      if (!targets.some((target) => target.id === explicitLink.id)) {
+        missing.push({ item, title: explicitLink.title });
+      }
+      continue;
+    }
     if (!findOutlineTarget(item, targets)) {
       missing.push({ item, title: outlineItemTitle(item) });
     }
@@ -170,17 +198,50 @@ function collectHeadingTargets(lines: string[], afterLineIndex: number) {
     .filter((heading) => heading.lineIndex >= afterLineIndex);
 }
 
-function outlineItemMatchKeys(item: string): string[] {
-  const plain = stripInlineMarkdown(item);
-  const firstColon = splitAtFirstColon(plain);
-  const stripped = stripLeadingSectionNumber(plain);
+function outlineItemCandidates(item: string): OutlineCandidate[] {
+  const plain = stripInlineMarkdown(item).trim();
+  const colonIndexes = Array.from(plain.matchAll(/[：:]/g)).map((match) => match.index ?? -1);
+  const candidates: Array<{ title: string; suffix: string }> = [];
+  if (colonIndexes.length > 0) {
+    const firstColon = colonIndexes[0];
+    candidates.push({
+      title: plain.slice(0, firstColon).trim(),
+      suffix: normalizeSummarySuffix(plain.slice(firstColon)),
+    });
+    if (colonIndexes.length > 1) {
+      const secondColon = colonIndexes[1];
+      candidates.push({
+        title: plain.slice(0, secondColon).trim(),
+        suffix: normalizeSummarySuffix(plain.slice(secondColon)),
+      });
+    }
+  }
+  candidates.push({ title: outlineItemTitle(plain), suffix: summarySuffixForTitle(plain, outlineItemTitle(plain)) });
+  candidates.push({ title: plain, suffix: "" });
+
+  const seen = new Set<string>();
+  return candidates
+    .map(({ title, suffix }) => ({ title: title.trim(), suffix }))
+    .filter(({ title }) => Boolean(title))
+    .filter(({ title, suffix }) => {
+      const key = `${normalizeMatchText(title)}\n${suffix}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map(({ title, suffix }) => ({
+      title,
+      suffix,
+      keys: outlineTitleMatchKeys(title),
+    }));
+}
+
+function outlineTitleMatchKeys(title: string): string[] {
+  const strippedTitle = stripLeadingSectionNumber(title);
   return Array.from(
     new Set([
-      normalizeMatchText(plain),
-      normalizeMatchText(stripped),
-      normalizeMatchText(firstColon),
-      normalizeMatchText(stripLeadingSectionNumber(firstColon)),
-      ...outlineTitleVariants(outlineItemTitle(plain)).map(normalizeMatchText),
+      normalizeMatchText(title),
+      normalizeMatchText(strippedTitle),
     ]),
   ).filter(Boolean);
 }
@@ -194,25 +255,28 @@ function outlineItemTitle(item: string): string {
   return parts[0] || plain;
 }
 
+function summarySuffixForTitle(item: string, title: string): string {
+  if (!title || !item.startsWith(title)) return "";
+  return normalizeSummarySuffix(item.slice(title.length));
+}
+
+function normalizeSummarySuffix(suffix: string): string {
+  const summary = suffix.replace(/^\s*[：:]\s*/, "").trim();
+  return summary ? `：${summary}` : "";
+}
+
+function explicitOutlineLink(item: string): { title: string; id: string } | null {
+  const match = /^\s*\[((?:\\.|[^\]])+)\]\(#([^)]+)\)/.exec(item.trim());
+  if (!match) return null;
+  return {
+    title: match[1].replace(/\\(\[|\])/g, "$1").trim(),
+    id: match[2].trim(),
+  };
+}
+
 function outlineTitleVariants(title: string): string[] {
-  const variants = [title];
-  const withoutPrefix = title.replace(/^(?:经验|策略|阶段|坑|附录?)[一二三四五六七八九十百千\d]*[：:、.．)）\-\s]*/, "").trim();
-  if (withoutPrefix && withoutPrefix !== title) variants.push(withoutPrefix);
-  for (const value of [...variants]) {
-    const [head, tail] = value.split(/[：:—-]{1,2}/, 2);
-    if (head?.trim() && head.trim() !== value) variants.push(head.trim());
-    if (tail?.trim()) variants.push(tail.trim());
-  }
-  for (const value of [...variants]) {
-    for (const part of value.split(/[，,、；;]/)) {
-      const trimmed = part.trim();
-      if (trimmed && trimmed !== value) variants.push(trimmed);
-    }
-    variants.push(value.replaceAll("的", ""));
-    variants.push(value.replaceAll("学会用", "学会使用"));
-    variants.push(value.replaceAll("学会使用", "学会用"));
-  }
-  if (/^附[：:]/.test(title)) variants.push("附上");
+  const stripped = stripLeadingSectionNumber(title);
+  const variants = [title, stripped];
   return Array.from(new Set(variants.filter(Boolean)));
 }
 
@@ -244,11 +308,6 @@ function flexibleTextRegex(text: string): RegExp {
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function splitAtFirstColon(text: string): string {
-  const parts = text.split(/[：:]/);
-  return parts[0] ?? text;
 }
 
 function stripLeadingSectionNumber(text: string): string {

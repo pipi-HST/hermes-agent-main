@@ -34,6 +34,7 @@ export function GatewayChat({
   input,
   messages,
   researchMode,
+  interruptRequested,
   running,
   transcriptRef,
   uploading,
@@ -56,6 +57,7 @@ export function GatewayChat({
   input: string;
   messages: KnowledgeMessage[];
   researchMode: KnowledgeResearchMode;
+  interruptRequested: boolean;
   running: boolean;
   transcriptRef: React.RefObject<HTMLDivElement | null>;
   uploading: boolean;
@@ -70,6 +72,11 @@ export function GatewayChat({
   onUploadFiles: (files: FileList | File[]) => void;
 }) {
   const inputDisabled = running || uploading || connection !== "open";
+  const submitLabel = running
+    ? interruptRequested
+      ? "正在停止"
+      : "停止生成"
+    : "发送";
 
   return (
     <>
@@ -171,20 +178,26 @@ export function GatewayChat({
             <button
               type="button"
               onClick={running ? onStop : onSubmit}
-              disabled={running ? false : !canSend}
+              disabled={running ? interruptRequested : !canSend}
               className={cn(
                 "flex h-16 w-12 shrink-0 items-center justify-center rounded-md border text-sm transition",
                 running
-                  ? "border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15"
+                  ? interruptRequested
+                    ? "border-border bg-muted/40 text-muted-foreground"
+                    : "border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15"
                   : canSend
                   ? "border-primary/50 bg-primary text-primary-foreground shadow-[0_14px_34px_-22px_rgba(47,111,95,0.65)] hover:brightness-105"
                   : "border-border bg-muted/40 text-muted-foreground",
               )}
-              aria-label={running ? "停止生成" : "发送"}
-              title={running ? "停止生成" : "发送"}
+              aria-label={submitLabel}
+              title={submitLabel}
             >
               {running ? (
-                <SquareStop className="h-4 w-4" />
+                interruptRequested ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <SquareStop className="h-4 w-4" />
+                )
               ) : (
                 <ArrowUp className="h-4 w-4" />
               )}

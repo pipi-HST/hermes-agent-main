@@ -2822,6 +2822,26 @@ def test_interrupt_clears_multiple_own_pending():
             server._answers.pop(key, None)
 
 
+def test_interrupt_calls_agent_interrupt():
+    """session.interrupt should request cancellation on the active agent."""
+    calls = {"interrupt": 0}
+
+    class _Agent:
+        def interrupt(self):
+            calls["interrupt"] += 1
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.interrupt", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp.get("result"), f"got error: {resp.get('error')}"
+    assert calls["interrupt"] == 1
+
+
 def test_clear_pending_without_sid_clears_all():
     """_clear_pending(None) is the shutdown path — must still release
     every pending prompt regardless of owning session."""
@@ -3747,7 +3767,12 @@ def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):
 
     server._sessions["sid"] = _session(agent=_Agent())
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
-    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
@@ -3762,6 +3787,11 @@ def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):
         )
 
     mock_title.assert_not_called()
+    assert server._sessions["sid"]["running"] is False
+    complete_events = [event for event in emitted if event[0] == "message.complete"]
+    assert complete_events, "expected message.complete to be emitted"
+    assert complete_events[-1][2]["status"] == "interrupted"
+    assert complete_events[-1][2]["text"] == "partial answer"
 
 
 def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):

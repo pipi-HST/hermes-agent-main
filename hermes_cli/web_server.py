@@ -28,7 +28,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -90,6 +90,7 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_AI_OPERATION_HEADER_NAME = "X-Hermes-AI-Operation-Id"
 MAX_SELECTION_SEARCH_CHARS = 1000
 KNOWLEDGE_SELECTION_CHAT_STREAM_TIMEOUT_SECONDS = float(
     os.environ.get("HERMES_KNOWLEDGE_SELECTION_CHAT_STREAM_TIMEOUT_SECONDS", "95")
@@ -4718,6 +4719,7 @@ class _KnowledgeEditableCaptureDraftBody(BaseModel):
     source_type: str = "manual"
     instruction: str = ""
     title: str = ""
+    title_source: str = ""
     folder_path: str = ""
     organize: bool = True
     summary: str | None = None
@@ -4842,6 +4844,65 @@ def _knowledge_custom_module(module_name: str, label: str):
     except Exception as exc:
         _log.exception("%s import failed", label)
         raise HTTPException(status_code=500, detail=f"{label} unavailable: {exc}") from exc
+
+
+def _knowledge_ai_cancel_module():
+    return _knowledge_custom_module("bridge.ai_cancel", "AI operation cancellation")
+
+
+def _normalize_ai_operation_id(operation_id: str | None) -> str:
+    text = str(operation_id or "").strip()
+    if not text:
+        return ""
+    return "".join(ch for ch in text if ch.isalnum() or ch in "-_:")[:120]
+
+
+def _knowledge_ai_operation_id(request: Request) -> str:
+    return _normalize_ai_operation_id(request.headers.get(_AI_OPERATION_HEADER_NAME, ""))
+
+
+async def _run_cancellable_ai_operation(
+    request: Request,
+    label: str,
+    operation: Callable[[], Any],
+) -> Any:
+    operation_id = _knowledge_ai_operation_id(request)
+    if not operation_id:
+        return await asyncio.to_thread(operation)
+
+    cancel_module = _knowledge_ai_cancel_module()
+    operation_context = getattr(cancel_module, "operation_context")
+    raise_if_cancelled = getattr(cancel_module, "raise_if_cancelled")
+    cancelled_type = getattr(cancel_module, "AIOperationCancelled")
+
+    def execute() -> Any:
+        with operation_context(operation_id):
+            raise_if_cancelled(f"{label}.start")
+            return operation()
+
+    try:
+        return await asyncio.to_thread(execute)
+    except cancelled_type as exc:
+        return {
+            "ok": False,
+            "status": "cancelled",
+            "cancelled": True,
+            "USER_VISIBLE_REPLY": "已停止。",
+            "chat_preview": "已停止。",
+            "meta": {
+                "operation_id": getattr(exc, "operation_id", operation_id),
+                "cancelled_stage": getattr(exc, "stage", ""),
+            },
+        }
+
+
+@app.post("/api/knowledge/ai-operations/{operation_id}/cancel")
+async def post_knowledge_ai_operation_cancel(request: Request, operation_id: str):
+    _require_token(request)
+    cancel_module = _knowledge_ai_cancel_module()
+    cancelled = getattr(cancel_module, "cancel_operation")(operation_id)
+    normalized = _normalize_ai_operation_id(operation_id)
+    return {"ok": bool(cancelled), "operation_id": normalized, "status": "cancel_requested"}
 
 
 def _knowledge_db_path() -> Path:
@@ -5109,10 +5170,16 @@ def _knowledge_garden_card_count(conn: sqlite3.Connection | None, capture_id: st
     return count
 
 
+_KNOWLEDGE_ACTIVE_GARDEN_DRAFT_STATUSES = {"draft_ready", "revision_requested", "open"}
+
+
 def _knowledge_rows_referencing_capture(
     conn: sqlite3.Connection,
     table: str,
     capture_id: str,
+    *,
+    include_statuses: set[str] | None = None,
+    exclude_statuses: set[str] | None = None,
 ) -> list[dict[str, str]]:
     if not _knowledge_table_exists(conn, table):
         return []
@@ -5122,6 +5189,11 @@ def _knowledge_rows_referencing_capture(
     ).fetchall()
     refs: list[dict[str, str]] = []
     for row in rows:
+        status = str(row["status"] or "")
+        if include_statuses is not None and status not in include_statuses:
+            continue
+        if exclude_statuses is not None and status in exclude_statuses:
+            continue
         ids = _json_value(str(row["capture_ids"] or "[]"), [])
         if capture_id not in {str(item).strip() for item in ids}:
             continue
@@ -5129,7 +5201,7 @@ def _knowledge_rows_referencing_capture(
             {
                 "id": str(row["id"] or ""),
                 "title": str(row["title"] or ""),
-                "status": str(row["status"] or ""),
+                "status": status,
             }
         )
     return refs
@@ -5184,8 +5256,18 @@ def _knowledge_capture_dependency_summary(
     file_path: str,
     title: str,
 ) -> dict[str, Any]:
-    garden_cards = _knowledge_rows_referencing_capture(conn, "garden_cards", capture_id)
-    garden_drafts = _knowledge_rows_referencing_capture(conn, "garden_drafts", capture_id)
+    garden_cards = _knowledge_rows_referencing_capture(
+        conn,
+        "garden_cards",
+        capture_id,
+        exclude_statuses={"archived"},
+    )
+    garden_drafts = _knowledge_rows_referencing_capture(
+        conn,
+        "garden_drafts",
+        capture_id,
+        include_statuses=_KNOWLEDGE_ACTIVE_GARDEN_DRAFT_STATUSES,
+    )
     committed_draft_rows = conn.execute(
         "SELECT id, title, status FROM capture_drafts WHERE committed_capture_id = ?",
         (capture_id,),
@@ -6223,6 +6305,71 @@ def _enrich_knowledge_sources(sources: Any) -> list[dict[str, Any]]:
         return [dict(source) for source in sources if isinstance(source, dict)]
 
 
+def _knowledge_selection_chat_sources(result: dict[str, Any], meta: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    knowledge_sources: list[dict[str, Any]] = []
+    web_sources: list[dict[str, Any]] = []
+    for source in _iter_selection_chat_sources(meta.get("knowledge_sources")):
+        knowledge_sources = _merge_selection_chat_source(knowledge_sources, source)
+    for source in _iter_selection_chat_sources(meta.get("web_sources")):
+        web_sources = _merge_selection_chat_source(web_sources, source)
+    for source in _iter_selection_chat_sources(result.get("source_map")):
+        if _is_selection_chat_knowledge_source(source):
+            knowledge_sources = _merge_selection_chat_source(knowledge_sources, source)
+        elif _is_selection_chat_web_source(source):
+            web_sources = _merge_selection_chat_source(web_sources, source)
+    return {
+        "knowledge": _enrich_knowledge_sources(knowledge_sources),
+        "web": web_sources,
+    }
+
+
+def _iter_selection_chat_sources(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(source) for source in value if isinstance(source, dict)]
+
+
+def _merge_selection_chat_source(sources: list[dict[str, Any]], source: dict[str, Any]) -> list[dict[str, Any]]:
+    key = _selection_chat_source_key(source)
+    if not key:
+        return [*sources, source]
+    merged = list(sources)
+    for index, existing in enumerate(merged):
+        if _selection_chat_source_key(existing) == key:
+            merged[index] = {**existing, **source}
+            return merged
+    merged.append(source)
+    return merged
+
+
+def _selection_chat_source_key(source: dict[str, Any]) -> str:
+    for field in ("ref", "item_id", "id", "file_path", "path", "url", "title"):
+        value = str(source.get(field) or "").strip()
+        if value:
+            return f"{field}:{value}"
+    return ""
+
+
+def _is_selection_chat_knowledge_source(source: dict[str, Any]) -> bool:
+    source_type = str(source.get("type") or "").strip().lower()
+    ref = str(source.get("ref") or "").strip().upper()
+    return bool(
+        source.get("item_kind")
+        or source.get("item_id")
+        or source.get("file_path")
+        or source.get("path")
+        or source_type in {"knowledge", "capture", "capture_note", "capture_section", "capture_draft"}
+        or ref.startswith("K")
+        or ref.isdigit()
+    )
+
+
+def _is_selection_chat_web_source(source: dict[str, Any]) -> bool:
+    source_type = str(source.get("type") or "").strip().lower()
+    ref = str(source.get("ref") or "").strip().upper()
+    return bool(source.get("url") or source_type == "web" or ref.startswith("W"))
+
+
 def _knowledge_library_selection_chat_response(
     result: dict[str, Any],
     body: _KnowledgeLibrarySelectionChatBody,
@@ -6232,7 +6379,9 @@ def _knowledge_library_selection_chat_response(
     if selected_text:
         citations.append({"label": "当前选区", "excerpt": _clip_text(selected_text, 220)})
     meta = result.get("meta") if isinstance(result, dict) else {}
-    knowledge_sources = _enrich_knowledge_sources(meta.get("knowledge_sources"))
+    if not isinstance(meta, dict):
+        meta = {}
+    sources = _knowledge_selection_chat_sources(result, meta)
     return {
         "ok": True,
         "answer": result.get("chat_preview") or meta.get("answer") or "",
@@ -6241,10 +6390,7 @@ def _knowledge_library_selection_chat_response(
         "mode": meta.get("mode") or body.mode,
         "plan": meta.get("research_plan") if isinstance(meta.get("research_plan"), dict) else {},
         "plan_status": meta.get("plan_status") or "",
-        "sources": {
-            "knowledge": knowledge_sources,
-            "web": meta.get("web_sources") if isinstance(meta.get("web_sources"), list) else [],
-        },
+        "sources": sources,
         "warnings": result.get("warnings") if isinstance(result.get("warnings"), list) else [],
         "meta": {
             "web_queries": meta.get("web_queries") if isinstance(meta.get("web_queries"), list) else [],
@@ -6787,12 +6933,17 @@ async def post_knowledge_editable_capture_draft(
         "source_type": body.source_type,
         "instruction": body.instruction,
         "title": body.title,
+        "title_source": body.title_source,
         "organize": body.organize,
         "existing_folders": body.existing_folders or _knowledge_visible_folder_paths(),
     }
     if body.folder_path.strip():
         kwargs["folder_path"] = body.folder_path
-    return create_editable_capture_draft(**kwargs)
+    return await _run_cancellable_ai_operation(
+        request,
+        "capture.editable.create",
+        lambda: create_editable_capture_draft(**kwargs),
+    )
 
 
 @app.patch("/api/knowledge/capture-drafts/{draft_id}/editable")
@@ -6804,17 +6955,22 @@ async def patch_knowledge_editable_capture_draft(
     _require_token(request)
     capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
     update_editable_capture_draft = capture_bridge.update_editable_capture_draft
-    return update_editable_capture_draft(
-        draft_id=draft_id,
-        content=body.content,
-        title=body.title,
-        summary=body.summary,
-        tags=body.tags,
-        folder_path=body.folder_path,
-        folder_suggestion=body.folder_suggestion,
-        card_suggestion=body.card_suggestion,
-        organize=body.organize,
-        existing_folders=body.existing_folders or _knowledge_visible_folder_paths(),
+    return await _run_cancellable_ai_operation(
+        request,
+        "capture.editable.update",
+        lambda: update_editable_capture_draft(
+            draft_id=draft_id,
+            content=body.content,
+            title=body.title,
+            title_source=body.title_source,
+            summary=body.summary,
+            tags=body.tags,
+            folder_path=body.folder_path,
+            folder_suggestion=body.folder_suggestion,
+            card_suggestion=body.card_suggestion,
+            organize=body.organize,
+            existing_folders=body.existing_folders or _knowledge_visible_folder_paths(),
+        ),
     )
 
 
@@ -6823,7 +6979,11 @@ async def post_knowledge_capture_draft_commit(request: Request, draft_id: str):
     _require_token(request)
     capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
     commit_capture_draft = capture_bridge.commit_capture_draft
-    result = commit_capture_draft(draft_id, confirmation_source="dashboard")
+    result = await _run_cancellable_ai_operation(
+        request,
+        "capture.commit",
+        lambda: commit_capture_draft(draft_id, confirmation_source="dashboard"),
+    )
     return result
 
 
@@ -6836,7 +6996,11 @@ async def post_knowledge_capture_draft_revise(
     _require_token(request)
     capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
     revise_capture_draft = capture_bridge.revise_capture_draft
-    result = revise_capture_draft(draft_id=draft_id, instruction=body.instruction)
+    result = await _run_cancellable_ai_operation(
+        request,
+        "capture.revise",
+        lambda: revise_capture_draft(draft_id=draft_id, instruction=body.instruction),
+    )
     return result
 
 
@@ -6925,16 +7089,20 @@ async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDr
     _require_token(request)
     answer_bridge = _knowledge_custom_module("bridge.answer_bridge", "Answer bridge")
     save_answer_to_knowledge = answer_bridge.save_answer_to_knowledge
-    return save_answer_to_knowledge(
-        hermes_session_id=body.hermes_session_id,
-        user_message=body.user_message,
-        assistant_answer=body.assistant_answer,
-        instruction=body.instruction,
-        output_type=body.output_type,
-        assistant_message_id=body.assistant_message_id,
-        sources=body.sources,
-        target_capture_id=body.target_capture_id,
-        answer_source=body.answer_source,
+    return await _run_cancellable_ai_operation(
+        request,
+        "answer.create_draft",
+        lambda: save_answer_to_knowledge(
+            hermes_session_id=body.hermes_session_id,
+            user_message=body.user_message,
+            assistant_answer=body.assistant_answer,
+            instruction=body.instruction,
+            output_type=body.output_type,
+            assistant_message_id=body.assistant_message_id,
+            sources=body.sources,
+            target_capture_id=body.target_capture_id,
+            answer_source=body.answer_source,
+        ),
     )
 
 
@@ -6944,11 +7112,15 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
     garden_bridge = _knowledge_custom_module("bridge.garden_bridge", "Garden bridge")
     commit_garden_draft = garden_bridge.commit_garden_draft
     synthesize_garden = garden_bridge.synthesize_garden
-    result = synthesize_garden(
-        capture_ids=body.capture_ids,
-        title=body.title,
-        card_kind=body.card_kind,
-        instruction=body.instruction,
+    result = await _run_cancellable_ai_operation(
+        request,
+        "garden.synthesize",
+        lambda: synthesize_garden(
+            capture_ids=body.capture_ids,
+            title=body.title,
+            card_kind=body.card_kind,
+            instruction=body.instruction,
+        ),
     )
     if result.get("status") == "error":
         return result
@@ -6963,7 +7135,11 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
                 break
     if not draft_id:
         return result
-    return commit_garden_draft(draft_id=draft_id)
+    return await _run_cancellable_ai_operation(
+        request,
+        "garden.commit",
+        lambda: commit_garden_draft(draft_id=draft_id),
+    )
 
 
 @app.get("/api/knowledge/reading-drafts")
@@ -7105,7 +7281,11 @@ async def post_knowledge_reading_draft_commit(request: Request, draft_id: str):
     _require_token(request)
     reading_bridge = _knowledge_custom_module("bridge.reading_bridge", "Reading bridge")
     commit_reading_artifact = reading_bridge.commit_reading_artifact
-    return commit_reading_artifact(draft_id=draft_id)
+    return await _run_cancellable_ai_operation(
+        request,
+        "reading.commit",
+        lambda: commit_reading_artifact(draft_id=draft_id),
+    )
 
 
 @app.post("/api/knowledge/reading-drafts/{draft_id}/revise")
@@ -7117,7 +7297,11 @@ async def post_knowledge_reading_draft_revise(
     _require_token(request)
     answer_bridge = _knowledge_custom_module("bridge.answer_bridge", "Answer bridge")
     revise_answer_draft = answer_bridge.revise_answer_draft
-    return revise_answer_draft(draft_id=draft_id, instruction=body.instruction)
+    return await _run_cancellable_ai_operation(
+        request,
+        "reading.revise",
+        lambda: revise_answer_draft(draft_id=draft_id, instruction=body.instruction),
+    )
 
 
 @app.delete("/api/knowledge/reading-drafts/{draft_id}")
