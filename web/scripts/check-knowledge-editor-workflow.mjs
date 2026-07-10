@@ -35,6 +35,29 @@ const workbenchSource = readFileSync(workbenchPath, "utf8");
 
 assert(apiSource.includes("organize?: boolean"), "Editable draft update request should expose organize?: boolean");
 assert(apiSource.includes("title_source?: \"ai\" | \"user\""), "Editable draft requests should expose title_source ownership");
+assert(
+  apiSource.includes("function requireKnowledgeBusinessSuccess"),
+  "Knowledge commit API should define a business-response success guard",
+);
+const knowledgeCommitApi = apiSource.slice(
+  apiSource.indexOf("commitKnowledgeCaptureDraft:"),
+  apiSource.indexOf("reviseKnowledgeCaptureDraft:"),
+);
+assert(
+  knowledgeCommitApi.includes("requireKnowledgeBusinessSuccess"),
+  "Knowledge commit API should reject HTTP 200 business errors before pages report success",
+);
+for (const marker of ["result.ok === false", "result.status === \"error\"", "result.error", "result.errors"]) {
+  assert(apiSource.includes(marker), `Knowledge business-response guard should check ${marker}`);
+}
+assert(
+  chatSource.includes("function isCommittedCaptureDraft"),
+  "Knowledge chat should classify drafts with a committed Capture pointer as already in library",
+);
+assert(
+  chatSource.includes('draftFilter === "committed" && !isCommittedCaptureDraft(draft)'),
+  "Knowledge chat committed filter should use the committed Capture compatibility contract",
+);
 
 for (const [label, source] of [
   ["KnowledgeLibraryPage", librarySource],
