@@ -57,6 +57,17 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
   return res.json();
 }
 
+function requireKnowledgeBusinessSuccess<T extends Record<string, unknown>>(result: T): T {
+  const errors = Array.isArray(result.errors)
+    ? result.errors.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const error = typeof result.error === "string" ? result.error.trim() : "";
+  if (result.ok === false || result.status === "error" || result.error || errors.length) {
+    throw new Error(error || errors[0] || "知识库入库失败，请重试。");
+  }
+  return result;
+}
+
 export function createAiOperationId(prefix = "ai"): string {
   const random =
     typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -559,7 +570,7 @@ export const api = {
     fetchJSON<Record<string, unknown>>(
       `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}/commit`,
       withAiOperation({ method: "POST" }, options),
-    ),
+    ).then(requireKnowledgeBusinessSuccess),
   reviseKnowledgeCaptureDraft: (draftId: string, instruction: string, options?: AiOperationOptions) =>
     fetchJSON<Record<string, unknown>>(
       `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}/revise`,

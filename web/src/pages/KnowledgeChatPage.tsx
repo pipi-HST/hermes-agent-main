@@ -45,6 +45,10 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
+function isCommittedCaptureDraft(draft: KnowledgeCaptureDraft): boolean {
+  return draft.status === "committed" || Boolean(draft.committed_capture_id?.trim());
+}
+
 import { WorkbenchSidebar } from "@/pages/knowledge-chat/WorkbenchSidebar";
 import { ReadingDraftReview } from "@/pages/knowledge-chat/ReadingDraftReview";
 import { DraftReview } from "@/pages/knowledge-chat/DraftReview";
@@ -1041,7 +1045,7 @@ export default function KnowledgeChatPage() {
   const handleDraftCommand = useCallback(async (text: string): Promise<boolean> => {
     if (!isCommitDraftCommand(text)) return false;
 
-    const openDrafts = drafts.filter((draft) => OPEN_STATUSES.has(draft.status));
+    const openDrafts = drafts.filter((draft) => OPEN_STATUSES.has(draft.status) && !isCommittedCaptureDraft(draft));
     const selectedOpenDraft = openDrafts.find((draft) => draft.id === selectedDraftId);
     const target = selectedOpenDraft ?? (openDrafts.length === 1 ? openDrafts[0] : null);
 
@@ -1570,8 +1574,8 @@ export default function KnowledgeChatPage() {
     const text = draftQuery.trim().toLowerCase();
     return drafts.filter((draft) => {
       if (HIDDEN_DRAFT_STATUSES.has(draft.status)) return false;
-      if (draftFilter === "open" && !OPEN_STATUSES.has(draft.status)) return false;
-      if (draftFilter === "committed" && draft.status !== "committed") return false;
+      if (draftFilter === "open" && (!OPEN_STATUSES.has(draft.status) || isCommittedCaptureDraft(draft))) return false;
+      if (draftFilter === "committed" && !isCommittedCaptureDraft(draft)) return false;
       if (!text) return true;
       return [
         draft.title,
@@ -1605,8 +1609,8 @@ export default function KnowledgeChatPage() {
     });
   }, [answerDrafts, draftFilter, draftQuery]);
 
-  const openCount = drafts.filter((draft) => OPEN_STATUSES.has(draft.status)).length;
-  const latestOpenDraft = drafts.find((draft) => OPEN_STATUSES.has(draft.status));
+  const openCount = drafts.filter((draft) => OPEN_STATUSES.has(draft.status) && !isCommittedCaptureDraft(draft)).length;
+  const latestOpenDraft = drafts.find((draft) => OPEN_STATUSES.has(draft.status) && !isCommittedCaptureDraft(draft));
   const inspectorObjectRef = useMemo<InspectorObjectRef>(() => {
     if (mode === "answer_draft_review" && answerDraftDetail?.id) {
       return {
