@@ -1,6 +1,8 @@
 """Hermes tool: capture_content — 内容捕获入库."""
 from __future__ import annotations
 
+import re
+
 from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
 from tools.registry import registry
 
@@ -24,8 +26,9 @@ CAPTURE_SCHEMA = {
         "如果用户同时要求总结/提取/改写/全文保存/全文入库/全文存储/全文存进数据库，"
         "把用户的原话尽量完整放入 instruction，不要只传 URL，"
         "不要自行压缩、改写或把“着重阐述”改成“只保留”。"
-        "Capture 会按用户意图识别四种材料整理契约：全文原文入库（正文一字不改保存）、"
-        "精炼整理稿、重点定向整理、原文增强版笔记。"
+        "Capture 会按用户意图决定提取范围：全文、明确指定的局部，或需要重点展开的内容。"
+        "全文入库表示覆盖全文，不等于一字不改原样保存。"
+        "正式 Capture 始终需要可读性整理、章节、目录和重点加粗；原始材料会另存为证据层。"
         "你不要自己替 Capture 改写契约，只要传入原始材料和用户原话。"
         "工具会先生成待确认原文初稿并返回微信可读预览，不在首次调用里生成最终整理稿。"
         "重要：本工具不会正式入库。"
@@ -52,8 +55,8 @@ CAPTURE_SCHEMA = {
             "instruction": {
                 "type": "string",
                 "description": (
-                    "可选。用户同条消息里的整理要求；尽量把用户原话放入 instruction，"
-                    "不要自行总结成更短指令。"
+                    "可选。用户同条消息里的整理要求；只传用户原话，"
+                    "不要自行总结、扩写或改成更强的指令，尤其不要把“全文入库”扩写成“一字不改”。"
                     "例如'总结全文核心观点'、'提取某某部分'、'全文保存'、"
                     "'全文存储'、'全文存进数据库'、'一字不改全文原文入库'、"
                     "'整理成原文增强版笔记'。"
@@ -71,9 +74,21 @@ def do_capture(content: str, **kwargs):
     return call_custom_bridge("capture_bridge", "capture_content", content, **kwargs)
 
 
+def _instruction_from_user_task(user_task: str) -> str:
+    for raw_line in reversed((user_task or "").splitlines()):
+        line = re.sub(r"https?://\S+", "", raw_line).strip().rstrip("：:")
+        if re.search(r"(入库|存库|保存|提取|总结|整理|重点|改写|翻译)", line):
+            return line
+    return ""
+
+
 def _handler(args: dict, **kw) -> str:
     try:
-        result = do_capture(args.get("content", ""), instruction=args.get("instruction", ""))
+        instruction = _instruction_from_user_task(str(kw.get("user_task") or ""))
+        result = do_capture(
+            args.get("content", ""),
+            instruction=instruction or args.get("instruction", ""),
+        )
         return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="capture", intent="create_capture_draft", exc=exc)
