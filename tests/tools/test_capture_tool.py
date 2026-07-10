@@ -31,6 +31,31 @@ def test_capture_schema_keeps_coverage_separate_from_presentation_contract():
     assert "不要把“全文入库”扩写成“一字不改”" in instruction_description
 
 
+def test_capture_handler_uses_user_wording_as_instruction_contract(monkeypatch):
+    import json
+    import tools.capture_tool as tool
+
+    observed: dict[str, str] = {}
+
+    def fake_capture(content: str, **kwargs):
+        observed["content"] = content
+        observed["instruction"] = kwargs.get("instruction", "")
+        return {"status": "success"}
+
+    monkeypatch.setattr(tool, "do_capture", fake_capture)
+
+    payload = json.loads(tool._handler(
+        {
+            "content": "https://example.test/article",
+            "instruction": "全文原文入库，一字不改保存正文",
+        },
+        user_task="这个篇文章全文入库：https://example.test/article",
+    ))
+
+    assert payload["status"] == "success"
+    assert observed["instruction"] == "这个篇文章全文入库"
+
+
 def test_revise_tools_do_not_claim_new_documents():
     import tools.refine_capture_tool as refine_tool
     import tools.revise_capture_draft_tool as revise_tool
