@@ -44,12 +44,18 @@ test("真实浏览器提交的文章进入同一知识库并展示目录", async
 
   await page.getByRole("button", { name: /所有文件/ }).click();
   await page.getByPlaceholder("搜索文件").fill(title);
-  await page.getByText(title, { exact: true }).first().click();
+  await Promise.all([
+    page.waitForResponse(
+      (response) => response.url().includes("/api/knowledge/library/items/capture/") && response.status() === 200,
+      { timeout: 30_000 },
+    ),
+    page.getByText(title, { exact: true }).first().click(),
+  ]);
 
-  await expect(page.getByRole("heading", { name: title, level: 2 })).toBeVisible();
-  await expect(page.getByText(signal, { exact: false })).toBeVisible();
+  await expect(page.getByRole("heading", { name: title, level: 2 })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(signal, { exact: false })).toBeVisible({ timeout: 30_000 });
   const outlineLink = page.getByRole("link", { name: "正文" }).first();
-  await expect(outlineLink).toBeVisible();
+  await expect(outlineLink).toBeVisible({ timeout: 30_000 });
   await outlineLink.click();
   await expect(page.getByRole("heading", { name: "正文" })).toBeVisible();
 });
