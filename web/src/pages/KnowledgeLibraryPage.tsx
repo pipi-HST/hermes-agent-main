@@ -1887,12 +1887,7 @@ export default function KnowledgeLibraryPage() {
                         key={itemKey(item)}
                         active={selectedKey === itemKey(item)}
 	                        item={item}
-	                        onClick={() => {
-                            if (!confirmLeaveCurrentWork()) return;
-	                          setSelectedKey(itemKey(item));
-	                          setWorkbenchMode("browse");
-	                          switchMode("files");
-	                        }}
+	                        onClick={() => openItemFromSidebar(item)}
 	                      />
                     ))}
                   </div>
