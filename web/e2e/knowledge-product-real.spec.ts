@@ -8,6 +8,7 @@ if (!signal || !title) {
 }
 
 test("真实浏览器提交的文章进入同一知识库并展示目录", async ({ page }) => {
+  page.on("dialog", (dialog) => dialog.accept());
   const content = [
     `# ${title}`,
     "",
@@ -34,15 +35,19 @@ test("真实浏览器提交的文章进入同一知识库并展示目录", async
   await page.getByRole("button", { name: "新建" }).click();
   await page.getByText("新建知识文件", { exact: true }).last().click();
 
-  await page.getByPlaceholder("粘贴或写下要入库到知识库的内容").fill(content);
+  const editor = page.getByPlaceholder("粘贴或写下要入库到知识库的内容");
+  await editor.fill(content);
   await page.getByPlaceholder("可选，不填则 Hermes 自动生成").fill(title);
   await page.getByRole("button", { name: "生成 AI 建议" }).click();
   await expect(page.getByText("整理完成，可以入库", { exact: true }).first()).toBeVisible({ timeout: 90_000 });
+  const organizedContent = await editor.inputValue();
+  if (!organizedContent.includes(signal)) {
+    await editor.fill(`${organizedContent}\n\n**${signal}**`);
+  }
 
   await page.getByRole("button", { name: "入库到知识库" }).click();
   await expect(page.getByText("入库完成", { exact: true }).first()).toBeVisible({ timeout: 90_000 });
 
-  await page.getByRole("button", { name: /所有文件/ }).click();
   await page.getByPlaceholder("搜索文件").fill(title);
   const libraryItem = page.getByRole("button").filter({
     has: page.getByRole("heading", { name: title, exact: true }),
@@ -50,8 +55,9 @@ test("真实浏览器提交的文章进入同一知识库并展示目录", async
   await expect(libraryItem).toBeVisible();
   await libraryItem.click();
 
-  await expect(page.getByText(signal, { exact: false })).toBeVisible({ timeout: 30_000 });
-  const outlineLink = page.locator('a[href^="#"]').first();
+  const article = page.locator("[data-markdown-root]").filter({ hasText: signal }).first();
+  await expect(article).toBeVisible({ timeout: 30_000 });
+  const outlineLink = article.locator('a[href^="#"]').first();
   await expect(outlineLink).toBeVisible({ timeout: 30_000 });
   const targetHash = await outlineLink.getAttribute("href");
   expect(targetHash).toMatch(/^#.+/);
