@@ -53,8 +53,16 @@ test("真实浏览器提交的文章进入同一知识库并展示目录", async
   ]);
 
   await expect(page.getByText(signal, { exact: false })).toBeVisible({ timeout: 30_000 });
-  const outlineLink = page.getByRole("link", { name: "正文" }).first();
+  const outlineLink = page.locator('a[href^="#"]').first();
   await expect(outlineLink).toBeVisible({ timeout: 30_000 });
+  const targetHash = await outlineLink.getAttribute("href");
+  expect(targetHash).toMatch(/^#.+/);
   await outlineLink.click();
-  await expect(page.getByRole("heading", { name: "正文" })).toBeVisible();
+  const targetId = decodeURIComponent(targetHash!.slice(1));
+  await expect.poll(() => page.evaluate((id) => {
+    const target = document.getElementById(id);
+    if (!target || !/^H[1-6]$/.test(target.tagName)) return false;
+    const rect = target.getBoundingClientRect();
+    return rect.top >= 0 && rect.top <= window.innerHeight;
+  }, targetId)).toBe(true);
 });
