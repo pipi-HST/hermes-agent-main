@@ -94,7 +94,10 @@ test("跨类型冲突的草稿编号不会触发 Reading 错误请求", async ({
   await page.goto(`/knowledge-chat?session=${state.sessionId}`);
   await expect(page.getByText(`草稿编号：${sharedId}`)).toBeVisible();
 
-  expect(probe.requests).toContainEqual({ method: "GET", path: `/api/knowledge/capture-drafts/${sharedId}` });
+  await expect.poll(() => probe.requests).toContainEqual({
+    method: "GET",
+    path: `/api/knowledge/capture-drafts/${sharedId}`,
+  });
   expect(probe.requests).not.toContainEqual({ method: "GET", path: `/api/knowledge/reading-drafts/${sharedId}` });
   assertCleanBrowser(probe);
 });
