@@ -5350,8 +5350,19 @@ def _knowledge_capture_library_item(
     frontmatter, body = note if note else ({}, "")
     title = str(frontmatter.get("title") or "").strip() or Path(file_path).stem or str(data.get("id") or "未命名")
     summary = str(frontmatter.get("story") or frontmatter.get("summary") or "").strip()
+    capture_id = str(data.get("id") or "")
+    indexed = data.get("embedding") is not None
+    embedding_columns = _knowledge_table_columns(conn, "capture_embeddings") if conn is not None else set()
+    if not indexed and conn is not None and {"capture_id", "kind", "embedding"} <= embedding_columns:
+        indexed = conn.execute(
+            """SELECT 1 FROM capture_embeddings
+               WHERE capture_id = ? AND kind = 'identity'
+                 AND embedding IS NOT NULL
+               LIMIT 1""",
+            (capture_id,),
+        ).fetchone() is not None
     item = {
-        "id": str(data.get("id") or ""),
+        "id": capture_id,
         "kind": "capture",
         "title": title,
         "summary": summary,
@@ -5367,9 +5378,9 @@ def _knowledge_capture_library_item(
         "word_count": int(frontmatter.get("word_count") or len(body)),
         "created_at": str(data.get("created_at") or ""),
         "updated_at": str(data.get("updated_at") or ""),
-        "indexed": data.get("embedding") is not None,
+        "indexed": indexed,
         "title_source": str(frontmatter.get("title_source") or "").strip(),
-        "garden_card_count": _knowledge_garden_card_count(conn, str(data.get("id") or "")),
+        "garden_card_count": _knowledge_garden_card_count(conn, capture_id),
     }
     return item
 

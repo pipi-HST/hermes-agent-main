@@ -359,6 +359,56 @@ class TestWebServerEndpoints:
         assert detail["draft"]["draft_text"] == "# 智能问数\n\n整理稿正文"
         assert detail["draft"]["raw_text"] == "原文正文"
 
+    def test_knowledge_capture_library_item_reads_identity_index(self, tmp_path):
+        import sqlite3
+        import hermes_cli.web_server as ws
+
+        vault = tmp_path / "vault"
+        capture_dir = vault / "captures"
+        capture_dir.mkdir(parents=True)
+        (capture_dir / "indexed.md").write_text(
+            "---\n"
+            "title: 已索引材料\n"
+            "status: processed\n"
+            "---\n\n"
+            "## 正文\n\n已索引正文。\n",
+            encoding="utf-8",
+        )
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """CREATE TABLE captures (
+               id TEXT PRIMARY KEY,
+               file_path TEXT,
+               raw_path TEXT,
+               review_state TEXT,
+               created_at TEXT,
+               updated_at TEXT
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE capture_embeddings (
+               id TEXT PRIMARY KEY,
+               capture_id TEXT,
+               kind TEXT,
+               embedding BLOB
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO captures VALUES (?, ?, ?, ?, ?, ?)",
+            ("cap-indexed", "captures/indexed.md", "", "captured", "", ""),
+        )
+        conn.execute(
+            "INSERT INTO capture_embeddings VALUES (?, ?, ?, ?)",
+            ("emb-indexed", "cap-indexed", "identity", b"embedding"),
+        )
+        row = conn.execute("SELECT * FROM captures WHERE id = ?", ("cap-indexed",)).fetchone()
+
+        item = ws._knowledge_capture_library_item(vault, row, conn=conn)
+
+        assert item["indexed"] is True
+        conn.close()
+
     def test_knowledge_reading_drafts_list_hides_deleted_statuses(self, monkeypatch, tmp_path):
         import sqlite3
 
