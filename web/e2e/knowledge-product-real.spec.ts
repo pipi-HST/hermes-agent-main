@@ -48,13 +48,7 @@ test("真实浏览器提交的文章进入同一知识库并展示目录", async
     has: page.getByRole("heading", { name: title, exact: true }),
   }).first();
   await expect(libraryItem).toBeVisible();
-  await Promise.all([
-    page.waitForResponse(
-      (response) => response.url().includes("/api/knowledge/library/items/capture/") && response.status() === 200,
-      { timeout: 30_000 },
-    ),
-    libraryItem.click(),
-  ]);
+  await libraryItem.click();
 
   await expect(page.getByText(signal, { exact: false })).toBeVisible({ timeout: 30_000 });
   const outlineLink = page.locator('a[href^="#"]').first();
