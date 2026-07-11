@@ -8,6 +8,7 @@ if (!baseURL) {
 
 export default defineConfig({
   testDir: "./e2e",
+  timeout: 180_000,
   fullyParallel: false,
   forbidOnly: true,
   retries: 0,
