@@ -20,7 +20,9 @@
     "smoke:research-progress": "node scripts/smoke-research-progress-live.mjs",
     "lint": "eslint .",
     "test:e2e:knowledge": "playwright test e2e/knowledge-workbench.spec.ts",
+    "test:e2e:knowledge:real": "playwright test e2e/knowledge-product-real.spec.ts --config=playwright.real.config.ts",
     "test:knowledge:complete": "npm run check:knowledge-draft-routing && npm run test:e2e:knowledge && npm run lint && npm run build",
+    "test:knowledge:product": "npm run test:e2e:knowledge:real && npm run test:knowledge:complete",
     "preview": "vite preview"
   },
   "dependencies": {

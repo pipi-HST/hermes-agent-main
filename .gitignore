@@ -68,7 +68,9 @@ mini-swe-agent/
 .playwright-cli/
 web/.playwright-cli/
 web/playwright-report/
+web/playwright-report-real/
 web/test-results/
+web/test-results-real/
 web/output/
 
 # Nix
