@@ -59,6 +59,7 @@ import {
 } from "@/pages/knowledge-chat/EditableCaptureWorkbench";
 import { KnowledgeInspector } from "@/pages/knowledge-chat/Inspector";
 import { GatewayChat } from "@/pages/knowledge-chat/GatewayChat";
+import { resolveKnowledgeDraftReference } from "@/pages/knowledge-chat/draftRouting.mjs";
 import {
   HIDDEN_DRAFT_STATUSES,
   OPEN_STATUSES,
@@ -215,7 +216,7 @@ export default function KnowledgeChatPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const hydratedPromptRef = useRef(false);
   const initialResumeTargetRef = useRef(searchParams.get("session"));
-  const openedReadingDraftIdsRef = useRef(new Set<string>());
+  const openedDraftReferencesRef = useRef(new Set<string>());
   const [mode, setMode] = useState<WorkbenchMode>(isCaptureReviewRoute ? "draft_review" : "chat");
   const [selection, setSelection] = useState<WorkbenchSelection | null>(null);
   const [drafts, setDrafts] = useState<KnowledgeCaptureDraft[]>([]);
@@ -519,14 +520,24 @@ export default function KnowledgeChatPage() {
   }, [mode, selectedDraftId, selection, state.messages, state.sessionId]);
 
   useEffect(() => {
+    if (draftsLoading || answerDraftsLoading) return;
     const lastAssistant = [...state.messages]
       .reverse()
       .find((message) => message.role === "assistant");
-    const draftId = extractReadingDraftId(lastAssistant?.text ?? "");
-    if (!draftId || openedReadingDraftIdsRef.current.has(draftId)) return;
-    openedReadingDraftIdsRef.current.add(draftId);
-    void openAnswerDraft(draftId);
-  }, [openAnswerDraft, state.messages]);
+    const reference = resolveKnowledgeDraftReference(lastAssistant?.text ?? "", {
+      captureDraftIds: drafts.map((draft) => draft.id),
+      readingDraftIds: answerDrafts.map((draft) => draft.id),
+    });
+    if (!reference) return;
+    const referenceKey = `${state.sessionId}:${reference.type}:${reference.id}`;
+    if (openedDraftReferencesRef.current.has(referenceKey)) return;
+    openedDraftReferencesRef.current.add(referenceKey);
+    if (reference.type === "capture") {
+      selectDraft(reference.id);
+      return;
+    }
+    void openAnswerDraft(reference.id);
+  }, [answerDrafts, answerDraftsLoading, drafts, draftsLoading, openAnswerDraft, selectDraft, state.messages, state.sessionId]);
 
   useEffect(() => {
     void loadDraftDetail(selectedDraftId);
@@ -585,13 +596,9 @@ export default function KnowledgeChatPage() {
         warning: ev.payload?.warning,
       });
       void loadDrafts({ selectLatestOpen: true });
+      void loadAnswerDrafts();
       void loadSessions();
       scheduleHistoryReconcile("message-complete", 250);
-      const readingDraftId = extractReadingDraftId(text);
-      if (readingDraftId && !openedReadingDraftIdsRef.current.has(readingDraftId)) {
-        openedReadingDraftIdsRef.current.add(readingDraftId);
-        void openAnswerDraft(readingDraftId);
-      }
     });
 
     const offToolStart = gw.on<ToolStartPayload>("tool.start", (ev) => {
@@ -710,7 +717,7 @@ export default function KnowledgeChatPage() {
       offError();
       gw.close();
     };
-  }, [gw, loadAnswerDrafts, loadDrafts, loadSessions, nextId, openAnswerDraft, reconcileCurrentSession, researchMode, scheduleHistoryReconcile]);
+  }, [gw, loadAnswerDrafts, loadDrafts, loadSessions, nextId, reconcileCurrentSession, researchMode, scheduleHistoryReconcile]);
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({
@@ -2131,19 +2138,6 @@ function isCommitDraftCommand(text: string): boolean {
   if (!normalized) return false;
   return /^\/?(commit|save)-(capture|reading)-draft$/i.test(normalized)
     || /^\/?(commit|save)_?(capture|reading)_?draft$/i.test(normalized);
-}
-
-function extractReadingDraftId(text: string): string {
-  const patterns = [
-    /草稿编号[：:\s]+([a-zA-Z0-9_-]{8,})/,
-    /reading_draft_id["'\s:：]+([a-zA-Z0-9_-]{8,})/,
-    /draft_id["'\s:：]+([a-zA-Z0-9_-]{8,})/,
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) return match[1];
-  }
-  return "";
 }
 
 function bridgeMetaString(result: Record<string, unknown>, key: string): string {

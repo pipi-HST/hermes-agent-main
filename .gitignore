@@ -67,6 +67,8 @@ mini-swe-agent/
 # Local Playwright/smoke artifacts
 .playwright-cli/
 web/.playwright-cli/
+web/playwright-report/
+web/test-results/
 web/output/
 
 # Nix

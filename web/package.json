@@ -13,11 +13,14 @@
     "check:knowledge-capture-card-feedback": "node scripts/check-knowledge-capture-card-feedback-contract.mjs",
     "check:knowledge-editor-workflow": "node scripts/check-knowledge-editor-workflow.mjs",
     "check:knowledge-layout-focus": "node scripts/check-knowledge-layout-focus.mjs",
+    "check:knowledge-draft-routing": "node scripts/test-knowledge-draft-routing.mjs",
     "check:knowledge-outline": "node scripts/check-knowledge-outline-navigation.mjs",
     "check:permanent-delete": "node scripts/check-knowledge-permanent-delete-contract.mjs",
     "check:research-progress": "node scripts/check-research-progress-ui-contract.mjs",
     "smoke:research-progress": "node scripts/smoke-research-progress-live.mjs",
     "lint": "eslint .",
+    "test:e2e:knowledge": "playwright test e2e/knowledge-workbench.spec.ts",
+    "test:knowledge:complete": "npm run check:knowledge-draft-routing && npm run test:e2e:knowledge && npm run lint && npm run build",
     "preview": "vite preview"
   },
   "dependencies": {
