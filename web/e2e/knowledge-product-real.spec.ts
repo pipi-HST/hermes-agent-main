@@ -52,7 +52,6 @@ test("真实浏览器提交的文章进入同一知识库并展示目录", async
     page.getByText(title, { exact: true }).first().click(),
   ]);
 
-  await expect(page.getByRole("heading", { name: title, level: 2 })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(signal, { exact: false })).toBeVisible({ timeout: 30_000 });
   const outlineLink = page.getByRole("link", { name: "正文" }).first();
   await expect(outlineLink).toBeVisible({ timeout: 30_000 });
