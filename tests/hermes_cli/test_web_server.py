@@ -527,6 +527,9 @@ class TestWebServerEndpoints:
                             "excerpt": "网页正文",
                         }
                     ],
+                    "reasoning_trace": {"source": "api", "api_reasoning": "检索后回答"},
+                    "updated_history_summary": "已讨论苹果市值。",
+                    "updated_history_summary_version": 4,
                 },
             }
 
@@ -538,6 +541,11 @@ class TestWebServerEndpoints:
                 "question": "苹果现在的市值多少",
                 "selected_text": "苹" * 1000,
                 "mode": "web_only",
+                "history": [{"role": "user", "content": "上一问"}],
+                "history_summary": "旧摘要",
+                "history_summary_version": 3,
+                "history_overflow": [{"role": "assistant", "content": "旧回答"}],
+                "force_web": True,
             },
         )
 
@@ -546,8 +554,16 @@ class TestWebServerEndpoints:
         assert data["answer"] == "联网回答 [W1]"
         assert data["mode"] == "web_only"
         assert data["sources"]["web"][0]["ref"] == "W1"
+        assert data["meta"]["reasoning_trace"]["source"] == "api"
+        assert data["meta"]["updated_history_summary"] == "已讨论苹果市值。"
+        assert data["meta"]["updated_history_summary_version"] == 4
         assert called["mode"] == "web_only"
         assert called["selection_context"]["selected_text"] == "苹" * 1000
+        assert called["history"] == [{"role": "user", "content": "上一问"}]
+        assert called["history_summary"] == "旧摘要"
+        assert called["history_summary_version"] == 3
+        assert called["history_overflow"] == [{"role": "assistant", "content": "旧回答"}]
+        assert called["force_web"] is True
 
     def test_knowledge_library_selection_chat_merges_and_enriches_source_map(self, monkeypatch, tmp_path):
         import sqlite3
@@ -829,6 +845,13 @@ class TestWebServerEndpoints:
             )
             await event_callback({"type": "answer_delta", "delta": "Coding agent"})
             await event_callback({"type": "answer_delta", "delta": " 是"})
+            await event_callback(
+                {
+                    "type": "summary_updated",
+                    "updated_history_summary": "已讨论 coding agent。",
+                    "updated_history_summary_version": 2,
+                }
+            )
             return {
                 "status": "success",
                 "chat_preview": "Coding agent 是能自主完成软件工程任务的 AI 系统 [W1]",
@@ -871,11 +894,21 @@ class TestWebServerEndpoints:
             for line in resp.text.splitlines()
             if line.startswith("data: ")
         ]
-        assert [event["event"] for event in events[:6]] == ["start", "progress", "progress", "progress", "progress", "complete"]
+        assert [event["event"] for event in events[:7]] == [
+            "start",
+            "progress",
+            "progress",
+            "progress",
+            "progress",
+            "summary_updated",
+            "complete",
+        ]
         assert events[1]["type"] == "plan"
         assert events[2]["web_sources"][0]["title"] == "What Is an AI Coding Agent?"
         assert events[3] == {"event": "progress", "type": "answer_delta", "delta": "Coding agent"}
         assert events[4] == {"event": "progress", "type": "answer_delta", "delta": " 是"}
+        assert events[5]["updated_history_summary"] == "已讨论 coding agent。"
+        assert events[5]["updated_history_summary_version"] == 2
         assert events[-1]["response"]["answer"].startswith("Coding agent 是")
         assert events[-1]["response"]["sources"]["web"][0]["ref"] == "W1"
 

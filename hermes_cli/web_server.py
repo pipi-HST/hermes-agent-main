@@ -59,7 +59,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -71,7 +71,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, Field
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
@@ -4790,6 +4790,11 @@ class _KnowledgeLibrarySelectionChatBody(BaseModel):
     selection_end: int | None = None
     selection_confidence: str = "none"
     mode: str = "local_web"
+    history: list[dict[str, str]] = Field(default_factory=list)
+    history_summary: str = ""
+    history_summary_version: int = 0
+    history_overflow: list[dict[str, str]] = Field(default_factory=list)
+    force_web: bool = False
 
 
 def _knowledge_custom_root() -> Path:
@@ -6167,6 +6172,11 @@ def _knowledge_library_selection_research_kwargs(
             "selection_end": body.selection_end,
             "selection_confidence": body.selection_confidence,
         },
+        "history": body.history,
+        "history_summary": body.history_summary,
+        "history_summary_version": body.history_summary_version,
+        "history_overflow": body.history_overflow,
+        "force_web": body.force_web,
     }
 
 
@@ -6410,7 +6420,12 @@ def _knowledge_library_selection_chat_response(
             "rewritten_web_queries": meta.get("rewritten_web_queries") if isinstance(meta.get("rewritten_web_queries"), list) else [],
             "provider_status": meta.get("provider_status") if isinstance(meta.get("provider_status"), dict) else {},
             "research_trace": meta.get("research_trace") if isinstance(meta.get("research_trace"), dict) else {},
+            "reasoning_trace": meta.get("reasoning_trace") if isinstance(meta.get("reasoning_trace"), dict) else {},
             "web_search_attempted": bool(meta.get("web_search_attempted")),
+            "updated_history_summary": meta.get("updated_history_summary") if isinstance(meta.get("updated_history_summary"), str) else "",
+            "updated_history_summary_version": meta.get("updated_history_summary_version") or 0,
+            "history_summary_failed": bool(meta.get("history_summary_failed")),
+            "history_summary_error": meta.get("history_summary_error") or "",
         },
     }
 
@@ -6459,7 +6474,10 @@ async def post_knowledge_library_item_selection_chat_stream(
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
         async def on_event(event: dict[str, Any]) -> None:
-            await queue.put({"event": "progress", **event})
+            if event.get("type") == "summary_updated":
+                await queue.put({"event": "summary_updated", **event})
+            else:
+                await queue.put({"event": "progress", **event})
 
         async def run_research() -> None:
             try:

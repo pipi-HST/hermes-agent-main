@@ -965,6 +965,19 @@ export interface KnowledgeResearchTrace {
   [key: string]: unknown;
 }
 
+export interface KnowledgeChatHistoryMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface KnowledgeReasoningTrace {
+  api_reasoning?: string | Record<string, unknown> | unknown[];
+  reasoning_summary?: string;
+  fallback_reason?: string;
+  source?: "api" | "fallback" | "missing" | string;
+  [key: string]: unknown;
+}
+
 export interface KnowledgeLibrarySelectionChatRequest {
   question: string;
   selected_text?: string;
@@ -975,6 +988,11 @@ export interface KnowledgeLibrarySelectionChatRequest {
   selection_end?: number;
   selection_confidence?: "offset" | "text_only" | "none";
   mode?: KnowledgeResearchMode;
+  history?: KnowledgeChatHistoryMessage[];
+  history_summary?: string;
+  history_summary_version?: number;
+  history_overflow?: KnowledgeChatHistoryMessage[];
+  force_web?: boolean;
 }
 
 export interface KnowledgeLibrarySelectionChatResponse {
@@ -995,12 +1013,17 @@ export interface KnowledgeLibrarySelectionChatResponse {
     rewritten_web_queries?: string[];
     provider_status?: Record<string, unknown>;
     research_trace?: KnowledgeResearchTrace;
+    reasoning_trace?: KnowledgeReasoningTrace;
     web_search_attempted?: boolean;
+    updated_history_summary?: string;
+    updated_history_summary_version?: number;
+    history_summary_failed?: boolean;
+    history_summary_error?: string;
   };
 }
 
 export interface KnowledgeLibrarySelectionChatStreamEvent {
-  event: "start" | "progress" | "complete" | "error";
+  event: "start" | "progress" | "complete" | "error" | "summary_updated";
   type?: string;
   mode?: KnowledgeResearchMode;
   plan_status?: string;
@@ -1037,6 +1060,8 @@ export interface KnowledgeLibrarySelectionChatStreamEvent {
   message?: string;
   stage?: string;
   delta?: string;
+  updated_history_summary?: string;
+  updated_history_summary_version?: number;
   response?: KnowledgeLibrarySelectionChatResponse;
 }
 

@@ -61,6 +61,7 @@ import {
   type KnowledgeLibrarySelectionChatResponse,
   type KnowledgeLibrarySelectionChatStreamEvent,
   type KnowledgeLibrarySmartView,
+  type KnowledgeChatHistoryMessage,
   type KnowledgeResearchMode,
   type KnowledgeResearchSource,
   type KnowledgeResearchTrace,
@@ -121,6 +122,11 @@ interface ArticleAiRequestContext {
   selection_end?: number;
   selection_confidence: "offset" | "text_only" | "none";
   mode: KnowledgeResearchMode;
+  history?: KnowledgeChatHistoryMessage[];
+  history_summary?: string;
+  history_summary_version?: number;
+  history_overflow?: KnowledgeChatHistoryMessage[];
+  force_web?: boolean;
 }
 
 interface ArticleChatMessage {
@@ -139,6 +145,18 @@ interface ArticleChatMessage {
   responseMeta?: KnowledgeLibrarySelectionChatResponse["meta"];
   warnings?: string[];
   requestContext?: ArticleAiRequestContext;
+  compressedIntoSummaryVersion?: number;
+}
+
+type ArticleChatMessagesByMode = Record<"current_article_only" | "local_web", ArticleChatMessage[]>;
+
+const EMPTY_ARTICLE_CHAT_MESSAGES: ArticleChatMessagesByMode = {
+  current_article_only: [],
+  local_web: [],
+};
+
+function articleChatModeKey(mode: KnowledgeResearchMode): keyof ArticleChatMessagesByMode {
+  return mode === "local_web" ? "local_web" : "current_article_only";
 }
 
 const DEFAULT_SELECTION: LibrarySelection = { type: "all", value: "all" };
@@ -234,9 +252,11 @@ export default function KnowledgeLibraryPage() {
   const articleLayoutRef = useRef<HTMLDivElement | null>(null);
   const lastOpenAiPanelModeRef = useRef<ArticleAIPanelMode>("assist");
   const [selectionContext, setSelectionContext] = useState<ArticleSelectionContext | null>(null);
-  const [chatMessages, setChatMessages] = useState<ArticleChatMessage[]>([]);
+  const [chatMessagesByMode, setChatMessagesByMode] = useState<ArticleChatMessagesByMode>(EMPTY_ARTICLE_CHAT_MESSAGES);
   const [chatQuestion, setChatQuestion] = useState("");
-  const [articleResearchMode, setArticleResearchMode] = useState<KnowledgeResearchMode>("local_web");
+  const [articleResearchMode, setArticleResearchMode] = useState<KnowledgeResearchMode>("current_article_only");
+  const [historySummary, setHistorySummary] = useState("");
+  const [historySummaryVersion, setHistorySummaryVersion] = useState(0);
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState("");
   const chatStreamAbortRef = useRef<AbortController | null>(null);
@@ -259,6 +279,17 @@ export default function KnowledgeLibraryPage() {
   const [editableStatus, setEditableStatus] = useState<EditableCaptureStatus>("empty");
   const [editableProgressMessage, setEditableProgressMessage] = useState("");
   const [editableError, setEditableError] = useState("");
+  const chatMessages = chatMessagesByMode[articleResearchMode === "local_web" ? "local_web" : "current_article_only"];
+  const setChatMessagesForMode = useCallback((
+    mode: KnowledgeResearchMode,
+    updater: (messages: ArticleChatMessage[]) => ArticleChatMessage[],
+  ) => {
+    const key = articleChatModeKey(mode);
+    setChatMessagesByMode((current) => ({
+      ...current,
+      [key]: updater(current[key] || []),
+    }));
+  }, []);
 
   const selectedFolder = selection.type === "folder" ? selection.value : "";
   const selectedView = selection.type === "view" ? selection.value : "";
@@ -535,7 +566,9 @@ export default function KnowledgeLibraryPage() {
     chatStreamAbortRef.current = null;
     chatStreamAssistantIdRef.current = "";
     setSelectionContext(null);
-    setChatMessages([]);
+    setChatMessagesByMode({ ...EMPTY_ARTICLE_CHAT_MESSAGES });
+    setHistorySummary("");
+    setHistorySummaryVersion(0);
     setChatQuestion("");
     setChatError("");
     setChatLoading(false);
@@ -1382,18 +1415,22 @@ export default function KnowledgeLibraryPage() {
   ]);
 
   const markArticleAiStopped = useCallback((assistantId: string, message = "已停止生成。") => {
-    setChatMessages((messages) =>
-      messages.map((item) =>
-        item.id === assistantId && item.role === "assistant" && item.pending
-          ? {
-              ...item,
-              content: item.content && !item.content.startsWith("正在") ? item.content : message,
-              pending: false,
-              warnings: uniqueStrings([...(item.warnings || []), message]),
-            }
-          : item,
-      ),
-    );
+    setChatMessagesByMode((current) => {
+      const next = { ...current };
+      for (const key of Object.keys(next) as Array<keyof ArticleChatMessagesByMode>) {
+        next[key] = next[key].map((item) =>
+          item.id === assistantId && item.role === "assistant" && item.pending
+            ? {
+                ...item,
+                content: item.content && !item.content.startsWith("正在") ? item.content : message,
+                pending: false,
+                warnings: uniqueStrings([...(item.warnings || []), message]),
+              }
+            : item,
+        );
+      }
+      return next;
+    });
   }, []);
 
   const stopArticleAi = useCallback(() => {
@@ -1410,6 +1447,18 @@ export default function KnowledgeLibraryPage() {
     }
   }, [markArticleAiStopped]);
 
+  const applyHistorySummaryUpdate = useCallback((summary: string | undefined, version: number | undefined) => {
+    const nextSummary = (summary || "").trim();
+    const nextVersion = Number(version || 0);
+    if (!nextSummary || !Number.isFinite(nextVersion)) return;
+    setHistorySummaryVersion((currentVersion) => {
+      if (nextVersion <= currentVersion) return currentVersion;
+      setHistorySummary(nextSummary);
+      setChatMessagesByMode((current) => markCompressedHistoryMessages(current, nextVersion));
+      return nextVersion;
+    });
+  }, []);
+
   const askArticleAi = useCallback(async (override?: { question?: string; mode?: KnowledgeResearchMode; requestContext?: ArticleAiRequestContext }) => {
     if (!detail || chatLoading) return;
     const requestContext = override?.requestContext;
@@ -1417,6 +1466,7 @@ export default function KnowledgeLibraryPage() {
     const requestMode = requestContext?.mode ?? override?.mode ?? articleResearchMode;
     if (!question) return;
     const context = selectionContext;
+    const modeMessages = chatMessagesByMode[articleChatModeKey(requestMode)] || [];
     const requestBody: ArticleAiRequestContext = requestContext || {
       question,
       selected_text: context?.selectedText || "",
@@ -1427,7 +1477,17 @@ export default function KnowledgeLibraryPage() {
       selection_end: context?.selectionEnd,
       selection_confidence: context?.selectionConfidence || "none",
       mode: requestMode,
+      history: selectionChatHistory(modeMessages),
+      history_summary: historySummary,
+      history_summary_version: historySummaryVersion,
+      history_overflow: selectionChatHistoryOverflow(chatMessagesByMode),
+      force_web: false,
     };
+    requestBody.history = selectionChatHistory(modeMessages);
+    requestBody.history_summary = historySummary;
+    requestBody.history_summary_version = historySummaryVersion;
+    requestBody.history_overflow = selectionChatHistoryOverflow(chatMessagesByMode);
+    requestBody.force_web = Boolean(requestBody.force_web && requestBody.mode === "local_web");
     if ((requestBody.selected_text || "").trim().length > MAX_SELECTION_SEARCH_CHARS) {
       setChatError(SELECTION_TOO_LONG_MESSAGE);
       return;
@@ -1445,7 +1505,7 @@ export default function KnowledgeLibraryPage() {
     const pendingMessage: ArticleChatMessage = {
       id: assistantId,
       role: "assistant",
-      content: requestMode === "web_only" ? "正在检索公开网页并读取可用材料..." : "正在基于可用材料回答...",
+      content: requestMode === "local_web" ? "正在基于可用材料回答..." : "正在基于当前文章回答...",
       selectionPreview: requestBody.selected_text ? requestBody.selected_text.slice(0, 160) : "",
       createdAt: new Date().toISOString(),
       pending: true,
@@ -1453,13 +1513,15 @@ export default function KnowledgeLibraryPage() {
       requestContext: requestBody,
       researchTrace: pendingTrace,
       responseMeta: {
-        web_queries: requestMode === "web_only" ? [question] : [],
+        web_queries: [],
         research_trace: pendingTrace,
-        web_search_attempted: requestMode === "web_only",
+        web_search_attempted: Boolean(requestBody.force_web),
       },
     };
-    setChatMessages((messages) => [...messages, userMessage, pendingMessage]);
+    setChatMessagesForMode(requestMode, (messages) => [...messages, userMessage, pendingMessage]);
     setChatQuestion("");
+    setSelectionContext(null);
+    window.getSelection()?.removeAllRanges();
     setChatLoading(true);
     setChatError("");
     let sawProgressEvent = false;
@@ -1478,7 +1540,7 @@ export default function KnowledgeLibraryPage() {
         type: "answer_delta",
         delta,
       };
-      setChatMessages((messages) =>
+      setChatMessagesForMode(requestMode, (messages) =>
         messages.map((message) =>
           message.id === assistantId ? applySelectionChatStreamEvent(message, mergedEvent, requestMode) : message,
         ),
@@ -1505,13 +1567,17 @@ export default function KnowledgeLibraryPage() {
           if (event.event === "progress") {
             sawProgressEvent = true;
           }
+          if (event.event === "summary_updated") {
+            applyHistorySummaryUpdate(event.updated_history_summary, event.updated_history_summary_version);
+            return;
+          }
           if (event.event === "progress" && event.type === "answer_delta") {
             answerDeltaBuffer += event.delta || "";
             scheduleAnswerDeltaFlush();
             return;
           }
           flushAnswerDeltas();
-          setChatMessages((messages) =>
+          setChatMessagesForMode(requestMode, (messages) =>
             messages.map((message) =>
               message.id === assistantId ? applySelectionChatStreamEvent(message, event, requestMode) : message,
             ),
@@ -1533,7 +1599,8 @@ export default function KnowledgeLibraryPage() {
         responseMeta: response.meta,
         warnings: response.warnings,
       };
-      setChatMessages((messages) =>
+      applyHistorySummaryUpdate(response.meta?.updated_history_summary, response.meta?.updated_history_summary_version);
+      setChatMessagesForMode(requestMode, (messages) =>
         messages.map((message) =>
           message.id === assistantId ? assistantMessage : message,
         ),
@@ -1567,7 +1634,8 @@ export default function KnowledgeLibraryPage() {
           responseMeta: response.meta,
           warnings: [...(response.warnings || []), "实时流式连接失败，已回退到普通请求。"],
         };
-        setChatMessages((messages) =>
+        applyHistorySummaryUpdate(response.meta?.updated_history_summary, response.meta?.updated_history_summary_version);
+        setChatMessagesForMode(requestMode, (messages) =>
           messages.map((message) =>
             message.id === assistantId ? assistantMessage : message,
           ),
@@ -1575,7 +1643,7 @@ export default function KnowledgeLibraryPage() {
       } catch (fallbackErr) {
         const message = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
         setChatError(message);
-        setChatMessages((messages) =>
+        setChatMessagesForMode(requestMode, (messages) =>
           messages.map((item) =>
             item.id === assistantId
               ? {
@@ -1599,15 +1667,16 @@ export default function KnowledgeLibraryPage() {
         setChatLoading(false);
       }
     }
-  }, [articleResearchMode, chatLoading, chatQuestion, detail, markArticleAiStopped, selectionContext]);
+  }, [applyHistorySummaryUpdate, articleResearchMode, chatLoading, chatMessagesByMode, chatQuestion, detail, historySummary, historySummaryVersion, markArticleAiStopped, selectionContext, setChatMessagesForMode]);
 
-  const rerunArticleAi = useCallback((message: ArticleChatMessage, mode: KnowledgeResearchMode) => {
+  const rerunArticleAi = useCallback((message: ArticleChatMessage, mode: KnowledgeResearchMode, forceWeb = false) => {
     const baseContext = message.requestContext;
     if (!baseContext?.question.trim()) return;
     void askArticleAi({
       requestContext: {
         ...baseContext,
         mode,
+        force_web: forceWeb,
       },
     });
   }, [askArticleAi]);
@@ -3255,7 +3324,7 @@ function ArticleAIPanel({
   onClose: () => void;
   onQuestionChange: (value: string) => void;
   onResearchModeChange: (mode: KnowledgeResearchMode) => void;
-  onRerun: (message: ArticleChatMessage, mode: KnowledgeResearchMode) => void;
+  onRerun: (message: ArticleChatMessage, mode: KnowledgeResearchMode, forceWeb?: boolean) => void;
   onOpenSource: (source: KnowledgeResearchSource) => void;
   onOpenSourceLocal: (source: KnowledgeResearchSource) => void;
   onSaveAnswer: (message: ArticleChatMessage, outputType: "local_learning_note" | "knowledge_card") => void;
@@ -3404,11 +3473,90 @@ function CollapsedAIPanelRail({
 }
 
 const ARTICLE_RESEARCH_MODES: Array<{ label: string; mode: KnowledgeResearchMode }> = [
-  { label: "当前文章", mode: "current_article_only" },
-  { label: "知识库", mode: "local_only" },
+  { label: "直出", mode: "current_article_only" },
   { label: "知识库+联网", mode: "local_web" },
-  { label: "联网", mode: "web_only" },
 ];
+
+function selectionChatHistory(messages: ArticleChatMessage[]): KnowledgeChatHistoryMessage[] {
+  return successfulArticleChatPairs(messages)
+    .slice(-6)
+    .flatMap(([user, assistant]) => [
+      { role: "user" as const, content: articleHistoryUserContent(user) },
+      { role: "assistant" as const, content: assistant.content },
+    ]);
+}
+
+function selectionChatHistoryOverflow(messagesByMode: ArticleChatMessagesByMode): KnowledgeChatHistoryMessage[] {
+  const overflow: KnowledgeChatHistoryMessage[] = [];
+  for (const messages of Object.values(messagesByMode)) {
+    const pairs = successfulArticleChatPairs(messages);
+    const compactablePairs = pairs
+      .slice(0, Math.max(0, pairs.length - 6))
+      .filter(([user, assistant]) => !user.compressedIntoSummaryVersion && !assistant.compressedIntoSummaryVersion);
+    for (const [user, assistant] of compactablePairs) {
+      overflow.push(
+        { role: "user", content: articleHistoryUserContent(user) },
+        { role: "assistant", content: assistant.content },
+      );
+    }
+  }
+  return overflow;
+}
+
+function successfulArticleChatPairs(messages: ArticleChatMessage[]): Array<[ArticleChatMessage, ArticleChatMessage]> {
+  const pairs: Array<[ArticleChatMessage, ArticleChatMessage]> = [];
+  let pendingUser: ArticleChatMessage | null = null;
+  for (const message of messages) {
+    if (message.role === "user") {
+      pendingUser = message;
+      continue;
+    }
+    if (
+      pendingUser
+      && message.role === "assistant"
+      && !message.pending
+      && message.content.trim()
+      && !message.content.startsWith("AI 问答失败")
+      && !message.content.startsWith("已停止生成")
+      && !message.content.startsWith("生成超时")
+    ) {
+      pairs.push([pendingUser, message]);
+      pendingUser = null;
+    }
+  }
+  return pairs;
+}
+
+function articleHistoryUserContent(message: ArticleChatMessage): string {
+  const selection = (message.requestContext?.selected_text || "").trim();
+  if (!selection) return message.content;
+  return `[当轮选区: ${selection.slice(0, 300)}] ${message.content}`;
+}
+
+function markCompressedHistoryMessages(
+  messagesByMode: ArticleChatMessagesByMode,
+  version: number,
+): ArticleChatMessagesByMode {
+  const next: ArticleChatMessagesByMode = {
+    current_article_only: messagesByMode.current_article_only,
+    local_web: messagesByMode.local_web,
+  };
+  for (const key of Object.keys(next) as Array<keyof ArticleChatMessagesByMode>) {
+    const pairs = successfulArticleChatPairs(next[key]);
+    const compactableIds = new Set(
+      pairs
+        .slice(0, Math.max(0, pairs.length - 6))
+        .flatMap(([user, assistant]) => [user.id, assistant.id]),
+    );
+    if (!compactableIds.size) continue;
+    next[key] = next[key].map((message) =>
+      compactableIds.has(message.id) && !message.compressedIntoSummaryVersion
+        ? { ...message, compressedIntoSummaryVersion: version }
+        : message,
+    );
+  }
+  return next;
+}
 
 function ResearchModeControl({
   disabled,
@@ -3712,7 +3860,7 @@ function ArticleAssistantAnswer({
   message: ArticleChatMessage;
   onOpenSource: (source: KnowledgeResearchSource) => void;
   onOpenSourceLocal: (source: KnowledgeResearchSource) => void;
-  onRerun: (message: ArticleChatMessage, mode: KnowledgeResearchMode) => void;
+  onRerun: (message: ArticleChatMessage, mode: KnowledgeResearchMode, forceWeb?: boolean) => void;
   saving: boolean;
   onSave: (message: ArticleChatMessage, outputType: "local_learning_note" | "knowledge_card") => void;
 }) {
@@ -3734,6 +3882,7 @@ function ArticleAssistantAnswer({
     <div className="min-w-0">
       <div className="[&_a]:break-words [&_pre]:max-w-full">
         <ArticleResearchProcess message={message} />
+        <ArticleReasoningTrace message={message} />
         {showPendingPlaceholder ? (
           <div className="text-sm leading-6 text-muted-foreground">正在整理回答...</div>
         ) : message.pending && !streamingAnswer ? null : (
@@ -3779,7 +3928,7 @@ function ArticleAssistantAnswer({
           {rerunAction ? (
             <button
               type="button"
-              onClick={() => onRerun(message, rerunAction.mode)}
+              onClick={() => onRerun(message, rerunAction.mode, rerunAction.forceWeb)}
               className="inline-flex items-center gap-1 transition hover:text-foreground"
             >
               <RefreshCw className="h-3.5 w-3.5" />
@@ -3792,23 +3941,79 @@ function ArticleAssistantAnswer({
   );
 }
 
-function articleAssistantRerunAction(message: ArticleChatMessage): { label: string; mode: KnowledgeResearchMode } | null {
+function articleAssistantRerunAction(message: ArticleChatMessage): { label: string; mode: KnowledgeResearchMode; forceWeb?: boolean } | null {
   if (!message.requestContext) return null;
   switch (message.mode) {
     case "current_article_only":
       return null;
     case "local_only":
-      return { label: "重新检索知识库", mode: "local_only" };
+      return null;
     case "web_only":
-      return { label: "重新联网检索", mode: "web_only" };
+      return null;
     case "local_web": {
       const webAttempted = Boolean(message.researchTrace?.web_search_attempted ?? message.responseMeta?.web_search_attempted);
       return webAttempted
         ? { label: "重新联网检索", mode: "local_web" }
-        : { label: "联网补充", mode: "web_only" };
+        : { label: "联网补充", mode: "local_web", forceWeb: true };
     }
     default:
       return null;
+  }
+}
+
+function ArticleReasoningTrace({ message }: { message: ArticleChatMessage }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const trace = message.responseMeta?.reasoning_trace;
+  if (!trace || message.pending) return null;
+  const display = reasoningTraceDisplay(trace);
+  if (!display.trim()) return null;
+
+  const copyTrace = async () => {
+    await navigator.clipboard.writeText(display);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  };
+
+  return (
+    <div className="mb-2 rounded-md border border-border/70 bg-muted/20 text-xs text-muted-foreground">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left transition hover:text-foreground"
+      >
+        <span>{trace.source === "api" ? "过程" : "过程摘要"}</span>
+        <ChevronDown className={cn("h-3.5 w-3.5 transition", open && "rotate-180")} />
+      </button>
+      {open ? (
+        <div className="border-t border-border/60 px-2 py-1.5">
+          {trace.source !== "api" && trace.fallback_reason ? (
+            <div className="mb-1 text-[11px] text-muted-foreground">{trace.fallback_reason}</div>
+          ) : null}
+          <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-2 font-mono text-[11px] leading-5 text-foreground/85">
+            {display}
+          </pre>
+          <button
+            type="button"
+            onClick={() => void copyTrace()}
+            className="mt-1 inline-flex items-center gap-1 transition hover:text-foreground"
+          >
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? "已复制" : "复制过程"}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function reasoningTraceDisplay(trace: NonNullable<KnowledgeLibrarySelectionChatResponse["meta"]>["reasoning_trace"]): string {
+  const value = trace?.api_reasoning ?? trace?.reasoning_summary ?? trace?.fallback_reason ?? "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
   }
 }
 
@@ -3862,6 +4067,8 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
     numberField(trace?.extracted_pages);
   const elapsedLabel = researchElapsedLabel(trace, meta);
   const displayWarnings = readableResearchWarnings(message.warnings || [], queryStatuses, providerStatusRecord);
+  const isDirectMode = message.mode === "current_article_only";
+  const directContextRows = isDirectMode ? directAnswerContextLabels(trace, meta, elapsedLabel) : [];
   const summaryText = researchSummaryText({
     candidateCount,
     mode: message.mode,
@@ -3877,6 +4084,7 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
       status ||
       webQueries.length ||
       providerStatus.length ||
+      directContextRows.length ||
       webSearchAttempted ||
       knowledgeCount ||
       webCount ||
@@ -3892,6 +4100,8 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
       <div className="flex min-w-0 items-center gap-2">
         {message.pending ? (
           <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary/70" />
+        ) : isDirectMode ? (
+          <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
         ) : (
           <Search className="h-3 w-3 shrink-0 text-muted-foreground" />
         )}
@@ -3903,12 +4113,14 @@ const ArticleResearchProcess = memo(function ArticleResearchProcess({ message }:
         </div>
       ) : null}
       <ResearchAuditDetails
-        candidateSources={candidateSources}
-        clueSources={clueSources}
-        providerStatus={providerStatus}
-        queryStatuses={queryStatuses}
-        queries={webQueries}
-        rejectedSources={rejectedSources}
+        candidateSources={isDirectMode ? [] : candidateSources}
+        clueSources={isDirectMode ? [] : clueSources}
+        contextRows={directContextRows}
+        detailsLabel={isDirectMode ? "回答详情" : "检索详情"}
+        providerStatus={isDirectMode ? [] : providerStatus}
+        queryStatuses={isDirectMode ? [] : queryStatuses}
+        queries={isDirectMode ? [] : webQueries}
+        rejectedSources={isDirectMode ? [] : rejectedSources}
         progress={
           <ResearchProgress
             currentStage={currentStage}
@@ -3947,6 +4159,25 @@ function ResearchProgress({
       </div>
     </div>
   );
+}
+
+function directAnswerContextLabels(
+  trace: KnowledgeResearchTrace | undefined,
+  meta: KnowledgeLibrarySelectionChatResponse["meta"] | undefined,
+  elapsedLabel: string,
+): string[] {
+  const audit = (trace || meta?.research_trace || {}) as Record<string, unknown>;
+  const selectedTextPresent = audit.selected_text_present === true;
+  const selectedTextChars = typeof audit.selected_text_chars === "number" ? audit.selected_text_chars : 0;
+  const historyMessageCount = typeof audit.history_message_count === "number" ? audit.history_message_count : 0;
+  const historySummaryVersion = typeof audit.history_summary_version === "number" ? audit.history_summary_version : 0;
+  return [
+    "模式: 直出",
+    `本轮选区: ${selectedTextPresent ? `已使用 ${selectedTextChars} 字` : "未使用"}`,
+    `最近历史: ${historyMessageCount} 条`,
+    `长期摘要版本: v${historySummaryVersion}`,
+    elapsedLabel ? `总耗时: ${elapsedLabel}` : "",
+  ].filter(Boolean);
 }
 
 const ResearchSourceGroup = memo(function ResearchSourceGroup({
@@ -3990,6 +4221,8 @@ const ResearchSourceGroup = memo(function ResearchSourceGroup({
 function ResearchAuditDetails({
   candidateSources,
   clueSources,
+  contextRows,
+  detailsLabel,
   providerStatus,
   progress,
   queryStatuses,
@@ -4000,6 +4233,8 @@ function ResearchAuditDetails({
 }: {
   candidateSources: KnowledgeResearchSource[];
   clueSources: KnowledgeResearchSource[];
+  contextRows?: string[];
+  detailsLabel: string;
   providerStatus: string[];
   progress: ReactNode;
   queryStatuses: Array<Record<string, unknown>>;
@@ -4008,16 +4243,28 @@ function ResearchAuditDetails({
   statusTitle: string;
   warnings: string[];
 }) {
-  const hasDetails = queries.length || queryStatuses.length || candidateSources.length || clueSources.length || rejectedSources.length || providerStatus.length || warnings.length;
+  const hasDetails = Boolean(contextRows?.length) || queries.length || queryStatuses.length || candidateSources.length || clueSources.length || rejectedSources.length || providerStatus.length || warnings.length;
   if (!hasDetails) return null;
   return (
     <details className="mt-1.5">
       <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-[0.72rem] text-muted-foreground transition hover:text-foreground">
-        检索详情
+        {detailsLabel}
         <ChevronDown className="h-3 w-3" />
       </summary>
       <div className="mt-2 border-t border-border/50 pt-2">
         {progress}
+        {contextRows?.length ? (
+          <div className="mt-2 space-y-1">
+            <div className="font-medium text-foreground">上下文</div>
+            <div className="space-y-1">
+              {contextRows.map((row) => (
+                <div key={row} className="truncate rounded border border-border bg-background/70 px-1.5 py-0.5">
+                  {row}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
         {queryStatuses.length ? (
           <div className="mt-2 space-y-1">
             <div className="font-medium text-foreground">查询词</div>
