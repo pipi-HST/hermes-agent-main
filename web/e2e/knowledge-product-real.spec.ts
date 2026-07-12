@@ -7,7 +7,7 @@ if (!signal || !title) {
   throw new Error("HERMES_REAL_E2E_SIGNAL and HERMES_REAL_E2E_TITLE are required");
 }
 
-test("真实浏览器提交的文章进入同一知识库并展示目录", async ({ page }) => {
+test("真实浏览器提交的文章可展示目录并被纯知识库 RAG 引用", async ({ page }) => {
   page.on("dialog", (dialog) => dialog.accept());
   const content = [
     `# ${title}`,
@@ -69,4 +69,30 @@ test("真实浏览器提交的文章进入同一知识库并展示目录", async
     const rect = target.getBoundingClientRect();
     return rect.top >= 0 && rect.top <= window.innerHeight;
   }, targetId)).toBe(true);
+
+  await page.getByRole("link", { name: "工作台" }).click();
+  await expect(page.getByText("已连接", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+  const localOnlyButton = page.getByRole("button", { name: "仅知识库" });
+  await localOnlyButton.click();
+  await expect(localOnlyButton).toHaveClass(/bg-primary/);
+  await expect(page.getByText(/gateway not connected/)).toHaveCount(0);
+
+  const composer = page.getByRole("textbox", { name: /直接问知识库/ });
+  await composer.fill(`只使用知识库回答：${signal} 这篇文章强调了什么？请引用《${title}》。`);
+  await page.getByRole("button", { name: "发送" }).click();
+
+  const sourceSummary = page.getByText(/(?:引用|使用)来源 \d+/, { exact: true }).last();
+  await expect(sourceSummary).toBeVisible({ timeout: 120_000 });
+  await sourceSummary.click();
+  const sourceDetails = sourceSummary.locator("xpath=..");
+  await expect(sourceDetails.getByText("知识库来源", { exact: true })).toBeVisible();
+  await expect(sourceDetails.getByText("联网来源", { exact: true })).toHaveCount(0);
+  const knowledgeSource = sourceDetails.getByRole("button", {
+    name: new RegExp(title),
+  }).first();
+  await expect(knowledgeSource).toBeVisible();
+  await knowledgeSource.click();
+
+  await expect(page).toHaveURL(/\/knowledge-library$/);
+  await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
 });

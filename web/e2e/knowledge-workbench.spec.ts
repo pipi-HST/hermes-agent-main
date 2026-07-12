@@ -232,3 +232,21 @@ test("用户通过 Gateway 发起 RAG 后页面展示带引用答案", async ({ 
   await expect(page.getByText("端到端验收必须检查真实持久化、索引检索和下游可见性。[1]", { exact: true })).toBeVisible();
   assertCleanBrowser(probe);
 });
+
+test("切换到仅知识库不会断开 Gateway", async ({ page }) => {
+  const state: MockKnowledgeState = {
+    sessionId: "gateway-mode-switch-e2e",
+    messages: [],
+    captureDrafts: [],
+    readingDrafts: [],
+  };
+  const probe = await installKnowledgeBrowserFixture(page, state);
+
+  await page.goto(`/knowledge-chat?session=${state.sessionId}`);
+  await expect(page.getByText("已连接", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "仅知识库" }).click();
+
+  await expect(page.getByText("已连接", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/gateway not connected/)).toHaveCount(0);
+  assertCleanBrowser(probe);
+});

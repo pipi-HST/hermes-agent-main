@@ -279,6 +279,7 @@ export default function KnowledgeChatPage() {
     "--knowledge-chat-inspector-width": `${inspectorWidth}px`,
   } as CSSProperties;
   const [researchMode, setResearchMode] = useState<KnowledgeResearchMode>("local_web");
+  const initialResearchModeRef = useRef(researchMode);
 
   useEffect(() => {
     stateRef.current = state;
@@ -669,14 +670,14 @@ export default function KnowledgeChatPage() {
           try {
             return await gw.request<GatewayResumeResponse>("session.resume", {
               session_id: target,
-              enabled_toolsets: knowledgeToolsetsForMode(researchMode),
+              enabled_toolsets: knowledgeToolsetsForMode(initialResearchModeRef.current),
             });
           } catch {
             window.localStorage.removeItem(WORKBENCH_LAST_SESSION_KEY);
           }
         }
         return gw.request<{ session_id: string }>("session.create", {
-          enabled_toolsets: knowledgeToolsetsForMode(researchMode),
+          enabled_toolsets: knowledgeToolsetsForMode(initialResearchModeRef.current),
         });
       })
       .then((created) => {
@@ -717,7 +718,7 @@ export default function KnowledgeChatPage() {
       offError();
       gw.close();
     };
-  }, [gw, loadAnswerDrafts, loadDrafts, loadSessions, nextId, reconcileCurrentSession, researchMode, scheduleHistoryReconcile]);
+  }, [gw, loadAnswerDrafts, loadDrafts, loadSessions, nextId, reconcileCurrentSession, scheduleHistoryReconcile]);
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({
