@@ -185,6 +185,31 @@ class TestFindStaleDashboardPids:
             pids = _find_stale_dashboard_pids()
         assert pids == [12345]
 
+    def test_parent_shell_command_is_not_mistaken_for_dashboard(self):
+        parent_pid = 22222
+        with patch("os.getppid", return_value=parent_pid), patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join(
+                    [
+                        _ps_line(
+                            parent_pid,
+                            "/bin/zsh -lc hermes dashboard --install-service",
+                        ),
+                        _ps_line(
+                            33333,
+                            "python -m hermes_cli.main dashboard --no-open",
+                        ),
+                    ]
+                )
+                + "\n",
+                stderr="",
+            )
+
+            pids = _find_stale_dashboard_pids()
+
+        assert pids == [33333]
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")
 class TestKillStaleDashboardPosix:

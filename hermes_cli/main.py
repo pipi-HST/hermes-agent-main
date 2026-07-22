@@ -5945,10 +5945,9 @@ def _find_stale_dashboard_pids() -> list[int]:
     disk is updated, causing a silent frontend/backend mismatch (e.g. new
     auth headers the old backend doesn't recognise → every API call 401s).
 
-    The dashboard has no service manager (systemd / launchd), no PID file,
-    and we can't know the original launch args — so the only sane action
-    after an update is to kill the stale process and let the user restart
-    it.  This helper is just the detection step; see
+    Manual dashboard processes have no PID file, so process-table scanning is
+    still required even though macOS users can opt into launchd management.
+    This helper is just the detection step; see
     ``_kill_stale_dashboard_processes`` for the kill.
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
@@ -5959,6 +5958,8 @@ def _find_stale_dashboard_pids() -> list[int]:
         "hermes_cli/main.py dashboard",
     ]
     self_pid = os.getpid()
+    parent_pid = os.getppid()
+    excluded_pids = {self_pid, parent_pid}
     dashboard_pids: list[int] = []
 
     try:
@@ -5989,7 +5990,7 @@ def _find_stale_dashboard_pids() -> list[int]:
                     pid_str = line[len("ProcessId=") :]
                     if (
                         any(p in current_cmd for p in patterns)
-                        and int(pid_str) != self_pid
+                        and int(pid_str) not in excluded_pids
                     ):
                         try:
                             dashboard_pids.append(int(pid_str))
@@ -6021,7 +6022,7 @@ def _find_stale_dashboard_pids() -> list[int]:
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if any(p in command for p in patterns) and pid not in excluded_pids:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
@@ -6158,6 +6159,7 @@ def _format_time_ago(iso_ts: str) -> str:
 
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
+    restart_hint: str = "hermes dashboard --port <port>",
 ) -> None:
     """Kill running ``hermes dashboard`` processes.
 
@@ -6173,9 +6175,9 @@ def _kill_stale_dashboard_processes(
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
     equivalent for background console apps.
 
-    The dashboard isn't auto-restarted because we don't know the original
-    launch args (--host, --port, --insecure, --tui, --no-open).  The user
-    restarts it manually; a hint is printed.
+    Manual dashboards are not auto-restarted because their original launch
+    args are unknown. Managed macOS dashboards are handled separately by
+    ``_refresh_dashboard_after_update``.
     """
     pids = _find_stale_dashboard_pids()
     if not pids:
@@ -6252,7 +6254,33 @@ def _kill_stale_dashboard_processes(
 
     if killed:
         print("  Restart the dashboard when you're ready:")
-        print("    hermes dashboard --port <port>")
+        print(f"    {restart_hint}")
+
+
+def _refresh_dashboard_after_update() -> None:
+    """Restart a managed macOS dashboard, otherwise stop stale manual ones."""
+    if sys.platform == "darwin":
+        try:
+            from hermes_cli.dashboard_service import (
+                get_dashboard_launchd_status,
+                start_dashboard_launchd_service,
+                stop_dashboard_launchd_service,
+            )
+
+            service = get_dashboard_launchd_status()
+            if service.loaded:
+                print()
+                print("↻ Restarting managed dashboard after update")
+                stop_dashboard_launchd_service()
+                _kill_stale_dashboard_processes(
+                    reason="restarting the managed dashboard after update"
+                )
+                start_dashboard_launchd_service()
+                return
+        except Exception as exc:
+            logger.warning("Managed dashboard restart after update failed: %s", exc)
+
+    _kill_stale_dashboard_processes()
 
 
 # Back-compat alias: some tests and any external callers may import the old
@@ -6405,7 +6433,7 @@ def _update_via_zip(args):
         _print_curator_recent_run_notice()
     except Exception as e:
         logger.debug("Curator recent-run notice failed: %s", e)
-    _kill_stale_dashboard_processes()
+    _refresh_dashboard_after_update()
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -8839,12 +8867,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
-        # Kill stale dashboard processes — the dashboard has no service
-        # manager, so leaving it alive after a code update produces a
-        # silent frontend/backend mismatch.  We can't auto-restart it
-        # (no saved launch args) but we can stop it, and a hint is
-        # printed for the user to re-launch.
-        _kill_stale_dashboard_processes()
+        # Restart launchd-managed dashboards with their saved arguments;
+        # otherwise stop stale manual processes and print a restart hint.
+        _refresh_dashboard_after_update()
 
         print()
         print("Tip: You can now select a provider and model:")
@@ -9606,20 +9631,104 @@ def _report_dashboard_status() -> int:
 
 
 def cmd_dashboard(args):
-    """Start the web UI server, or (with --stop/--status) manage running ones."""
+    """Start the web UI server or manage its local lifecycle."""
     # --status: report running dashboards and exit, no deps needed.
     if getattr(args, "status", False):
+        if sys.platform == "darwin":
+            from hermes_cli.dashboard_service import get_dashboard_launchd_status
+
+            service = get_dashboard_launchd_status()
+            if service.installed:
+                state = service.state or ("loaded" if service.loaded else "stopped")
+                pid = f", PID {service.pid}" if service.pid else ""
+                print(f"Dashboard launchd service: {state}{pid}")
+                print(f"  {service.path}")
         count = _report_dashboard_status()
         sys.exit(0 if count == 0 else 0)  # status is informational, always 0
 
+    if getattr(args, "uninstall_service", False):
+        from hermes_cli.dashboard_service import uninstall_dashboard_launchd_service
+
+        try:
+            uninstall_dashboard_launchd_service()
+        except (RuntimeError, subprocess.CalledProcessError) as exc:
+            print(f"✗ {exc}")
+            sys.exit(1)
+        sys.exit(0)
+
+    if getattr(args, "install_service", False):
+        from hermes_cli.dashboard_service import (
+            install_dashboard_launchd_service,
+            stop_dashboard_launchd_service,
+            validate_dashboard_launchd_service_options,
+        )
+
+        try:
+            validate_dashboard_launchd_service_options(args.host, args.port)
+            stop_dashboard_launchd_service()
+            _kill_stale_dashboard_processes(reason="switching to launchd service management")
+            install_dashboard_launchd_service(
+                host=args.host,
+                port=args.port,
+                embedded_chat=bool(args.tui),
+            )
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+            print(f"✗ {exc}")
+            sys.exit(1)
+        sys.exit(0)
+
+    if getattr(args, "start_service", False):
+        from hermes_cli.dashboard_service import (
+            require_dashboard_launchd_service_installed,
+            start_dashboard_launchd_service,
+        )
+
+        try:
+            require_dashboard_launchd_service_installed()
+            _kill_stale_dashboard_processes(reason="switching to launchd service management")
+            start_dashboard_launchd_service()
+        except (RuntimeError, subprocess.CalledProcessError) as exc:
+            print(f"✗ {exc}")
+            sys.exit(1)
+        sys.exit(0)
+
+    if getattr(args, "restart_service", False):
+        from hermes_cli.dashboard_service import restart_dashboard_launchd_service
+
+        try:
+            restart_dashboard_launchd_service()
+        except (RuntimeError, subprocess.CalledProcessError) as exc:
+            print(f"✗ {exc}")
+            sys.exit(1)
+        sys.exit(0)
+
     # --stop: kill any running dashboards and exit, no deps needed.
     if getattr(args, "stop", False):
+        managed_service_installed = False
+        if sys.platform == "darwin":
+            from hermes_cli.dashboard_service import (
+                get_dashboard_launchd_status,
+                stop_dashboard_launchd_service,
+            )
+
+            managed_service_installed = get_dashboard_launchd_status().installed
+            stop_dashboard_launchd_service()
+            if managed_service_installed:
+                print("✓ Dashboard launchd service stopped")
         pids = _find_stale_dashboard_pids()
         if not pids:
-            print("No hermes dashboard processes running.")
+            if not managed_service_installed:
+                print("No hermes dashboard processes running.")
             sys.exit(0)
         # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`.
-        _kill_stale_dashboard_processes(reason="requested via --stop")
+        _kill_stale_dashboard_processes(
+            reason="requested via --stop",
+            restart_hint=(
+                "hermes dashboard --start-service"
+                if managed_service_installed
+                else "hermes dashboard --port <port>"
+            ),
+        )
         # _kill_stale_dashboard_processes prints outcomes itself.  Exit 0 if
         # we killed at least one, 1 if they were all unkillable.
         remaining = _find_stale_dashboard_pids()
@@ -12330,12 +12439,9 @@ Examples:
             "where npm may not be available. Pre-build with: cd web && npm run build"
         ),
     )
-    # Lifecycle flags — mutually exclusive with each other and with the
-    # start-a-server flags above (if both are passed, --stop / --status win
-    # because they exit before the server is started).  The dashboard has
-    # no service manager and no PID file, so these scan the process table
-    # for `hermes dashboard` cmdlines and SIGTERM them directly — the same
-    # path `hermes update` uses to clean up stale dashboards.
+    # Lifecycle flags exit before the foreground server path. Manual process
+    # management uses process-table scanning; macOS can additionally persist
+    # the dashboard as a profile-scoped launchd service.
     dashboard_parser.add_argument(
         "--stop",
         action="store_true",
@@ -12345,6 +12451,26 @@ Examples:
         "--status",
         action="store_true",
         help="List running hermes dashboard processes and exit",
+    )
+    dashboard_parser.add_argument(
+        "--install-service",
+        action="store_true",
+        help="Install and start the dashboard as a macOS launchd service",
+    )
+    dashboard_parser.add_argument(
+        "--start-service",
+        action="store_true",
+        help="Start the installed macOS dashboard service",
+    )
+    dashboard_parser.add_argument(
+        "--restart-service",
+        action="store_true",
+        help="Restart the installed macOS dashboard service",
+    )
+    dashboard_parser.add_argument(
+        "--uninstall-service",
+        action="store_true",
+        help="Stop and remove the macOS dashboard service",
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 

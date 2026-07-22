@@ -25,6 +25,12 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
 | `--tui` | off | Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). Alternatively set `HERMES_DASHBOARD_TUI=1`. |
+| `--status` | — | Show launchd state on macOS and list running Dashboard processes. |
+| `--stop` | — | Stop the launchd service on macOS and any remaining manual Dashboard processes. |
+| `--install-service` | — | macOS: install and start a profile-scoped launchd service. Uses `--host`, `--port`, and `--tui`; only loopback hosts are accepted. |
+| `--start-service` | — | macOS: start the installed Dashboard service. |
+| `--restart-service` | — | macOS: restart the installed Dashboard service. |
+| `--uninstall-service` | — | macOS: stop and remove the Dashboard service. |
 
 ```bash
 # Custom port
@@ -39,6 +45,30 @@ hermes dashboard --no-open
 # Enable the in-browser Chat tab
 hermes dashboard --tui
 ```
+
+### Keep the Dashboard running on macOS
+
+```bash
+# Install for the active Hermes profile and start immediately
+hermes dashboard --install-service --tui
+
+# Inspect or restart it later
+hermes dashboard --status
+hermes dashboard --restart-service
+
+# Stop it without deleting the login service definition
+hermes dashboard --stop
+hermes dashboard --start-service
+
+# Remove the service definition
+hermes dashboard --uninstall-service
+```
+
+The launchd service starts at login and restarts after an abnormal exit. Its
+definition is scoped to the active Hermes profile, so separate profiles do not
+overwrite each other's Dashboard service. Service mode deliberately refuses
+public bind addresses; use the foreground command with explicit network
+controls when remote access is required.
 
 ## Prerequisites
 

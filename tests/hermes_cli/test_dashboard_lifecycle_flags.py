@@ -15,14 +15,20 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hermes_cli.main import cmd_dashboard, _report_dashboard_status
+from hermes_cli.main import (
+    _refresh_dashboard_after_update,
+    _report_dashboard_status,
+    cmd_dashboard,
+)
 
 
 def _ns(**kw):
     """Build an argparse.Namespace with dashboard defaults plus overrides."""
     defaults = dict(
         port=9119, host="127.0.0.1", no_open=False, insecure=False,
-        tui=False, stop=False, status=False,
+        tui=False, skip_build=False, stop=False, status=False,
+        install_service=False, start_service=False, restart_service=False,
+        uninstall_service=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -30,7 +36,10 @@ def _ns(**kw):
 
 class TestDashboardStatus:
     def test_status_no_processes(self, capsys):
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch(
+            "hermes_cli.dashboard_service.get_dashboard_launchd_status",
+            return_value=MagicMock(installed=False),
+        ), patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[]), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
@@ -70,10 +79,15 @@ class TestDashboardStatus:
 
 class TestDashboardStop:
     def test_stop_when_nothing_running(self, capsys):
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch(
+            "hermes_cli.dashboard_service.get_dashboard_launchd_status",
+            return_value=MagicMock(installed=False),
+        ), patch("hermes_cli.dashboard_service.stop_dashboard_launchd_service") as stop_service, \
+             patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[]), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(stop=True))
+        stop_service.assert_called_once_with()
         assert exc.value.code == 0
         out = capsys.readouterr().out
         assert "No hermes dashboard processes running" in out
@@ -82,7 +96,11 @@ class TestDashboardStop:
         """After the kill, if the second scan returns empty we exit 0."""
         # First scan: finds two processes.  Second (verification) scan: empty.
         scans = iter([[12345, 12346], []])
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch(
+            "hermes_cli.dashboard_service.get_dashboard_launchd_status",
+            return_value=MagicMock(installed=True),
+        ), patch("hermes_cli.dashboard_service.stop_dashboard_launchd_service"), \
+             patch("hermes_cli.main._find_stale_dashboard_pids",
                    side_effect=lambda: next(scans)), \
              patch("hermes_cli.main._kill_stale_dashboard_processes") as mock_kill, \
              pytest.raises(SystemExit) as exc:
@@ -94,13 +112,18 @@ class TestDashboardStop:
         kwargs = mock_kill.call_args.kwargs
         assert "reason" in kwargs
         assert "stop" in kwargs["reason"].lower()
+        assert kwargs["restart_hint"] == "hermes dashboard --start-service"
         assert exc.value.code == 0
 
     def test_stop_exits_nonzero_if_kill_leaves_survivors(self):
         """If the second scan still finds PIDs, we exit 1 so scripts can
         detect that the stop didn't succeed (e.g. permission denied)."""
         scans = iter([[12345], [12345]])  # both scans find the same PID
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch(
+            "hermes_cli.dashboard_service.get_dashboard_launchd_status",
+            return_value=MagicMock(installed=False),
+        ), patch("hermes_cli.dashboard_service.stop_dashboard_launchd_service"), \
+             patch("hermes_cli.main._find_stale_dashboard_pids",
                    side_effect=lambda: next(scans)), \
              patch("hermes_cli.main._kill_stale_dashboard_processes"), \
              pytest.raises(SystemExit) as exc:
@@ -115,7 +138,11 @@ class TestDashboardStop:
                 raise ImportError("fastapi missing")
             return orig_import(name, *a, **kw)
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch(
+            "hermes_cli.dashboard_service.get_dashboard_launchd_status",
+            return_value=MagicMock(installed=False),
+        ), patch("hermes_cli.dashboard_service.stop_dashboard_launchd_service"), \
+             patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[]), \
              patch("builtins.__import__", side_effect=fake_import), \
              pytest.raises(SystemExit) as exc:
@@ -131,12 +158,19 @@ class TestLifecycleFlagsTakePrecedence:
     a new server."""
 
     def test_status_wins_over_stop(self, capsys):
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch(
+            "hermes_cli.dashboard_service.get_dashboard_launchd_status",
+            return_value=MagicMock(installed=False),
+        ), patch(
+            "hermes_cli.dashboard_service.stop_dashboard_launchd_service"
+        ) as stop_service, \
+             patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[]), \
              patch("hermes_cli.main._kill_stale_dashboard_processes") as mock_kill, \
              pytest.raises(SystemExit):
             cmd_dashboard(_ns(status=True, stop=True))
         # Kill path must NOT run when --status is also set.
+        stop_service.assert_not_called()
         mock_kill.assert_not_called()
 
     def test_stop_does_not_fall_through_to_server_start(self):
@@ -150,12 +184,107 @@ class TestLifecycleFlagsTakePrecedence:
         fake_ws = MagicMock()
         fake_ws.start_server = fake_start_server
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch(
+            "hermes_cli.dashboard_service.get_dashboard_launchd_status",
+            return_value=MagicMock(installed=False),
+        ), patch("hermes_cli.dashboard_service.stop_dashboard_launchd_service"), \
+             patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[]), \
              patch.dict(sys.modules, {"hermes_cli.web_server": fake_ws}), \
              pytest.raises(SystemExit):
             cmd_dashboard(_ns(stop=True))
         assert called["start"] is False
+
+
+class TestDashboardServiceFlags:
+    def test_install_service_dispatches_and_exits(self):
+        with patch("hermes_cli.main._kill_stale_dashboard_processes") as kill_manual, \
+             patch("hermes_cli.dashboard_service.stop_dashboard_launchd_service") as stop_service, \
+             patch("hermes_cli.dashboard_service.install_dashboard_launchd_service") as install, \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(install_service=True, port=9123, tui=True))
+
+        stop_service.assert_called_once_with()
+        kill_manual.assert_called_once()
+        install.assert_called_once_with(host="127.0.0.1", port=9123, embedded_chat=True)
+        assert exc.value.code == 0
+
+    def test_install_service_validation_failure_has_no_stop_side_effects(self):
+        with patch(
+            "hermes_cli.dashboard_service.validate_dashboard_launchd_service_options",
+            side_effect=ValueError("invalid service options"),
+        ), patch(
+            "hermes_cli.dashboard_service.stop_dashboard_launchd_service"
+        ) as stop_service, patch(
+            "hermes_cli.main._kill_stale_dashboard_processes"
+        ) as kill_manual, patch(
+            "hermes_cli.dashboard_service.install_dashboard_launchd_service"
+        ) as install, pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(install_service=True, host="0.0.0.0"))
+
+        assert exc.value.code == 1
+        stop_service.assert_not_called()
+        kill_manual.assert_not_called()
+        install.assert_not_called()
+
+    def test_start_service_preflight_failure_does_not_kill_manual_dashboard(self):
+        with patch(
+            "hermes_cli.dashboard_service.require_dashboard_launchd_service_installed",
+            side_effect=RuntimeError("service unavailable"),
+        ), patch(
+            "hermes_cli.main._kill_stale_dashboard_processes"
+        ) as kill_manual, patch(
+            "hermes_cli.dashboard_service.start_dashboard_launchd_service"
+        ) as start_service, pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(start_service=True))
+
+        assert exc.value.code == 1
+        kill_manual.assert_not_called()
+        start_service.assert_not_called()
+
+    def test_restart_service_dispatches_and_exits(self):
+        with patch("hermes_cli.dashboard_service.restart_dashboard_launchd_service") as restart, \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(restart_service=True))
+
+        restart.assert_called_once_with()
+        assert exc.value.code == 0
+
+
+class TestDashboardUpdateRefresh:
+    def test_managed_dashboard_is_restarted_after_update(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        service_status = MagicMock(loaded=True)
+
+        with patch(
+            "hermes_cli.dashboard_service.get_dashboard_launchd_status",
+            return_value=service_status,
+        ), patch(
+            "hermes_cli.dashboard_service.stop_dashboard_launchd_service"
+        ) as stop_service, patch(
+            "hermes_cli.dashboard_service.start_dashboard_launchd_service"
+        ) as start_service, patch(
+            "hermes_cli.main._kill_stale_dashboard_processes"
+        ) as kill_manual:
+            _refresh_dashboard_after_update()
+
+        stop_service.assert_called_once_with()
+        kill_manual.assert_called_once()
+        start_service.assert_called_once_with()
+
+    def test_unmanaged_dashboard_keeps_manual_cleanup_path(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        service_status = MagicMock(loaded=False)
+
+        with patch(
+            "hermes_cli.dashboard_service.get_dashboard_launchd_status",
+            return_value=service_status,
+        ), patch(
+            "hermes_cli.main._kill_stale_dashboard_processes"
+        ) as kill_manual:
+            _refresh_dashboard_after_update()
+
+        kill_manual.assert_called_once_with()
 
 
 class TestArgparseWiring:
