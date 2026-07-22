@@ -60,6 +60,7 @@ export const pt: Translations = {
     activeSessionsLabel: "Sessões ativas:",
     gatewayStatusLabel: "Estado do gateway:",
     gatewayStrip: {
+      degraded: "Degradado",
       failed: "Falha ao iniciar",
       off: "Desligado",
       running: "A executar",

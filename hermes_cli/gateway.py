@@ -3080,6 +3080,13 @@ def launchd_status(deep: bool = False):
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
         print("  Run: hermes gateway start")
+
+    runtime_lines = _runtime_health_lines()
+    if runtime_lines:
+        print()
+        print("Recent gateway health:")
+        for line in runtime_lines:
+            print(f"  {line}")
     
     if deep:
         log_file = get_hermes_home() / "logs" / "gateway.log"
@@ -3813,7 +3820,7 @@ def _platform_status(platform: dict) -> str:
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
-        from gateway.status import read_runtime_status
+        from gateway.status import read_runtime_status, runtime_status_is_stale
     except Exception:
         return []
 
@@ -3828,10 +3835,19 @@ def _runtime_health_lines() -> list[str]:
     restart_requested = state.get("restart_requested")
     platforms = state.get("platforms", {}) or {}
 
+    if runtime_status_is_stale(state):
+        updated_at = state.get("updated_at") or "unknown"
+        lines.append(f"⚠ Runtime status heartbeat is stale (last update: {updated_at})")
+
     for platform, pdata in platforms.items():
-        if pdata.get("state") == "fatal":
+        platform_state = pdata.get("state")
+        if platform_state == "fatal":
             message = pdata.get("error_message") or "unknown error"
             lines.append(f"⚠ {platform}: {message}")
+        elif platform_state in {"retrying", "paused", "disconnected"}:
+            message = pdata.get("error_message")
+            detail = f" ({message})" if message else ""
+            lines.append(f"⚠ {platform}: {platform_state}{detail}")
 
     if gateway_state == "startup_failed" and exit_reason:
         lines.append(f"⚠ Last startup issue: {exit_reason}")

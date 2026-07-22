@@ -59,6 +59,7 @@ export const zh: Translations = {
     activeSessionsLabel: "活跃会话：",
     gatewayStatusLabel: "网关状态：",
     gatewayStrip: {
+      degraded: "降级运行",
       failed: "启动失败",
       off: "关闭",
       running: "运行中",

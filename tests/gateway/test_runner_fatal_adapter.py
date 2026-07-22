@@ -90,6 +90,13 @@ async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatc
     runner.adapters = {Platform.WHATSAPP: adapter}
     runner.delivery_router.adapters = runner.adapters
     runner.stop = AsyncMock()
+    runner._running = True
+    runtime_updates = []
+    monkeypatch.setattr(
+        runner,
+        "_update_runtime_status",
+        lambda state=None: runtime_updates.append(state),
+    )
 
     await runner._handle_adapter_fatal_error(adapter)
 
@@ -98,3 +105,4 @@ async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatc
     assert runner._exit_with_failure is False
     assert Platform.WHATSAPP in runner._failed_platforms
     assert runner._failed_platforms[Platform.WHATSAPP]["attempts"] == 0
+    assert runtime_updates == ["degraded"]

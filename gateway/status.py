@@ -39,6 +39,7 @@ _gateway_lock_handle = None
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
+RUNTIME_STATUS_STALE_AFTER_SECONDS = 120
 
 
 def _get_pid_path() -> Path:
@@ -71,6 +72,30 @@ def _get_lock_dir() -> Path:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def runtime_status_is_stale(
+    state: Optional[dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+    max_age_seconds: float = RUNTIME_STATUS_STALE_AFTER_SECONDS,
+) -> bool:
+    """Return whether a persisted runtime status lacks a recent heartbeat."""
+    if not state:
+        return True
+    updated_at = state.get("updated_at")
+    if not isinstance(updated_at, str) or not updated_at.strip():
+        return True
+    try:
+        updated = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return (current - updated).total_seconds() > max_age_seconds
 
 
 def terminate_pid(pid: int, *, force: bool = False) -> None:

@@ -2055,6 +2055,9 @@ class GatewayRunner:
                     adapter.platform.value,
                 )
 
+        if self._running:
+            self._update_runtime_status(self._desired_runtime_state())
+
         if not self.adapters and not self._failed_platforms:
             self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
             if adapter.fatal_error_retryable:
@@ -2254,6 +2257,20 @@ class GatewayRunner:
             )
         except Exception:
             pass
+
+    def _desired_runtime_state(self) -> str:
+        enabled_platforms = sum(
+            1 for config in self.config.platforms.values() if config.enabled
+        )
+        if enabled_platforms and len(self.adapters) < enabled_platforms:
+            return "degraded"
+        return "running"
+
+    async def _runtime_status_heartbeat(self) -> None:
+        """Refresh runtime status so readers can distinguish live from stale state."""
+        while self._running:
+            self._update_runtime_status(self._desired_runtime_state())
+            await asyncio.sleep(30)
 
     # ------------------------------------------------------------------
     # Per-platform circuit breaker (pause/resume) — used by the reconnect
@@ -3779,7 +3796,7 @@ class GatewayRunner:
                         )
                     except Exception:
                         pass
-                    # Fall through to the normal "running" state — reconnect
+                    # Fall through to the normal degraded runtime — reconnect
                     # watcher takes it from here.
                 # All enabled platforms had no adapter (missing library or credentials).
                 # In fleet deployments the same config.yaml is shared across nodes that
@@ -3800,7 +3817,12 @@ class GatewayRunner:
         self._wire_teams_pipeline_runtime()
 
         self._running = True
-        self._update_runtime_status("running")
+        self._update_runtime_status(self._desired_runtime_state())
+        heartbeat_task = asyncio.create_task(self._runtime_status_heartbeat())
+        background_tasks = getattr(self, "_background_tasks", None)
+        if background_tasks is not None:
+            background_tasks.add(heartbeat_task)
+            heartbeat_task.add_done_callback(background_tasks.discard)
         
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
@@ -5164,6 +5186,7 @@ class GatewayRunner:
                             platform.value,
                         )
                         del self._failed_platforms[platform]
+                        self._update_runtime_status(self._desired_runtime_state())
                         continue
 
                     adapter.set_message_handler(self._handle_message)
@@ -5183,6 +5206,7 @@ class GatewayRunner:
                             error_code=None,
                             error_message=None,
                         )
+                        self._update_runtime_status(self._desired_runtime_state())
                         logger.info("✓ %s reconnected successfully", platform.value)
 
                         # Rebuild channel directory with the new adapter
@@ -5204,6 +5228,7 @@ class GatewayRunner:
                             platform.value, adapter.fatal_error_message,
                         )
                         del self._failed_platforms[platform]
+                        self._update_runtime_status(self._desired_runtime_state())
                     else:
                         self._update_platform_runtime_status(
                             platform.value,
@@ -5211,6 +5236,7 @@ class GatewayRunner:
                             error_code=adapter.fatal_error_code,
                             error_message=adapter.fatal_error_message or "failed to reconnect",
                         )
+                        self._update_runtime_status("degraded")
                         backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
                         info["attempts"] = attempt
                         info["next_retry"] = time.monotonic() + backoff
@@ -5233,6 +5259,7 @@ class GatewayRunner:
                         error_code=None,
                         error_message=str(e),
                     )
+                    self._update_runtime_status("degraded")
                     backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
                     info["attempts"] = attempt
                     info["next_retry"] = time.monotonic() + backoff

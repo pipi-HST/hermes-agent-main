@@ -60,6 +60,7 @@ export const zhHant: Translations = {
     activeSessionsLabel: "使用中工作階段：",
     gatewayStatusLabel: "閘道狀態：",
     gatewayStrip: {
+      degraded: "降級運行",
       failed: "啟動失敗",
       off: "關閉",
       running: "執行中",

@@ -60,6 +60,7 @@ export const tr: Translations = {
     activeSessionsLabel: "Aktif Oturumlar:",
     gatewayStatusLabel: "Ağ Geçidi Durumu:",
     gatewayStrip: {
+      degraded: "Kısıtlı",
       failed: "Başlatma başarısız",
       off: "Kapalı",
       running: "Çalışıyor",

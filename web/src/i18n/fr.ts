@@ -60,6 +60,7 @@ export const fr: Translations = {
     activeSessionsLabel: "Sessions actives:",
     gatewayStatusLabel: "État de la passerelle:",
     gatewayStrip: {
+      degraded: "Dégradé",
       failed: "Échec du démarrage",
       off: "Désactivé",
       running: "En cours",

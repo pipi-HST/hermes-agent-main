@@ -89,11 +89,30 @@ async def test_runner_stays_alive_for_retryable_startup_errors(monkeypatch, tmp_
     assert ok is True
     assert runner.should_exit_cleanly is False
     state = read_runtime_status()
-    assert state["gateway_state"] in {"degraded", "running"}
+    assert state["gateway_state"] == "degraded"
     # Telegram was queued for retry, not given up on.
     assert Platform.TELEGRAM in runner._failed_platforms
     assert state["platforms"]["telegram"]["state"] == "retrying"
     assert state["platforms"]["telegram"]["error_code"] == "telegram_connect_error"
+
+
+@pytest.mark.asyncio
+async def test_runtime_status_heartbeat_refreshes_while_gateway_is_running(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    runner._running = True
+    updates = []
+
+    monkeypatch.setattr(runner, "_update_runtime_status", lambda state=None: updates.append(state))
+
+    async def stop_after_first_sleep(_seconds):
+        runner._running = False
+
+    monkeypatch.setattr("gateway.run.asyncio.sleep", stop_after_first_sleep)
+
+    await runner._runtime_status_heartbeat()
+
+    assert updates == ["running"]
 
 
 @pytest.mark.asyncio
@@ -379,9 +398,9 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     assert ok is True
     assert runner.should_exit_cleanly is False
     assert runner.adapters == {}
-    # Runtime state must remain "running", not "startup_failed".
+    # Process stays available for cron, but health must not claim full service.
     state = read_runtime_status()
-    assert state["gateway_state"] == "running"
+    assert state["gateway_state"] == "degraded"
     # A warning must be emitted explaining why no platforms connected.
     assert any(
         "No adapter could be created" in record.message

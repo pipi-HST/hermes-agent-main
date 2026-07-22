@@ -60,6 +60,7 @@ export const af: Translations = {
     activeSessionsLabel: "Aktiewe Sessies:",
     gatewayStatusLabel: "Gateway-status:",
     gatewayStrip: {
+      degraded: "Beperk",
       failed: "Begin het misluk",
       off: "Af",
       running: "Loop",

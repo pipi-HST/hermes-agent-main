@@ -447,13 +447,13 @@ class TestMarkJobRun:
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "timeout"
 
-    def test_delivery_error_tracked_separately(self, tmp_cron_dir):
-        """Agent succeeds but delivery fails — both tracked independently."""
+    def test_delivery_error_marks_run_failed_and_preserves_delivery_error(self, tmp_cron_dir):
+        """A result that never reaches the user must not be reported as successful."""
         job = create_job(prompt="Report", schedule="every 1h")
         mark_job_run(job["id"], success=True, delivery_error="platform 'telegram' not configured")
         updated = get_job(job["id"])
-        assert updated["last_status"] == "ok"
-        assert updated["last_error"] is None
+        assert updated["last_status"] == "error"
+        assert updated["last_error"] == "platform 'telegram' not configured"
         assert updated["last_delivery_error"] == "platform 'telegram' not configured"
 
     def test_delivery_error_cleared_on_success(self, tmp_cron_dir):
@@ -466,6 +466,20 @@ class TestMarkJobRun:
         mark_job_run(job["id"], success=True, delivery_error=None)
         updated = get_job(job["id"])
         assert updated["last_delivery_error"] is None
+
+    def test_legacy_delivery_error_is_not_read_as_success(self, tmp_cron_dir):
+        job = create_job(prompt="Report", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_status"] = "ok"
+        jobs[0]["last_error"] = None
+        jobs[0]["last_delivery_error"] = "network timeout"
+        save_jobs(jobs)
+
+        updated = get_job(job["id"])
+
+        assert updated["last_status"] == "error"
+        assert updated["last_error"] == "network timeout"
+        assert updated["last_delivery_error"] == "network timeout"
 
     def test_both_agent_and_delivery_error(self, tmp_cron_dir):
         """Agent fails AND delivery fails — both errors recorded."""

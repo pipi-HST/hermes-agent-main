@@ -128,6 +128,11 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
+    delivery_error = _coerce_job_text(normalized.get("last_delivery_error")).strip()
+    if delivery_error and normalized.get("last_status") == "ok":
+        normalized["last_status"] = "error"
+        normalized["last_error"] = delivery_error
+
     return normalized
 
 
@@ -818,8 +823,8 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
 
-    ``delivery_error`` is tracked separately from the agent error — a job
-    can succeed (agent produced output) but fail delivery (platform down).
+    ``delivery_error`` is preserved separately for diagnostics, but a result
+    that never reaches its configured target is not reported as successful.
     """
     with _jobs_file_lock:
         jobs = load_jobs()
@@ -827,8 +832,9 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
             if job["id"] == job_id:
                 now = _hermes_now().isoformat()
                 job["last_run_at"] = now
-                job["last_status"] = "ok" if success else "error"
-                job["last_error"] = error if not success else None
+                delivered_successfully = success and not delivery_error
+                job["last_status"] = "ok" if delivered_successfully else "error"
+                job["last_error"] = error if not success else delivery_error
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 

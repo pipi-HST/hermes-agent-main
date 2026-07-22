@@ -748,6 +748,14 @@ export default function SessionsPage() {
 
   const alerts: { message: string; detail?: string }[] = [];
   if (status) {
+    if (status.gateway_status_stale) {
+      alerts.push({
+        message: `${t.status.gateway}: ${t.app.gatewayStrip.degraded}`,
+        detail: status.gateway_updated_at
+          ? `${t.status.lastUpdate}: ${status.gateway_updated_at}`
+          : undefined,
+      });
+    }
     if (status.gateway_state === "startup_failed") {
       alerts.push({
         message: t.status.gatewayFailedToStart,
@@ -755,7 +763,11 @@ export default function SessionsPage() {
       });
     }
     const failedPlatformEntries = platformEntries.filter(
-      ([, info]) => info.state === "fatal" || info.state === "disconnected",
+      ([, info]) =>
+        info.state === "fatal" ||
+        info.state === "disconnected" ||
+        info.state === "retrying" ||
+        info.state === "paused",
     );
     for (const [name, info] of failedPlatformEntries) {
       const stateLabel =

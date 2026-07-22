@@ -60,6 +60,7 @@ export const ko: Translations = {
     activeSessionsLabel: "활성 세션:",
     gatewayStatusLabel: "게이트웨이 상태:",
     gatewayStrip: {
+      degraded: "성능 저하",
       failed: "시작 실패",
       off: "꺼짐",
       running: "실행 중",

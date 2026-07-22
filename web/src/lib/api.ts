@@ -714,6 +714,7 @@ export interface StatusResponse {
   gateway_platforms: Record<string, PlatformStatus>;
   gateway_running: boolean;
   gateway_state: string | null;
+  gateway_status_stale: boolean;
   gateway_updated_at: string | null;
   hermes_home: string;
   latest_config_version: number;

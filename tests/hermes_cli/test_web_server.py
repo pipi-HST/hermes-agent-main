@@ -2509,6 +2509,72 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+    def test_get_status_marks_live_gateway_degraded_when_runtime_heartbeat_is_stale(self, monkeypatch):
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as web_server
+
+        class _GatewayConfig:
+            def get_connected_platforms(self):
+                return []
+
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "updated_at": "2026-07-13T10:32:54+00:00",
+                "platforms": {},
+            },
+        )
+        monkeypatch.setattr(web_server, "runtime_status_is_stale", lambda state: True)
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: _GatewayConfig())
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["gateway_running"] is True
+        assert resp.json()["gateway_state"] == "degraded"
+        assert resp.json()["gateway_status_stale"] is True
+
+    def test_get_status_marks_gateway_degraded_when_configured_platform_is_retrying(self, monkeypatch):
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as web_server
+
+        class _Platform:
+            value = "weixin"
+
+        class _GatewayConfig:
+            def get_connected_platforms(self):
+                return [_Platform()]
+
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "updated_at": "2026-07-20T10:32:54+00:00",
+                "platforms": {
+                    "weixin": {
+                        "state": "retrying",
+                        "error_message": "connection lost",
+                        "updated_at": "2026-07-20T10:32:54+00:00",
+                    }
+                },
+            },
+        )
+        monkeypatch.setattr(web_server, "runtime_status_is_stale", lambda state: False)
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: _GatewayConfig())
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["gateway_state"] == "degraded"
+        assert resp.json()["gateway_status_stale"] is False
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200

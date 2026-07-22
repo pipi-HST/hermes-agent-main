@@ -60,6 +60,7 @@ export const ga: Translations = {
     activeSessionsLabel: "Seisiúin gníomhacha:",
     gatewayStatusLabel: "Stádas an gateway:",
     gatewayStrip: {
+      degraded: "Díghrádaithe",
       failed: "Theip ar an tús",
       off: "As",
       running: "Ag rith",

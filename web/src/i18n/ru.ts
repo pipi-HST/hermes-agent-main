@@ -60,6 +60,7 @@ export const ru: Translations = {
     activeSessionsLabel: "Активные сессии:",
     gatewayStatusLabel: "Статус шлюза:",
     gatewayStrip: {
+      degraded: "Ограничен",
       failed: "Ошибка запуска",
       off: "Отключён",
       running: "Работает",

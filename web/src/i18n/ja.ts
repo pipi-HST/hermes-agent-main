@@ -60,6 +60,7 @@ export const ja: Translations = {
     activeSessionsLabel: "アクティブなセッション:",
     gatewayStatusLabel: "ゲートウェイの状態:",
     gatewayStrip: {
+      degraded: "機能低下",
       failed: "起動に失敗しました",
       off: "オフ",
       running: "実行中",

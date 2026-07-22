@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -246,6 +247,22 @@ class TestGatewayPidState:
 
 
 class TestGatewayRuntimeStatus:
+    def test_runtime_status_is_stale_after_freshness_window(self):
+        state = {"updated_at": "2026-07-20T00:00:00+00:00"}
+
+        assert status.runtime_status_is_stale(
+            state,
+            now=datetime(2026, 7, 20, 0, 2, 1, tzinfo=timezone.utc),
+        ) is True
+
+    def test_runtime_status_is_fresh_with_recent_heartbeat(self):
+        state = {"updated_at": "2026-07-20T00:01:30+00:00"}
+
+        assert status.runtime_status_is_stale(
+            state,
+            now=datetime(2026, 7, 20, 0, 2, 0, tzinfo=timezone.utc),
+        ) is False
+
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         calls = []

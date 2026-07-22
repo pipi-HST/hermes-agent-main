@@ -60,6 +60,7 @@ export const hu: Translations = {
     activeSessionsLabel: "Aktív munkamenetek:",
     gatewayStatusLabel: "Átjáró állapota:",
     gatewayStrip: {
+      degraded: "Korlátozott",
       failed: "Indítás sikertelen",
       off: "Ki",
       running: "Fut",

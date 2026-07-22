@@ -56,6 +56,7 @@ function gatewayLine(
 ): { label: string; tone: string } {
   const g = t.app.gatewayStrip;
   const byState: Record<string, { label: string; tone: string }> = {
+    degraded: { label: g.degraded, tone: "text-warning" },
     running: { label: g.running, tone: "text-success" },
     starting: { label: g.starting, tone: "text-warning" },
     startup_failed: { label: g.failed, tone: "text-destructive" },

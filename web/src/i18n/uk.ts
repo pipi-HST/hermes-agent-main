@@ -60,6 +60,7 @@ export const uk: Translations = {
     activeSessionsLabel: "Активні сесії:",
     gatewayStatusLabel: "Стан шлюзу:",
     gatewayStrip: {
+      degraded: "Обмежено",
       failed: "Помилка запуску",
       off: "Вимкнено",
       running: "Працює",
