@@ -2139,16 +2139,52 @@ class TestConcurrentToolExecution:
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""
         with patch("run_agent.handle_function_call", return_value="result") as mock_hfc:
-            result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
+            result = agent._invoke_tool(
+                "web_search",
+                {"q": "test"},
+                "task-1",
+                messages=[{"role": "user", "content": "确认存库"}],
+            )
             mock_hfc.assert_called_once_with(
                 "web_search", {"q": "test"}, "task-1",
                 tool_call_id=None,
                 session_id=agent.session_id,
+                user_task="确认存库",
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
                 tool_progress_callback=None,
             )
             assert result == "result"
+
+    def test_sequential_tool_dispatch_uses_latest_real_user_message(self, agent):
+        tool_call = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = [
+            {"role": "user", "content": "旧问题"},
+            {"role": "assistant", "content": "旧回答"},
+            {"role": "user", "content": "确认存库"},
+        ]
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true}') as mock_hfc:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert mock_hfc.call_args.kwargs["user_task"] == "确认存库"
+
+    def test_sequential_tool_dispatch_prefers_clean_original_user_task(self, agent):
+        tool_call = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        agent._current_user_task = "确认存库"
+        messages = [
+            {
+                "role": "user",
+                "content": "[Hermes Knowledge 模式提示]\n确认存库",
+            }
+        ]
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true}') as mock_hfc:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert mock_hfc.call_args.kwargs["user_task"] == "确认存库"
 
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
@@ -2710,6 +2746,42 @@ class TestRunConversation:
         assert result["final_response"] == "Got it"
         assert result["completed"] is True
         assert result["api_calls"] == 2
+
+    def test_tool_validation_tracks_current_advertised_tool_definitions(self, agent):
+        """A refreshed tool surface must not leave validation on stale names."""
+        self._setup_agent(agent)
+        agent.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_my_notes",
+                    "description": "Search knowledge",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        agent.valid_tool_names = {"research_with_web"}
+        tool_call = _mock_tool_call(
+            name="search_my_notes",
+            arguments='{"query":"AI"}',
+            call_id="call-search",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[tool_call]),
+            _mock_response(content="Found it", finish_reason="stop"),
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="knowledge result") as mock_handle,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search AI")
+
+        assert result["final_response"] == "Found it"
+        mock_handle.assert_called_once()
+        assert agent.valid_tool_names == {"search_my_notes"}
 
     def test_reasoning_only_local_resumed_no_compression_triggered(self, agent):
         """Reasoning-only responses no longer trigger compression — prefill then accepted."""
@@ -3402,7 +3474,12 @@ class TestRunConversation:
         """When tool call args are truncated, the agent retries the API call
         once. If the retry succeeds (valid JSON args), tool execution proceeds."""
         self._setup_agent(agent)
-        agent.valid_tool_names.add("write_file")
+        agent.tools.append(
+            {
+                "type": "function",
+                "function": {"name": "write_file", "parameters": {"type": "object"}},
+            }
+        )
         bad_tc = _mock_tool_call(
             name="write_file",
             arguments='{"path":"report.md","content":"partial',
@@ -3442,7 +3519,12 @@ class TestRunConversation:
         truncated JSON arguments should still be detected and refused rather
         than wasting 3 retry attempts."""
         self._setup_agent(agent)
-        agent.valid_tool_names.add("write_file")
+        agent.tools.append(
+            {
+                "type": "function",
+                "function": {"name": "write_file", "parameters": {"type": "object"}},
+            }
+        )
         bad_tc = _mock_tool_call(
             name="write_file",
             arguments='{"path":"report.md","content":"partial',

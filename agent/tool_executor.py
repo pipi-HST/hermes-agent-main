@@ -33,6 +33,7 @@ from agent.tool_guardrails import ToolGuardrailDecision
 from agent.hermes_custom_envelope_adapter import agent_result_envelope_content_for_model
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
+    _latest_user_message_text,
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
@@ -479,6 +480,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+    current_user_message = (
+        getattr(agent, "_current_user_task", "")
+        or _latest_user_message_text(messages)
+    )
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
@@ -761,6 +766,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
+                    user_task=current_user_message,
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
                     tool_progress_callback=agent.tool_progress_callback,
@@ -782,6 +788,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
+                    user_task=current_user_message,
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
                     tool_progress_callback=agent.tool_progress_callback,

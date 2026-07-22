@@ -39,7 +39,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
     _sanitize_surrogates,
 )
-from agent.tool_dispatch_helpers import _trajectory_normalize_msg
+from agent.tool_dispatch_helpers import _latest_user_message_text, _trajectory_normalize_msg
 from agent.trajectory import convert_scratchpad_to_think
 from agent.error_classifier import classify_api_error, FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
@@ -1551,6 +1551,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             function_name, function_args, effective_task_id,
             tool_call_id=tool_call_id,
             session_id=agent.session_id or "",
+            user_task=(
+                getattr(agent, "_current_user_task", "")
+                or _latest_user_message_text(messages)
+            ),
             enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
             skip_pre_tool_call_hook=True,
             tool_progress_callback=agent.tool_progress_callback,

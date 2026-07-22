@@ -63,6 +63,8 @@ from utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
 
+_STALE_STREAM_CLOSE_GRACE_SECONDS = 2.0
+
 
 def _ra():
     """Lazy ``run_agent`` reference.
@@ -1251,6 +1253,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # poll loop uses this to detect stale connections that keep receiving
     # SSE keep-alive pings but no actual data.
     last_chunk_time = {"t": time.time()}
+    stream_abandoned = threading.Event()
 
     def _fire_first_delta():
         if not first_delta_fired["done"] and on_first_delta:
@@ -1343,6 +1346,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         reasoning_parts: list = []
         usage_obj = None
         for chunk in stream:
+            if stream_abandoned.is_set():
+                break
             last_chunk_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
 
@@ -1573,6 +1578,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
             for event in stream:
+                if stream_abandoned.is_set():
+                    break
                 # Update stale-stream timer on every event so the
                 # outer poll loop knows data is flowing.  Without
                 # this, the detector kills healthy long-running
@@ -1914,6 +1921,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()
+    stale_timeout_error = None
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
     while t.is_alive():
@@ -1965,6 +1973,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
             except Exception:
                 pass
+            t.join(timeout=_STALE_STREAM_CLOSE_GRACE_SECONDS)
+            if t.is_alive():
+                stream_abandoned.set()
+                stale_timeout_error = TimeoutError(
+                    f"Stale streaming API call did not stop after connection close "
+                    f"(stale for {int(_stale_elapsed)}s)"
+                )
+                break
             # Reset the timer so we don't kill repeatedly while
             # the inner thread processes the closure.
             last_chunk_time["t"] = time.time()
@@ -1984,6 +2000,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
             raise InterruptedError("Agent interrupted during streaming API call")
+    if stale_timeout_error is not None:
+        result["error"] = stale_timeout_error
     if result["error"] is not None:
         if deltas_were_sent["yes"]:
             # Streaming failed AFTER some tokens were already delivered to

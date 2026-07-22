@@ -100,6 +100,60 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_stale_stream_close_that_does_not_unblock_is_bounded(
+        self,
+        mock_close,
+        mock_create,
+        monkeypatch,
+    ):
+        """A provider read that ignores client.close() must not hold the task open."""
+        from agent import chat_completion_helpers
+        from run_agent import AIAgent
+
+        release = threading.Event()
+
+        def blocked_stream():
+            release.wait(timeout=0.8)
+            yield _make_stream_chunk(content="late", finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = blocked_stream()
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        fired_deltas = []
+        agent._fire_stream_delta = lambda text: fired_deltas.append(text)
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.01")
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setattr(
+            chat_completion_helpers,
+            "_STALE_STREAM_CLOSE_GRACE_SECONDS",
+            0.01,
+            raising=False,
+        )
+        release_timer = threading.Timer(0.8, release.set)
+        release_timer.start()
+        try:
+            with pytest.raises(TimeoutError, match="Stale streaming API call"):
+                agent._interruptible_streaming_api_call({"messages": []})
+        finally:
+            release.set()
+            release_timer.cancel()
+            threading.Event().wait(timeout=0.1)
+        assert fired_deltas == []
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_tool_call_response(self, mock_close, mock_create):
         """Tool call stream accumulates ID, name, and arguments."""
         from run_agent import AIAgent

@@ -384,6 +384,9 @@ def run_conversation(
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
+    agent._current_user_task = (
+        original_user_message if isinstance(original_user_message, str) else ""
+    )
 
     # Track memory nudge trigger (turn-based, checked here).
     # Skill trigger is checked AFTER the agent loop completes, based on
@@ -3095,6 +3098,24 @@ def run_conversation(
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:
                     agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
+
+                request_tools = (
+                    api_kwargs.get("tools")
+                    if isinstance(api_kwargs, dict) and isinstance(api_kwargs.get("tools"), list)
+                    else agent.tools or []
+                )
+                advertised_tool_names = {
+                    tool.get("function", {}).get("name")
+                    for tool in request_tools
+                    if isinstance(tool, dict)
+                    and isinstance(tool.get("function"), dict)
+                    and tool.get("function", {}).get("name")
+                }
+                if advertised_tool_names != agent.valid_tool_names:
+                    logging.warning(
+                        "Tool validation surface drifted from advertised definitions; resynchronizing"
+                    )
+                    agent.valid_tool_names = advertised_tool_names
                 
                 if agent.verbose_logging:
                     for tc in assistant_message.tool_calls:
