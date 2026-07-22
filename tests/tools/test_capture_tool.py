@@ -69,3 +69,38 @@ def test_revise_tools_do_not_claim_new_documents():
     assert "发送新文档" in revise_description
     assert "capture_content(content=文件路径或链接" in revise_description
     assert "不要调用本工具" in revise_description
+
+
+def test_commit_capture_handler_uses_runtime_user_message_as_confirmation(monkeypatch):
+    import json
+    import tools.commit_capture_draft_tool as tool
+
+    observed = {}
+
+    def fake_commit(*args, **kwargs):
+        observed["draft_id"] = args[0]
+        observed["confirmation"] = kwargs.get("confirmation", "")
+        return {
+            "status": "error",
+            "agent": "capture",
+            "intent": "commit_capture_draft",
+            "chat_preview": "测试",
+            "durable_artifacts": [],
+            "source_map": [],
+            "next_actions": [],
+            "warnings": [],
+            "errors": ["测试"],
+            "meta": {},
+        }
+
+    monkeypatch.setattr(tool, "commit_capture_draft", fake_commit)
+
+    json.loads(
+        tool._handler(
+            {"draft_id": "draft1", "confirmation": "模型伪造的确认"},
+            user_task="确认存库",
+        )
+    )
+
+    assert observed == {"draft_id": "draft1", "confirmation": "确认存库"}
+    assert "confirmation" not in tool.COMMIT_CAPTURE_DRAFT_SCHEMA["parameters"]["properties"]

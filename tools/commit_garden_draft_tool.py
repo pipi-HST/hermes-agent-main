@@ -37,7 +37,10 @@ def do_commit(**kwargs):
 
 def _handler(params: dict, **kw) -> str:
     try:
-        result = do_commit(draft_id=params.get("draft_id", ""))
+        result = do_commit(
+            draft_id=params.get("draft_id", ""),
+            confirmation=kw.get("user_task", ""),
+        )
         return envelope_success_json(result)
     except Exception as exc:
         return envelope_error_json(agent="garden", intent="commit_garden_draft", exc=exc)

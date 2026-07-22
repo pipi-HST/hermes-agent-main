@@ -68,13 +68,22 @@ def test_commit_garden_draft_tool_preserves_envelope(monkeypatch):
         "errors": [],
         "meta": {},
     }
-    monkeypatch.setattr(tool, "do_commit", lambda **kwargs: expected)
+    observed = {}
 
-    result = json.loads(tool._handler({"draft_id": "draft1"}))
+    def fake_commit(**kwargs):
+        observed.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(tool, "do_commit", fake_commit)
+
+    result = json.loads(
+        tool._handler({"draft_id": "draft1"}, user_task="确认卡片")
+    )
 
     assert result["agent"] == "garden"
     assert result["intent"] == "commit_garden_draft"
     assert result["durable_artifacts"][0]["type"] == "garden_card"
+    assert observed == {"draft_id": "draft1", "confirmation": "确认卡片"}
 
 
 def test_garden_draft_tools_register_in_personal_assistant_toolset():

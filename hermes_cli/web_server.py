@@ -7167,7 +7167,10 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
     return await _run_cancellable_ai_operation(
         request,
         "garden.commit",
-        lambda: commit_garden_draft(draft_id=draft_id),
+        lambda: commit_garden_draft(
+            draft_id=draft_id,
+            confirmation_source="dashboard",
+        ),
     )
 
 

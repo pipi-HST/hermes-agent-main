@@ -9,8 +9,17 @@ def test_audit_library_handler_defaults_to_dry_run(monkeypatch):
 
     calls: list[dict] = []
 
-    def fake_run_librarian_audit(*, apply: bool = False, export_file: bool = False):
-        calls.append({"apply": apply, "export_file": export_file})
+    def fake_run_librarian_audit(
+        *,
+        apply: bool = False,
+        export_file: bool = False,
+        confirmation: str = "",
+    ):
+        calls.append({
+            "apply": apply,
+            "export_file": export_file,
+            "confirmation": confirmation,
+        })
         return {
             "status": "success",
             "agent": "librarian",
@@ -28,7 +37,7 @@ def test_audit_library_handler_defaults_to_dry_run(monkeypatch):
 
     result = json.loads(librarian_tool._handler({}))
 
-    assert calls == [{"apply": False, "export_file": False}]
+    assert calls == [{"apply": False, "export_file": False, "confirmation": ""}]
     assert result["agent"] == "librarian"
     assert result["intent"] == "audit_library"
     assert result["chat_preview"] == "审计完成。"
@@ -39,8 +48,17 @@ def test_audit_library_handler_allows_explicit_apply(monkeypatch):
 
     calls: list[dict] = []
 
-    def fake_run_librarian_audit(*, apply: bool = False, export_file: bool = False):
-        calls.append({"apply": apply, "export_file": export_file})
+    def fake_run_librarian_audit(
+        *,
+        apply: bool = False,
+        export_file: bool = False,
+        confirmation: str = "",
+    ):
+        calls.append({
+            "apply": apply,
+            "export_file": export_file,
+            "confirmation": confirmation,
+        })
         return {
             "status": "success",
             "agent": "librarian",
@@ -56,9 +74,15 @@ def test_audit_library_handler_allows_explicit_apply(monkeypatch):
 
     monkeypatch.setattr(librarian_tool, "run_librarian_audit", fake_run_librarian_audit)
 
-    result = json.loads(librarian_tool._handler({"apply": True}))
+    result = json.loads(
+        librarian_tool._handler({"apply": True}, user_task="确认修复")
+    )
 
-    assert calls == [{"apply": True, "export_file": False}]
+    assert calls == [{
+        "apply": True,
+        "export_file": False,
+        "confirmation": "确认修复",
+    }]
     assert result["intent"] == "apply_librarian_repair"
     assert result["meta"]["dry_run"] is False
 

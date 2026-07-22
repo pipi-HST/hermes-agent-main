@@ -18,10 +18,6 @@ COMMIT_CAPTURE_DRAFT_SCHEMA = {
                 "type": "string",
                 "description": "要入库的草稿编号（可选，不填则提交最近未入库草稿）",
             },
-            "confirmation": {
-                "type": "string",
-                "description": "用户最新一条独立确认消息原文，例如“确认存库”。不要传生成草稿那条消息里的整理要求。",
-            },
         },
         "required": [],
     },
@@ -36,7 +32,7 @@ def _handler(args: dict, **kw) -> str:
     try:
         result = commit_capture_draft(
             args.get("draft_id", ""),
-            confirmation=args.get("confirmation", ""),
+            confirmation=kw.get("user_task", ""),
         )
         return envelope_success_json(result)
     except Exception as exc:

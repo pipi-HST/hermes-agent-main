@@ -39,6 +39,7 @@ def _handler(args: dict, **kw) -> str:
         result = run_librarian_audit(
             apply=bool(args.get("apply", False)),
             export_file=bool(args.get("export_file", False)),
+            confirmation=kw.get("user_task", ""),
         )
         return envelope_success_json(result)
     except Exception as exc:
