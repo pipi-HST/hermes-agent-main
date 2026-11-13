@@ -73,3 +73,23 @@ def test_load_config_is_none_without_url(monkeypatch):
     config = load_config()
     assert config is not None
     assert config.base_url == "http://127.0.0.1:8000"
+
+
+def test_library_delete_issues_then_consumes_token():
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, str(request.url)))
+        if request.method == "POST":
+            return httpx.Response(200, json={"token": "tok", "expires_at": "soon"})
+        assert b"tok" in request.read()
+        return httpx.Response(200, json={"ok": True})
+
+    with _client(handler) as client:
+        issued = client.issue_library_delete_confirmation("capture", "c1")
+        result = client.permanent_delete_library_item("capture", "c1", issued["token"])
+
+    assert result == {"ok": True}
+    assert calls[0][0] == "POST"
+    assert calls[0][1].endswith("/api/knowledge/library/items/capture/c1/confirmation")
+    assert calls[1][0] == "DELETE"

@@ -134,7 +134,14 @@ class KnowledgeClient:
             json={"confirmation_token": confirmation_token},
         )
 
-    def permanent_delete(self, kind: str, item_id: str, confirmation_token: str) -> dict[str, Any]:
+    def issue_library_delete_confirmation(self, kind: str, item_id: str) -> dict[str, Any]:
+        return self.request(
+            "POST", f"/api/knowledge/library/items/{kind}/{item_id}/confirmation"
+        )
+
+    def permanent_delete_library_item(
+        self, kind: str, item_id: str, confirmation_token: str
+    ) -> dict[str, Any]:
         return self.request(
             "DELETE",
             f"/api/knowledge/library/items/{kind}/{item_id}/permanent",

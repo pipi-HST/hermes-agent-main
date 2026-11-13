@@ -6905,6 +6905,16 @@ async def post_knowledge_capture_revise(
     }
 
 
+def _knowledge_dependency_worker(db_path: Path, vault_path: Path, item_id: str) -> dict[str, Any]:
+    """Run the vault-wide dependency scan off the event loop."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        return _knowledge_capture_dependency_response(conn, vault_path, item_id=item_id)
+    finally:
+        conn.close()
+
+
 @app.delete("/api/knowledge/library/items/{kind}/{item_id}/permanent")
 async def permanent_delete_knowledge_library_item(request: Request, kind: str, item_id: str):
     _require_token(request)
@@ -6912,22 +6922,54 @@ async def permanent_delete_knowledge_library_item(request: Request, kind: str, i
     if kind != "capture":
         raise HTTPException(status_code=400, detail="Only committed capture files can be permanently deleted")
 
+    # Prefer the Knowledge Service when it is configured: it owns the vault and
+    # the SQLite database, so the runtime must not delete files behind its back.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    client = get_client()
+    if client is not None:
+        try:
+            issued = client.issue_library_delete_confirmation(kind, item_id)
+            result = client.permanent_delete_library_item(
+                kind, item_id, str(issued.get("token") or "")
+            )
+        except KnowledgeUnavailable as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"knowledge service delete failed: {exc}",
+            ) from exc
+        finally:
+            client.close()
+        return result
+
     vault_path = _knowledge_vault_path()
     with _knowledge_conn() as conn:
         row = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Library capture not found")
-        dependency_response = _knowledge_capture_dependency_response(conn, vault_path, item_id=item_id)
-        dependencies = dependency_response["dependencies"]
-        if _knowledge_dependencies_block_permanent_delete(dependencies):
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": "该文件仍被其他知识对象或文档引用，不能彻底删除；请先解除引用或改用归档。",
-                    "dependencies": dependencies,
-                },
-            )
 
+    # The dependency check walks the whole vault (rglob); keep it off the event
+    # loop and open a dedicated connection inside the worker thread.
+    dependency_response = await asyncio.to_thread(
+        _knowledge_dependency_worker,
+        _knowledge_db_path(),
+        vault_path,
+        item_id,
+    )
+    dependencies = dependency_response["dependencies"]
+    if _knowledge_dependencies_block_permanent_delete(dependencies):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "该文件仍被其他知识对象或文档引用，不能彻底删除；请先解除引用或改用归档。",
+                "dependencies": dependencies,
+            },
+        )
+
+    with _knowledge_conn() as conn:
+        row = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Library capture not found")
         file_path = str(row["file_path"] or "")
         raw_path = str(row["raw_path"] or "") if "raw_path" in row.keys() else ""
 
