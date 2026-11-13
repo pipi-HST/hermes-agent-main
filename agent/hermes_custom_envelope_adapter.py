@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Optional
 
@@ -197,8 +198,24 @@ def ensure_source_footer_for_final_response(
     return updated
 
 
+_SOURCE_FOOTER_LABELS = {
+    "zh": "参考来源：",
+    "en": "Sources: ",
+    "ja": "参照元：",
+}
+
+
+def _source_footer_label() -> str:
+    """Footer label; override with HERMES_SOURCE_FOOTER_LABEL or HERMES_LANGUAGE."""
+    override = (os.environ.get("HERMES_SOURCE_FOOTER_LABEL") or "").strip()
+    if override:
+        return override
+    language = (os.environ.get("HERMES_LANGUAGE") or os.environ.get("LANG") or "zh").lower()
+    return _SOURCE_FOOTER_LABELS.get(language[:2], _SOURCE_FOOTER_LABELS["zh"])
+
+
 def _has_source_footer_marker(text: str) -> bool:
-    if any(marker in text for marker in ("参考来源", "📎 来源", "📎来源")):
+    if any(marker in text for marker in ("参考来源", "📎 来源", "📎来源", "Sources:", "参照元：")):
         return True
     return bool(re.search(r"(^|\n)\s*(来源|参考)[:：]", text))
 
@@ -251,7 +268,7 @@ def _format_source_footer(source_map: list[dict], response: str = "") -> str:
             break
     if not refs:
         return ""
-    return "参考来源：" + "；".join(refs)
+    return _source_footer_label() + "；".join(refs)
 
 
 def _referenced_source_indexes(text: str, source_count: int) -> list[int]:

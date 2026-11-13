@@ -1815,63 +1815,21 @@ def _enrich_gateway_knowledge_source(
     vault_path: Path,
     source: dict,
 ) -> dict:
-    enriched = dict(source)
-    enriched["type"] = enriched.get("type") or "knowledge"
-    source_id = str(enriched.get("id") or enriched.get("item_id") or "").strip()
-    source_path = str(enriched.get("file_path") or enriched.get("path") or "").strip()
-    row = None
-    if source_id:
-        row = conn.execute("SELECT id, file_path FROM captures WHERE id = ?", (source_id,)).fetchone()
-    if row is None and source_path:
-        row = conn.execute(
-            "SELECT id, file_path FROM captures WHERE file_path = ? OR raw_path = ?",
-            (source_path, source_path),
-        ).fetchone()
-    if row is None and source_id and len(source_id) >= 6:
-        rows = conn.execute(
-            "SELECT id, file_path FROM captures WHERE id LIKE ? ORDER BY updated_at DESC LIMIT 2",
-            (f"{source_id}%",),
-        ).fetchall()
-        if len(rows) == 1:
-            row = rows[0]
-    if row is not None:
-        item_id = str(row["id"] or "")
-        file_path = str(row["file_path"] or source_path)
-        enriched.update(
-            {
-                "item_kind": "capture",
-                "item_id": item_id,
-                "file_path": file_path,
-                "path": source_path or file_path,
-                "open_url": _knowledge_source_open_url("capture", item_id),
-            }
-        )
-        if file_path:
-            enriched["file_url"] = _knowledge_file_url(vault_path, file_path)
-        return enriched
+    from integrations.hermes_knowledge.sources import enrich_source
 
-    if source_id:
-        draft = conn.execute("SELECT id FROM capture_drafts WHERE id = ?", (source_id,)).fetchone()
-        if draft is not None:
-            item_id = str(draft["id"] or "")
-            enriched.update(
-                {
-                    "item_kind": "capture_draft",
-                    "item_id": item_id,
-                    "open_url": _knowledge_source_open_url("capture_draft", item_id),
-                }
-            )
-    return enriched
+    return enrich_source(conn, vault_path, source)
 
 
 def _knowledge_source_open_url(kind: str, item_id: str) -> str:
-    return "/knowledge-library?" + urlencode({"kind": kind, "item": item_id})
+    from integrations.hermes_knowledge.sources import source_open_url
+
+    return source_open_url(kind, item_id)
 
 
 def _knowledge_file_url(vault_path: Path, file_path: str) -> str:
-    if not file_path:
-        return ""
-    return (vault_path / file_path).expanduser().as_uri()
+    from integrations.hermes_knowledge.sources import file_url
+
+    return file_url(vault_path, file_path)
 
 
 def _research_with_web_summary(data: dict, suffix: str) -> str:

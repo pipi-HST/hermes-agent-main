@@ -6260,16 +6260,9 @@ def _validate_selection_search_length(selected_text: str) -> None:
 
 
 def _knowledge_file_url(vault_path: Path, file_path: str) -> str:
-    if not file_path:
-        return ""
-    rel_path = Path(file_path)
-    if rel_path.is_absolute() or ".." in rel_path.parts:
-        return ""
-    root = vault_path.expanduser().resolve()
-    target = (root / rel_path).resolve()
-    if not target.is_relative_to(root):
-        return ""
-    return target.as_uri()
+    from integrations.hermes_knowledge.sources import file_url
+
+    return file_url(vault_path, file_path)
 
 
 def _knowledge_local_file_path(vault_path: Path, file_path: str) -> Path:
@@ -6321,15 +6314,9 @@ async def post_knowledge_library_item_open_local(request: Request, kind: str, it
 
 
 def _knowledge_source_open_url(kind: str, item_id: str) -> str:
-    return (
-        "/knowledge-library?"
-        + urllib.parse.urlencode(
-            {
-                "kind": kind,
-                "item": item_id,
-            }
-        )
-    )
+    from integrations.hermes_knowledge.sources import source_open_url
+
+    return source_open_url(kind, item_id)
 
 
 def _enrich_knowledge_source(
@@ -6899,14 +6886,14 @@ async def post_knowledge_capture_revise(
         raw_body=raw_body,
     )
     agent = _new_capture_agent()
-    llm_result = agent._call_llm(prompt)
+    llm_result = await asyncio.to_thread(agent._call_llm, prompt)
     revised_body = _knowledge_revision_llm_text(llm_result)
     if getattr(llm_result, "incomplete", False):
         raise HTTPException(status_code=502, detail="AI revision output was incomplete")
     if not revised_body:
         raise HTTPException(status_code=502, detail="AI revision output was empty")
 
-    summary_result = agent.summarizer.summarize(revised_body, [])
+    summary_result = await asyncio.to_thread(agent.summarizer.summarize, revised_body, [])
     return {
         "ok": True,
         "capture_id": capture_id,

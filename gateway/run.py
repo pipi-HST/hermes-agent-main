@@ -7323,6 +7323,11 @@ class GatewayRunner:
                     continue
 
                 context_note = _format_document_context_note(path, mtype)
+                _session_documents = getattr(self, "_session_documents", None)
+                if _session_documents is None:
+                    _session_documents = {}
+                    self._session_documents = _session_documents
+                _session_documents[session_key] = (path, mtype)
                 if not (message_text or "").strip():
                     previous_instruction = _latest_user_text_instruction(history)
                     if previous_instruction:
@@ -7338,7 +7343,13 @@ class GatewayRunner:
             and _looks_like_document_followup_request(message_text)
             and "[User sent a document:" not in message_text
         ):
-            recent_document = _latest_document_context_note(history)
+            # Only trust documents the gateway itself received for this session.
+            # Re-parsing a "path:" out of chat history let user-authored text (or
+            # prompt-injected content) point the agent at an arbitrary file.
+            remembered = getattr(self, "_session_documents", {}).get(session_key)
+            recent_document = (
+                _format_document_context_note(*remembered) if remembered else ""
+            )
             if recent_document:
                 message_text = (
                     "[Recent document available for this request]\n"
