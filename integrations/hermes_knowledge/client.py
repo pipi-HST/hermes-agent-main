@@ -25,6 +25,7 @@ flattening every error into a 502: 404 -> :class:`KnowledgeNotFound`, 409 ->
 from __future__ import annotations
 
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -136,9 +137,70 @@ def load_config() -> KnowledgeConfig | None:
     )
 
 
+# ── Contract check cache ────────────────────────────────────────────────────
+# One successful health probe is enough for the life of the process: the
+# contract version of a running service does not change mid-request, repeated
+# probes would add latency to every knowledge tool call, and the public
+# ``/api/status`` endpoint must never perform network I/O.  Failures are never
+# cached so a service that is still starting up (or being upgraded) is retried
+# on the next call.
+_CONTRACT_CACHE: dict[str, dict[str, Any]] = {}
+_CONTRACT_CACHE_LOCK = threading.Lock()
+# One probe lock per service base_url; see _probe_lock().
+_CONTRACT_PROBE_LOCKS: dict[str, threading.Lock] = {}
+
+
+def clear_contract_cache() -> None:
+    """Drop cached contract checks (tests and post-upgrade diagnostics)."""
+    with _CONTRACT_CACHE_LOCK:
+        _CONTRACT_CACHE.clear()
+
+
+def _probe_lock(base_url: str) -> threading.Lock:
+    """Return the per-service lock that serialises the health probe.
+
+    The probe performs network I/O, so it must never run while the cache lock
+    is held: ``/api/status`` reads the cache and a slow service would otherwise
+    block it for the whole timeout.  A per-URL lock still guarantees that
+    concurrent cold-cache callers issue exactly one probe.
+    """
+    key = str(base_url or "")
+    with _CONTRACT_CACHE_LOCK:
+        lock = _CONTRACT_PROBE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _CONTRACT_PROBE_LOCKS[key] = lock
+        return lock
+
+
+def _cached_contract_entry(base_url: str) -> dict[str, Any] | None:
+    """Return a copy of the cache entry.  The caller must hold the lock."""
+    entry = _CONTRACT_CACHE.get(str(base_url or ""))
+    return dict(entry) if entry else None
+
+
+def cached_contract_status(base_url: str) -> dict[str, Any] | None:
+    """Read the cached contract check for ``base_url`` without any I/O.
+
+    Returns ``{"contract_version": int, "compatible": bool}`` or ``None`` when
+    this process has not successfully validated that service yet.  Request-hot
+    callers (``/api/status``) must use this instead of probing the service.
+    """
+    with _CONTRACT_CACHE_LOCK:
+        entry = _cached_contract_entry(base_url)
+    if entry is None:
+        return None
+    return {
+        "contract_version": entry.get("contract_version"),
+        "compatible": entry.get("compatible"),
+    }
+
+
 class KnowledgeClient:
     def __init__(self, config: KnowledgeConfig, *, transport: httpx.BaseTransport | None = None):
         self._config = config
+        # Set by ensure_compatible() once the service contract was validated.
+        self.contract_version: int | None = None
         headers = {"User-Agent": "hermes-agent/knowledge-client"}
         if config.token:
             headers["Authorization"] = f"Bearer {config.token}"
@@ -151,6 +213,11 @@ class KnowledgeClient:
             transport=transport,
             trust_env=False,
         )
+
+    @property
+    def base_url(self) -> str:
+        """Service base URL, also the contract-cache key."""
+        return self._config.base_url
 
     def close(self) -> None:
         self._client.close()
@@ -330,8 +397,66 @@ class KnowledgeClient:
 
 
 def get_client(transport: httpx.BaseTransport | None = None) -> KnowledgeClient | None:
-    """Return a configured client, or None when HTTP mode is not configured."""
+    """Return a configured, contract-compatible client.
+
+    ``None`` means HTTP mode is not configured (local/disabled knowledge).  A
+    service that is unreachable or speaks an incompatible contract raises
+    :class:`KnowledgeUnavailable` / :class:`KnowledgeIncompatible`; the client
+    is closed before the error propagates so no connection is leaked.
+    """
     config = load_config()
     if config is None:
         return None
-    return KnowledgeClient(config, transport=transport)
+    client = KnowledgeClient(config, transport=transport)
+    try:
+        ensure_compatible(client)
+    except Exception:
+        client.close()
+        raise
+    return client
+
+
+def ensure_compatible(client: KnowledgeClient) -> dict[str, Any]:
+    """Validate ``client`` against the service contract, caching success.
+
+    The cache key is the service ``base_url``: one successful health probe per
+    process is enough.  Failures are never cached, so a service that is down
+    during a first attempt is retried on the next call.
+
+    Concurrency: the fast path reads the cache without taking the lock; a miss
+    takes the lock and re-checks before probing, so threads racing on a cold
+    cache perform a single health request.
+    """
+    base_url = client.base_url
+    with _CONTRACT_CACHE_LOCK:
+        entry = _cached_contract_entry(base_url)
+    if entry is not None:
+        client.contract_version = entry.get("contract_version")
+        return dict(entry.get("health") or {})
+
+    # The probe is network I/O: run it under the per-service lock only, never
+    # while holding the cache lock (``/api/status`` reads the cache and a slow
+    # service would otherwise block it for a whole request timeout).
+    with _probe_lock(base_url):
+        with _CONTRACT_CACHE_LOCK:
+            # Double-check: another thread may have finished the probe while we
+            # were waiting.
+            entry = _cached_contract_entry(base_url)
+        if entry is not None:
+            client.contract_version = entry.get("contract_version")
+            return dict(entry.get("health") or {})
+
+        health = client.assert_compatible()
+        try:
+            version = int(health.get("contract_version") or 0)
+        except (TypeError, ValueError):
+            version = 0
+        with _CONTRACT_CACHE_LOCK:
+            _CONTRACT_CACHE[base_url] = {
+                "contract_version": version,
+                "compatible": True,
+                "health": dict(health),
+            }
+
+    client.contract_version = version
+    return health

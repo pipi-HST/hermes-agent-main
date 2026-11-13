@@ -21,6 +21,16 @@ from hermes_cli.config import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_knowledge_contract_cache():
+    """The contract cache is process-global; isolate it between tests."""
+    from integrations.hermes_knowledge.client import clear_contract_cache
+
+    clear_contract_cache()
+    yield
+    clear_contract_cache()
+
+
 class _FakeKnowledgeServiceClient:
     """Stand-in for ``integrations.hermes_knowledge.client.KnowledgeClient``."""
 
@@ -2070,6 +2080,39 @@ class TestWebServerEndpoints:
         assert resp.status_code == 503
         assert "not configured correctly" in resp.json()["detail"]
 
+    def test_permanent_delete_reports_contract_incompatible_preflight_as_503(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        def _incompatible(transport=None):
+            raise knowledge_client.KnowledgeIncompatible(
+                "knowledge contract v0 < required v1"
+            )
+
+        monkeypatch.setattr(knowledge_client, "get_client", _incompatible)
+
+        resp = self.client.delete("/api/knowledge/library/items/capture/cap-1/permanent")
+
+        assert resp.status_code == 503
+        detail = resp.json()["detail"]
+        assert detail["code"] == "contract_incompatible"
+        assert "incompatible" in detail["message"]
+
+    def test_permanent_delete_reports_contract_incompatible_from_service_as_503(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        fake = _FakeKnowledgeServiceClient(
+            error=knowledge_client.KnowledgeIncompatible(
+                "knowledge contract v0 < required v1"
+            )
+        )
+        monkeypatch.setattr(knowledge_client, "get_client", lambda transport=None: fake)
+
+        resp = self.client.delete("/api/knowledge/library/items/capture/cap-1/permanent")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["code"] == "contract_incompatible"
+        assert fake.closed is True
+
     def test_permanent_delete_uses_service_token_and_closes_client(self, monkeypatch):
         import integrations.hermes_knowledge.client as knowledge_client
 
@@ -2951,6 +2994,118 @@ class TestWebServerEndpoints:
         assert health_url is not None
         assert "hunter2-secret" not in health_url
         assert "<redacted>" in health_url
+
+    def _clear_knowledge_env(self, monkeypatch):
+        for key in (
+            "HERMES_KNOWLEDGE_URL",
+            "HERMES_KNOWLEDGE_LOCAL_ROOT",
+            "HERMES_CUSTOM_ROOT",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+    def _patch_status_environment(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda: None)
+
+    def test_status_knowledge_block_disabled(self, monkeypatch):
+        self._clear_knowledge_env(monkeypatch)
+        self._patch_status_environment(monkeypatch)
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["knowledge"] == {
+            "mode": "disabled",
+            "contract_version": None,
+            "compatible": None,
+        }
+
+    def test_status_knowledge_block_local(self, monkeypatch, tmp_path):
+        self._clear_knowledge_env(monkeypatch)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_LOCAL_ROOT", str(tmp_path))
+        self._patch_status_environment(monkeypatch)
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["knowledge"] == {
+            "mode": "local",
+            "contract_version": None,
+            "compatible": None,
+        }
+
+    def test_status_knowledge_block_http_reports_config_without_probing(self, monkeypatch):
+        """Status is public: it must report the mode without touching the network."""
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        self._clear_knowledge_env(monkeypatch)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://127.0.0.1:8123")
+        self._patch_status_environment(monkeypatch)
+
+        class _NoClientConstruction:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("status must not construct a knowledge client")
+
+        monkeypatch.setattr(knowledge_client, "KnowledgeClient", _NoClientConstruction)
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["knowledge"] == {
+            "mode": "http",
+            "contract_version": None,
+            "compatible": None,
+        }
+
+    def test_status_knowledge_block_http_uses_cached_contract(self, monkeypatch):
+        """Once the process validated the contract, status reports it from cache."""
+        import httpx
+
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        self._clear_knowledge_env(monkeypatch)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://127.0.0.1:8123")
+        self._patch_status_environment(monkeypatch)
+
+        probe = knowledge_client.KnowledgeClient(
+            knowledge_client.KnowledgeConfig(
+                base_url="http://127.0.0.1:8123", token="t"
+            ),
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={"service": "hermes-knowledge", "contract_version": 1},
+                )
+            ),
+        )
+        knowledge_client.ensure_compatible(probe)
+        probe.close()
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["knowledge"] == {
+            "mode": "http",
+            "contract_version": 1,
+            "compatible": True,
+        }
+
+    def test_status_knowledge_block_survives_invalid_knowledge_config(self, monkeypatch):
+        self._clear_knowledge_env(monkeypatch)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "127.0.0.1:8123")  # no scheme
+        self._patch_status_environment(monkeypatch)
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["knowledge"] == {
+            "mode": "http",
+            "contract_version": None,
+            "compatible": None,
+        }
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")

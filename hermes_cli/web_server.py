@@ -646,6 +646,55 @@ def _redact_status_payload(value: Any) -> Any:
     return _redact_status_text(value)
 
 
+def _knowledge_status_block() -> dict[str, Any]:
+    """Report the configured knowledge mode plus the cached contract check.
+
+    ``/api/status`` is a public, unauthenticated endpoint: it must never probe
+    the knowledge service (no network I/O, no timing side channel).  The
+    contract fields therefore only reflect a check this process already did.
+    """
+    block: dict[str, Any] = {
+        "mode": "disabled",
+        "contract_version": None,
+        "compatible": None,
+    }
+    try:
+        from integrations.hermes_knowledge import configured_root
+        from integrations.hermes_knowledge.client import (
+            cached_contract_status,
+            load_config,
+        )
+    except Exception:  # noqa: BLE001 - status must never fail on optional deps
+        return block
+
+    raw_url = (os.environ.get("HERMES_KNOWLEDGE_URL") or "").strip()
+    config = None
+    if raw_url:
+        block["mode"] = "http"
+        try:
+            config = load_config()
+        except Exception:
+            # Misconfigured URL/timeout: still report the configured mode, but
+            # leave the contract fields empty instead of failing /api/status.
+            config = None
+    else:
+        try:
+            if configured_root() is not None:
+                block["mode"] = "local"
+        except Exception:
+            pass
+
+    if config is not None:
+        try:
+            cached = cached_contract_status(config.base_url)
+        except Exception:
+            cached = None
+        if cached:
+            block["contract_version"] = cached.get("contract_version")
+            block["compatible"] = cached.get("compatible")
+    return block
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
@@ -767,6 +816,7 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "gateway_status_stale": gateway_status_stale,
+        "knowledge": _knowledge_status_block(),
         "active_sessions": active_sessions,
     }
 
@@ -7020,6 +7070,7 @@ async def permanent_delete_knowledge_library_item(request: Request, kind: str, i
     # the SQLite database, so the runtime must not delete files behind its back.
     from integrations.hermes_knowledge.client import (
         KnowledgeConflict,
+        KnowledgeIncompatible,
         KnowledgeNotFound,
         KnowledgeUnavailable,
         get_client,
@@ -7027,6 +7078,17 @@ async def permanent_delete_knowledge_library_item(request: Request, kind: str, i
 
     try:
         client = get_client()
+    except KnowledgeIncompatible as exc:
+        # Reachable service, wrong contract: tell the operator to upgrade
+        # instead of pretending the service is down (must be caught before
+        # KnowledgeUnavailable, its parent class).
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "contract_incompatible",
+                "message": f"knowledge service contract is incompatible: {exc}",
+            },
+        ) from exc
     except KnowledgeUnavailable as exc:
         # Bad HERMES_KNOWLEDGE_URL / HERMES_KNOWLEDGE_TIMEOUT is a
         # configuration problem, not a server crash.
@@ -7053,6 +7115,16 @@ async def permanent_delete_knowledge_library_item(request: Request, kind: str, i
             if not isinstance(detail, dict):
                 detail = {"message": str(detail or exc)}
             raise HTTPException(status_code=409, detail=detail) from exc
+        except KnowledgeIncompatible as exc:
+            # Same mapping as the preflight path; ordered before the parent
+            # KnowledgeUnavailable catch below.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "contract_incompatible",
+                    "message": f"knowledge service contract is incompatible: {exc}",
+                },
+            ) from exc
         except KnowledgeUnavailable as exc:
             raise HTTPException(
                 status_code=502,

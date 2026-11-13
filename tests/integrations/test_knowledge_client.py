@@ -12,8 +12,20 @@ from integrations.hermes_knowledge.client import (
     KnowledgeInvalid,
     KnowledgeNotFound,
     KnowledgeUnavailable,
+    cached_contract_status,
+    clear_contract_cache,
+    ensure_compatible,
+    get_client,
     load_config,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_contract_cache():
+    """Contract checks are process-global; never leak them across tests."""
+    clear_contract_cache()
+    yield
+    clear_contract_cache()
 
 
 def _client(handler) -> KnowledgeClient:
@@ -361,3 +373,195 @@ def test_delete_sends_unique_idempotency_key():
     assert all(idempotency_keys)
     assert len(idempotency_keys) == 2
     assert idempotency_keys[0] != idempotency_keys[1]
+
+
+# ── Contract validation caching ────────────────────────────────────────────
+
+
+_HEALTHY_HEALTH = {"service": "hermes-knowledge", "contract_version": 1}
+
+
+def test_get_client_probes_health_once_per_base_url(monkeypatch):
+    """A second client for the same service must reuse the cached contract."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json=_HEALTHY_HEALTH)
+
+    monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://knowledge.test")
+    transport = httpx.MockTransport(handler)
+
+    first = get_client(transport=transport)
+    second = get_client(transport=transport)
+
+    try:
+        assert first is not None and second is not None
+        assert calls == ["http://knowledge.test/api/health"]
+        assert first.contract_version == 1
+        assert second.contract_version == 1
+    finally:
+        first.close()
+        second.close()
+
+
+def test_get_client_rejects_old_contract(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"service": "hermes-knowledge", "contract_version": 0}
+        )
+
+    monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://knowledge.test")
+
+    with pytest.raises(KnowledgeIncompatible):
+        get_client(transport=httpx.MockTransport(handler))
+    assert cached_contract_status("http://knowledge.test") is None
+
+
+def test_get_client_rejects_wrong_service(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"service": "someone-else", "contract_version": 1})
+
+    monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://knowledge.test")
+
+    with pytest.raises(KnowledgeIncompatible):
+        get_client(transport=httpx.MockTransport(handler))
+
+
+def test_unreachable_service_failure_is_not_cached(monkeypatch):
+    import integrations.hermes_knowledge.client as client_module
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        raise httpx.ConnectError("connection refused", request=request)
+
+    monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://knowledge.test")
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: None)
+    transport = httpx.MockTransport(handler)
+
+    with pytest.raises(KnowledgeUnavailable):
+        get_client(transport=transport)
+    # The GET health probe retries transport errors once.
+    assert len(calls) == 2
+    assert cached_contract_status("http://knowledge.test") is None
+
+    with pytest.raises(KnowledgeUnavailable):
+        get_client(transport=transport)
+    # Failure was not cached, so the second call probes again.
+    assert len(calls) == 4
+
+
+def test_incompatible_contract_failure_is_not_cached(monkeypatch):
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            200, json={"service": "hermes-knowledge", "contract_version": 0}
+        )
+
+    monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://knowledge.test")
+    transport = httpx.MockTransport(handler)
+
+    with pytest.raises(KnowledgeIncompatible):
+        get_client(transport=transport)
+    with pytest.raises(KnowledgeIncompatible):
+        get_client(transport=transport)
+    assert len(calls) == 2
+
+
+def test_cached_contract_status_reflects_successful_probe(monkeypatch):
+    assert cached_contract_status("http://knowledge.test") is None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_HEALTHY_HEALTH)
+
+    monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://knowledge.test")
+    client = get_client(transport=httpx.MockTransport(handler))
+    try:
+        assert client is not None
+        assert cached_contract_status("http://knowledge.test") == {
+            "contract_version": 1,
+            "compatible": True,
+        }
+        assert cached_contract_status("http://other.test") is None
+    finally:
+        client.close()
+
+
+def test_concurrent_contract_checks_probe_once():
+    """Double-checked locking: racing cold-cache callers share one probe."""
+    import threading
+    import time as time_module
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        time_module.sleep(0.05)
+        return httpx.Response(200, json=_HEALTHY_HEALTH)
+
+    transport = httpx.MockTransport(handler)
+    config = KnowledgeConfig(base_url="http://knowledge.test", token="t")
+    clients = [KnowledgeClient(config, transport=transport) for _ in range(4)]
+    errors: list[BaseException] = []
+
+    def run(client: KnowledgeClient) -> None:
+        try:
+            ensure_compatible(client)
+        except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(client,)) for client in clients]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    try:
+        assert errors == []
+        assert calls == ["http://knowledge.test/api/health"]
+        assert all(client.contract_version == 1 for client in clients)
+    finally:
+        for client in clients:
+            client.close()
+
+
+def test_cached_contract_status_does_not_block_on_an_in_flight_probe():
+    """The probe must never hold the cache lock across network I/O.
+
+    ``/api/status`` reads the cache; if the health probe kept the cache lock
+    for its whole timeout, a slow knowledge service would stall the public
+    status endpoint.  The probe therefore runs under a per-service lock.
+    """
+    import threading
+    import time as time_module
+
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        probe_started.set()
+        release_probe.wait(timeout=5)
+        return httpx.Response(200, json=_HEALTHY_HEALTH)
+
+    client = KnowledgeClient(
+        KnowledgeConfig(base_url="http://slow.test", token="t"),
+        transport=httpx.MockTransport(handler),
+    )
+    thread = threading.Thread(target=lambda: ensure_compatible(client))
+    thread.start()
+    try:
+        assert probe_started.wait(timeout=2)
+        started_at = time_module.perf_counter()
+        status = cached_contract_status("http://slow.test")
+        elapsed = time_module.perf_counter() - started_at
+        assert status is None
+        assert elapsed < 0.2, f"status blocked for {elapsed:.3f}s behind the probe"
+    finally:
+        release_probe.set()
+        thread.join(timeout=5)
+        client.close()
+    assert not thread.is_alive()
