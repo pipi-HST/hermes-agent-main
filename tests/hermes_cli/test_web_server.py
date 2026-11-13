@@ -21,6 +21,33 @@ from hermes_cli.config import (
 )
 
 
+class _FakeKnowledgeServiceClient:
+    """Stand-in for ``integrations.hermes_knowledge.client.KnowledgeClient``."""
+
+    def __init__(self, *, error=None, result=None, issued=None):
+        self.error = error
+        self.result = (
+            result if result is not None else {"ok": True, "status": "permanently_deleted"}
+        )
+        self.issued = issued if issued is not None else {"token": "tok"}
+        self.closed = False
+        self.delete_calls: list[tuple[str, str, str]] = []
+
+    def issue_library_delete_confirmation(self, kind, item_id):
+        if self.error is not None:
+            raise self.error
+        return self.issued
+
+    def permanent_delete_library_item(self, kind, item_id, confirmation_token):
+        if self.error is not None:
+            raise self.error
+        self.delete_calls.append((kind, item_id, confirmation_token))
+        return self.result
+
+    def close(self):
+        self.closed = True
+
+
 # ---------------------------------------------------------------------------
 # reload_env tests
 # ---------------------------------------------------------------------------
@@ -1978,6 +2005,87 @@ class TestWebServerEndpoints:
         assert conn.execute("SELECT COUNT(*) FROM captures WHERE id = 'cap-1'").fetchone()[0] == 0
         conn.close()
 
+    def test_permanent_delete_maps_service_not_found_to_404(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        fake = _FakeKnowledgeServiceClient(
+            error=knowledge_client.KnowledgeNotFound(
+                "gone", status_code=404, detail={"message": "missing in service"}
+            )
+        )
+        monkeypatch.setattr(knowledge_client, "get_client", lambda transport=None: fake)
+
+        resp = self.client.delete("/api/knowledge/library/items/capture/cap-1/permanent")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == {"message": "missing in service"}
+        assert fake.closed is True
+
+    def test_permanent_delete_maps_service_conflict_to_409(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        conflict_detail = {
+            "detail": "still referenced",
+            "dependencies": {"garden_cards": [{"id": "gc-1"}]},
+        }
+        fake = _FakeKnowledgeServiceClient(
+            error=knowledge_client.KnowledgeConflict(
+                "conflict", status_code=409, detail=conflict_detail
+            )
+        )
+        monkeypatch.setattr(knowledge_client, "get_client", lambda transport=None: fake)
+
+        resp = self.client.delete("/api/knowledge/library/items/capture/cap-1/permanent")
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == conflict_detail
+        assert fake.closed is True
+
+    def test_permanent_delete_maps_service_failure_to_502(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        fake = _FakeKnowledgeServiceClient(
+            error=knowledge_client.KnowledgeUnavailable("upstream down")
+        )
+        monkeypatch.setattr(knowledge_client, "get_client", lambda transport=None: fake)
+
+        resp = self.client.delete("/api/knowledge/library/items/capture/cap-1/permanent")
+
+        assert resp.status_code == 502
+        assert "upstream down" in resp.json()["detail"]
+        assert fake.closed is True
+
+    def test_permanent_delete_reports_misconfigured_service_as_503(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        def _misconfigured(transport=None):
+            raise knowledge_client.KnowledgeUnavailable(
+                "HERMES_KNOWLEDGE_TIMEOUT must be a number of seconds"
+            )
+
+        monkeypatch.setattr(knowledge_client, "get_client", _misconfigured)
+
+        resp = self.client.delete("/api/knowledge/library/items/capture/cap-1/permanent")
+
+        assert resp.status_code == 503
+        assert "not configured correctly" in resp.json()["detail"]
+
+    def test_permanent_delete_uses_service_token_and_closes_client(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        fake = _FakeKnowledgeServiceClient(
+            result={"ok": True, "status": "permanently_deleted"},
+            issued={"confirmation_token": "ctok"},
+        )
+        monkeypatch.setattr(knowledge_client, "get_client", lambda transport=None: fake)
+
+        resp = self.client.delete("/api/knowledge/library/items/capture/cap-1/permanent")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "permanently_deleted"
+        assert fake.delete_calls == [("capture", "cap-1", "ctok")]
+        assert fake.closed is True
+
     def test_knowledge_library_selection_chat_uses_capture_selection_context(self, monkeypatch, tmp_path):
         import sqlite3
         import hermes_cli.web_server as ws
@@ -2648,6 +2756,126 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["gateway_state"] == "degraded"
         assert resp.json()["gateway_status_stale"] is False
+
+    def test_status_redaction_strips_credential_shapes(self):
+        import hermes_cli.web_server as web_server
+
+        secrets = {
+            "json_api_key": "sk-live-json0123456789abcdef",
+            "env_key": "sk-proj-env0123456789abcdef",
+            "bearer": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
+            "telegram": "AAHtelegramsecret0123456789",
+            "access": "at-0123456789abcdef",
+            "refresh": "rt-0123456789abcdef",
+            "bare": "sk-bare0123456789abcdef",
+            "url_password": "s3cr3tpassw0rd",
+        }
+        payload = {
+            "gateway_platforms": {
+                "telegram": {
+                    "state": "retrying",
+                    "error": f"Authorization: Bearer {secrets['bearer']}",
+                    "hint": f"OPENAI_API_KEY={secrets['env_key']}",
+                    "webhook": (
+                        "https://api.telegram.org/bot123456789:"
+                        f"{secrets['telegram']}/getUpdates"
+                    ),
+                },
+                "discord": {
+                    "debug": '{"api_key": "' + secrets["json_api_key"] + '", "retries": 3}',
+                    "query": f"access_token={secrets['access']}&refresh_token={secrets['refresh']}",
+                    "health_url": f"https://alice:{secrets['url_password']}@example.com/health",
+                },
+                "memory": {"state": "connected", "note": f"bare key {secrets['bare']} trailing"},
+            },
+            "gateway_exit_reason": (
+                "token budget: 100 · gateway running · https://api.example.com/health"
+            ),
+            "nested": {
+                "api_key": "value with spaces 0123456789",
+                "plain": "6 sessions active",
+            },
+        }
+
+        redacted = json.dumps(web_server._redact_status_payload(payload))
+
+        for name, secret in secrets.items():
+            assert secret not in redacted, f"{name} leaked into the status payload"
+        # Innocent text must survive the shape patterns.
+        assert "gateway running" in redacted
+        assert "https://api.example.com/health" in redacted
+        assert "6 sessions active" in redacted
+        assert "token budget: 100" in redacted
+        assert "retrying" in redacted
+        assert "retries" in redacted
+
+    def test_status_endpoint_redacts_platform_and_exit_reason_credentials(self, monkeypatch):
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as web_server
+
+        class _Platform:
+            value = "telegram"
+
+        class _GatewayConfig:
+            def get_connected_platforms(self):
+                return [_Platform()]
+
+        bearer = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln"
+        telegram_token = "AAHtelegramsecret0123456789"
+        api_key = "sk-live-endpoint0123456789abcdef"
+        access_token = "at-endpoint0123456789abcdef"
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(web_server, "runtime_status_is_stale", lambda state: False)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "updated_at": "2026-11-13T00:00:00+00:00",
+                "platforms": {
+                    "telegram": {
+                        "state": "retrying",
+                        "error": f"Authorization: Bearer {bearer}",
+                        "last_error": f"OPENAI_API_KEY={api_key}",
+                        "webhook": (
+                            "https://api.telegram.org/bot123456789:"
+                            f"{telegram_token}/getUpdates"
+                        ),
+                    }
+                },
+                "exit_reason": f"still retrying; access_token={access_token}",
+            },
+        )
+        monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: _GatewayConfig())
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        body = json.dumps(resp.json())
+        for leaked in (bearer, telegram_token, api_key, access_token):
+            assert leaked not in body
+        assert resp.json()["gateway_exit_reason"].startswith("still retrying")
+
+    def test_status_redacts_gateway_health_url(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "_GATEWAY_HEALTH_URL",
+            "https://monitor:hunter2-secret@example.com/health",
+        )
+        monkeypatch.setattr(web_server, "_probe_gateway_health", lambda: (False, None))
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        health_url = resp.json()["gateway_health_url"]
+        assert health_url is not None
+        assert "hunter2-secret" not in health_url
+        assert "<redacted>" in health_url
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")

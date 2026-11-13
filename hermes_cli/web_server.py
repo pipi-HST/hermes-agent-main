@@ -561,18 +561,64 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
-_STATUS_SECRET_RE = re.compile(
-    r"(?i)\b(api[_-]?key|token|secret|password|authorization)\b\s*[=:]\s*\S+"
+# ── /api/status redaction ──────────────────────────────────────────────────
+# The dashboard renders these fields, so every credential shape that can reach
+# them must be stripped.  The previous version only handled a bare
+# ``token=<value>`` shape and, worse, left the credential itself in place for
+# ``Authorization: Bearer <jwt>`` (it masked the word "Bearer" only).
+_REDACTED = "<redacted>"
+
+# Sensitive key names, including vendor-prefixed spellings such as
+# ``OPENAI_API_KEY`` or ``access_token``.  ``(?:[A-Za-z0-9]+[_-])*`` allows
+# arbitrary ``_``/``-`` joined prefixes while keeping "monkey"-style words out.
+_STATUS_SECRET_KEY = (
+    r"(?:[A-Za-z0-9]+[_-])*(?:"
+    r"api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|"
+    r"token|secret|password|passwd|authorization"
+    r")"
 )
-_STATUS_URL_CRED_RE = re.compile(r"(?i)\b(https?://)[^/@\s]+@")
+_STATUS_SECRET_FIELD_RE = re.compile(_STATUS_SECRET_KEY, re.IGNORECASE)
+_STATUS_SECRET_PAIR_QUOTED_RE = re.compile(
+    r"(?P<key>" + _STATUS_SECRET_KEY + r""")\s*["']?\s*[:=]\s*["'](?P<value>[^"\n]*)["']""",
+    re.IGNORECASE,
+)
+_STATUS_SECRET_PAIR_RE = re.compile(
+    r"(?P<key>" + _STATUS_SECRET_KEY + r""")\s*["']?\s*[:=]\s*[^\s"',;}\n]+""",
+    re.IGNORECASE,
+)
+_STATUS_AUTH_RE = re.compile(
+    r"""(?i)\b[a-z0-9_-]*authorization[a-z0-9_-]*\b\s*["']?\s*[:=]\s*["']?"""
+    r"""(?:bearer|basic|digest|token)\s+[^\s"',;}\n]+"""
+)
+_STATUS_BEARER_RE = re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9\-._~+/]{10,}=*")
+_STATUS_TELEGRAM_BOT_RE = re.compile(r"(?i)\bbot(\d{3,}):[A-Za-z0-9_-]{5,}")
+_STATUS_URL_CRED_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@")
+_STATUS_BARE_KEY_RE = re.compile(r"(?i)\b(?:sk|pk|rk)[-_][A-Za-z0-9_-]{8,}")
+
+
+def _redact_status_pair(match: "re.Match[str]") -> str:
+    """Keep the field name visible while dropping the secret value."""
+    return f"{match.group('key')}={_REDACTED}"
 
 
 def _redact_status_text(value: Any, limit: int = 300) -> Any:
-    """Redact credentials/paths from status strings exposed by /api/status."""
+    """Redact credentials from a status string, then bound its length.
+
+    Handles, in order: ``Authorization`` headers (dropping the credential
+    itself), quoted/unquoted ``KEY=value`` pairs (JSON included), Telegram bot
+    URLs, ``user:pass@`` URL credentials and bare ``sk-`` style keys.
+    """
     if not isinstance(value, str):
         return value
-    text = _STATUS_SECRET_RE.sub(r"\1=<redacted>", value)
+    text = _STATUS_AUTH_RE.sub("authorization=<redacted>", value)
+    text = _STATUS_BEARER_RE.sub(lambda m: f"{m.group(1)} {_REDACTED}", text)
+    text = _STATUS_TELEGRAM_BOT_RE.sub(
+        lambda m: f"bot{m.group(1)}:{_REDACTED}", text
+    )
+    text = _STATUS_SECRET_PAIR_QUOTED_RE.sub(_redact_status_pair, text)
+    text = _STATUS_SECRET_PAIR_RE.sub(_redact_status_pair, text)
     text = _STATUS_URL_CRED_RE.sub(r"\1<redacted>@", text)
+    text = _STATUS_BARE_KEY_RE.sub(_REDACTED, text)
     if len(text) > limit:
         text = text[: max(0, limit - 1)].rstrip() + "…"
     return text
@@ -580,7 +626,21 @@ def _redact_status_text(value: Any, limit: int = 300) -> Any:
 
 def _redact_status_payload(value: Any) -> Any:
     if isinstance(value, dict):
-        return {key: _redact_status_payload(item) for key, item in value.items()}
+        result: dict = {}
+        for key, item in value.items():
+            # Field-level handling: a mapping such as ``{"api_key": "..."}``
+            # must be redacted by key name so values with spaces cannot slip
+            # past the string patterns.
+            if (
+                isinstance(key, str)
+                and _STATUS_SECRET_FIELD_RE.fullmatch(key)
+                and item is not None
+                and item != ""
+            ):
+                result[key] = _REDACTED
+            else:
+                result[key] = _redact_status_payload(item)
+        return result
     if isinstance(value, list):
         return [_redact_status_payload(item) for item in value]
     return _redact_status_text(value)
@@ -701,7 +761,7 @@ async def get_status():
         "latest_config_version": latest_ver,
         "gateway_running": gateway_running,
         "gateway_pid": gateway_pid,
-        "gateway_health_url": _GATEWAY_HEALTH_URL,
+        "gateway_health_url": _redact_status_text(_GATEWAY_HEALTH_URL),
         "gateway_state": gateway_state,
         "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason,
@@ -6925,15 +6985,41 @@ async def permanent_delete_knowledge_library_item(request: Request, kind: str, i
 
     # Prefer the Knowledge Service when it is configured: it owns the vault and
     # the SQLite database, so the runtime must not delete files behind its back.
-    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+    from integrations.hermes_knowledge.client import (
+        KnowledgeConflict,
+        KnowledgeNotFound,
+        KnowledgeUnavailable,
+        get_client,
+    )
 
-    client = get_client()
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        # Bad HERMES_KNOWLEDGE_URL / HERMES_KNOWLEDGE_TIMEOUT is a
+        # configuration problem, not a server crash.
+        raise HTTPException(
+            status_code=503,
+            detail=f"knowledge service is not configured correctly: {exc}",
+        ) from exc
     if client is not None:
         try:
             issued = client.issue_library_delete_confirmation(kind, item_id)
-            result = client.permanent_delete_library_item(
-                kind, item_id, str(issued.get("token") or "")
-            )
+            # The service has shipped both spellings of the confirmation
+            # token; accept either so a rename cannot turn into a 502.
+            token = str(issued.get("token") or issued.get("confirmation_token") or "")
+            result = client.permanent_delete_library_item(kind, item_id, token)
+        except KnowledgeNotFound as exc:
+            detail = exc.detail
+            if not isinstance(detail, (dict, str)) or not detail:
+                detail = "Library capture not found"
+            raise HTTPException(status_code=404, detail=detail) from exc
+        except KnowledgeConflict as exc:
+            # Preserve the service's "still referenced" payload so the UI can
+            # show what blocks the delete instead of a generic 502.
+            detail = exc.detail
+            if not isinstance(detail, dict):
+                detail = {"message": str(detail or exc)}
+            raise HTTPException(status_code=409, detail=detail) from exc
         except KnowledgeUnavailable as exc:
             raise HTTPException(
                 status_code=502,
