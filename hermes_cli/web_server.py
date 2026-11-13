@@ -5154,7 +5154,9 @@ def _knowledge_write_folder_store(folders: list[str], hidden: list[str] | None =
         payload: Any = {"folders": clean_folders, "hidden": clean_hidden}
     else:
         payload = clean_folders
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    from hermes_cli.file_atomic import atomic_write_text
+
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def _knowledge_save_stored_folder(folder: str) -> list[str]:
@@ -6728,12 +6730,25 @@ def _knowledge_unlink_storage_file(vault_path: Path, file_path: str) -> str:
     return rel_path.as_posix()
 
 
+_KNOWLEDGE_DELETABLE_TABLES = frozenset(
+    {
+        "capture_embeddings",
+        "capture_metadata",
+        "agent_run_objects",
+        "capture_version_backups",
+        "captures",
+    }
+)
+
+
 def _knowledge_delete_by_column(
     conn: sqlite3.Connection,
     table: str,
     column: str,
     value: str,
 ) -> int:
+    if table not in _KNOWLEDGE_DELETABLE_TABLES:
+        raise ValueError(f"table is not deletable through this helper: {table}")
     columns = _knowledge_table_columns(conn, table)
     if column not in columns:
         return 0

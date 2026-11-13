@@ -3112,10 +3112,18 @@ def run_conversation(
                     and tool.get("function", {}).get("name")
                 }
                 if advertised_tool_names != agent.valid_tool_names:
-                    logging.warning(
-                        "Tool validation surface drifted from advertised definitions; resynchronizing"
-                    )
-                    agent.valid_tool_names = advertised_tool_names
+                    unexpected = advertised_tool_names - agent.valid_tool_names
+                    if unexpected:
+                        # The allowlist is authoritative: a per-request tool
+                        # payload must never widen it.
+                        logging.warning(
+                            "Ignoring tools outside the allowed set: %s",
+                            sorted(unexpected),
+                        )
+                    missing = agent.valid_tool_names - advertised_tool_names
+                    if missing and not unexpected:
+                        # Narrowing is fine (caller filtered tools for this turn).
+                        agent.valid_tool_names = set(advertised_tool_names)
                 
                 if agent.verbose_logging:
                     for tc in assistant_message.tool_calls:

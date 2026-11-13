@@ -138,6 +138,10 @@ def _mirrored_send_message_empty_reply(tool_name: str, content: Any) -> Optional
 
 def _reply_with_media_artifacts(reply: str, paths: list[str]) -> str:
     media_tags = "\n".join(f"MEDIA:{path}" for path in paths)
+    # Keep the user-visible reply: the old version returned only MEDIA tags and
+    # silently dropped the answer text.
+    if reply:
+        return f"{reply}\n{media_tags}"
     return media_tags
 
 
@@ -322,6 +326,18 @@ def _artifact_attachment_instruction(structured: dict) -> str:
     )
 
 
+def _is_absolute_local_path(path: str) -> bool:
+    """True for POSIX and Windows absolute paths (``/x``, ``C:\\x``, ``\\\\srv\\x``)."""
+    if not path:
+        return False
+    candidate = path.strip()
+    if candidate.startswith(("/", "\\")):
+        return True
+    if len(candidate) >= 3 and candidate[1] == ":" and candidate[2] in ("\\", "/"):
+        return candidate[0].isalpha()
+    return False
+
+
 def _local_file_artifact_paths(structured: dict) -> list[str]:
     artifacts = structured.get("durable_artifacts")
     if not isinstance(artifacts, list):
@@ -331,6 +347,6 @@ def _local_file_artifact_paths(structured: dict) -> list[str]:
         if not isinstance(artifact, dict):
             continue
         path = str(artifact.get("path") or "").strip()
-        if path.startswith("/"):
+        if _is_absolute_local_path(path):
             paths.append(path)
     return paths
