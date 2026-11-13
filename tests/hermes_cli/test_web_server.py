@@ -34,7 +34,15 @@ def _reset_knowledge_contract_cache():
 class _FakeKnowledgeServiceClient:
     """Stand-in for ``integrations.hermes_knowledge.client.KnowledgeClient``."""
 
-    def __init__(self, *, error=None, result=None, issued=None, update_result=None):
+    def __init__(
+        self,
+        *,
+        error=None,
+        result=None,
+        issued=None,
+        update_result=None,
+        responses=None,
+    ):
         self.error = error
         self.result = (
             result if result is not None else {"ok": True, "status": "permanently_deleted"}
@@ -45,9 +53,47 @@ class _FakeKnowledgeServiceClient:
             if update_result is not None
             else {"capture_id": "cap-1", "item": {"id": "cap-1"}}
         )
+        self.responses = dict(responses or {})
         self.closed = False
         self.delete_calls: list[tuple[str, str, str]] = []
         self.update_calls: list[dict] = []
+        self.calls: list[dict] = []
+
+    def _respond(self, method, *args, **kwargs):
+        if self.error is not None:
+            raise self.error
+        self.calls.append({"method": method, "args": args, "kwargs": kwargs})
+        if method in self.responses:
+            result = self.responses[method]
+            return dict(result) if isinstance(result, dict) else result
+        return {"ok": True, "method": method}
+
+    def create_library_item(self, **fields):
+        return self._respond("create_library_item", **fields)
+
+    def patch_library_item(self, kind, item_id, **fields):
+        return self._respond("patch_library_item", kind, item_id, **fields)
+
+    def delete_library_item(self, kind, item_id):
+        return self._respond("delete_library_item", kind, item_id)
+
+    def list_library_folders(self):
+        return self._respond("list_library_folders")
+
+    def create_library_folder(self, name):
+        return self._respond("create_library_folder", name)
+
+    def rename_library_folder(self, folder_path, name):
+        return self._respond("rename_library_folder", folder_path, name)
+
+    def patch_capture_draft(self, draft_id, **fields):
+        return self._respond("patch_capture_draft", draft_id, **fields)
+
+    def delete_capture_draft(self, draft_id):
+        return self._respond("delete_capture_draft", draft_id)
+
+    def delete_reading_draft(self, draft_id):
+        return self._respond("delete_reading_draft", draft_id)
 
     def update_capture(self, capture_id, *, body="", title="", folder_path=None):
         if self.error is not None:
@@ -2199,6 +2245,277 @@ class TestWebServerEndpoints:
 
             assert resp.status_code == expected, (type(error).__name__, resp.status_code)
             assert fake.closed is True
+
+    # ── HTTP-mode delegation: library items / folders / drafts ──────────────
+
+    def _patch_knowledge_client(self, monkeypatch, fake):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        monkeypatch.setattr(knowledge_client, "get_client", lambda transport=None: fake)
+
+    def test_library_folders_get_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "list_library_folders": {
+                    "folders": [{"path": "Inbox", "name": "Inbox", "count": 3}],
+                    "smart_views": [{"key": "recent", "label": "最近入库", "count": 3}],
+                }
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.get("/api/knowledge/library/folders")
+
+        assert resp.status_code == 200
+        assert resp.json()["folders"][0]["path"] == "Inbox"
+        assert [call["method"] for call in fake.calls] == ["list_library_folders"]
+        assert fake.closed is True
+
+    def test_library_folder_create_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "create_library_folder": {
+                    "ok": True,
+                    "folder": {"path": "新目录", "name": "新目录", "count": 0},
+                }
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post("/api/knowledge/library/folders", json={"name": "新目录"})
+
+        assert resp.status_code == 200
+        assert resp.json()["folder"]["path"] == "新目录"
+        assert fake.calls == [
+            {"method": "create_library_folder", "args": ("新目录",), "kwargs": {}}
+        ]
+        assert fake.closed is True
+
+    def test_library_folder_rename_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "rename_library_folder": {
+                    "ok": True,
+                    "folders": [{"path": "New", "name": "New", "count": 1}],
+                }
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.patch("/api/knowledge/library/folders/Old", json={"name": "New"})
+
+        assert resp.status_code == 200
+        assert resp.json()["folders"][0]["path"] == "New"
+        assert fake.calls == [
+            {"method": "rename_library_folder", "args": ("Old", "New"), "kwargs": {}}
+        ]
+        assert fake.closed is True
+
+    def test_library_item_create_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "create_library_item": {
+                    "ok": True,
+                    "draft_id": "d1",
+                    "item": {"id": "d1"},
+                    "result": {"status": "ok"},
+                }
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post(
+            "/api/knowledge/library/items",
+            json={"title": "T", "body": "B", "folder_path": "AI 产品"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["draft_id"] == "d1"
+        call = fake.calls[0]
+        assert call["method"] == "create_library_item"
+        assert call["kwargs"] == {
+            "body": "B",
+            "title": "T",
+            "source": "Hermes Knowledge Library",
+            "source_type": "manual",
+            "folder_path": "AI 产品",
+        }
+        assert fake.closed is True
+
+    def test_library_item_patch_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "patch_library_item": {"ok": True, "item": {"id": "d1", "title": "T2"}}
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.patch(
+            "/api/knowledge/library/items/capture_draft/d1",
+            json={"title": "T2", "body": "B2", "folder_path": "Inbox", "tags": ["a"]},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["item"]["title"] == "T2"
+        call = fake.calls[0]
+        assert call["method"] == "patch_library_item"
+        assert call["args"] == ("capture_draft", "d1")
+        assert call["kwargs"]["title"] == "T2"
+        assert call["kwargs"]["body"] == "B2"
+        assert call["kwargs"]["folder_path"] == "Inbox"
+        assert call["kwargs"]["tags"] == ["a"]
+        assert fake.closed is True
+
+    def test_library_item_delete_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={"delete_library_item": {"ok": True, "status": "discarded"}}
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.delete("/api/knowledge/library/items/capture_draft/d1")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "discarded"
+        assert fake.calls == [
+            {
+                "method": "delete_library_item",
+                "args": ("capture_draft", "d1"),
+                "kwargs": {},
+            }
+        ]
+        assert fake.closed is True
+
+    def test_editable_capture_draft_patch_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={"patch_capture_draft": {"ok": True, "item": {"id": "d1"}}}
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.patch(
+            "/api/knowledge/capture-drafts/d1/editable",
+            json={
+                "content": "新正文",
+                "title": "T",
+                "summary": "S",
+                "tags": ["a", "b"],
+                "folder_path": "AI 产品",
+            },
+        )
+
+        assert resp.status_code == 200
+        call = fake.calls[0]
+        assert call["method"] == "patch_capture_draft"
+        assert call["args"] == ("d1",)
+        assert call["kwargs"] == {
+            "title": "T",
+            "draft_text": "新正文",
+            "summary": "S",
+            "tags": ["a", "b"],
+            "capture_intent": {"folder_path": "AI 产品"},
+        }
+        assert fake.closed is True
+
+    def test_capture_draft_delete_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={"delete_capture_draft": {"ok": True, "status": "abandoned"}}
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.delete("/api/knowledge/capture-drafts/d1")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "abandoned"
+        assert fake.calls == [
+            {"method": "delete_capture_draft", "args": ("d1",), "kwargs": {}}
+        ]
+        assert fake.closed is True
+
+    def test_reading_draft_delete_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={"delete_reading_draft": {"ok": True, "status": "deleted"}}
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.delete("/api/knowledge/reading-drafts/d1")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+        assert fake.calls == [
+            {"method": "delete_reading_draft", "args": ("d1",), "kwargs": {}}
+        ]
+        assert fake.closed is True
+
+    def test_library_folders_error_mapping(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        cases = [
+            (knowledge_client.KnowledgeNotFound("gone", status_code=404), 404),
+            (knowledge_client.KnowledgeConflict("busy", status_code=409), 409),
+            (knowledge_client.KnowledgeInvalid("bad", status_code=422), 422),
+            (knowledge_client.KnowledgeUnavailable("down"), 502),
+        ]
+        for error, expected in cases:
+            fake = _FakeKnowledgeServiceClient(error=error)
+            self._patch_knowledge_client(monkeypatch, fake)
+
+            resp = self.client.get("/api/knowledge/library/folders")
+
+            assert resp.status_code == expected, (type(error).__name__, resp.status_code)
+            assert fake.closed is True
+
+    def test_capture_draft_delete_maps_contract_incompatible_to_503(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        fake = _FakeKnowledgeServiceClient(
+            error=knowledge_client.KnowledgeIncompatible(
+                "contract v0 < required v1"
+            )
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.delete("/api/knowledge/capture-drafts/d1")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["code"] == "contract_incompatible"
+        assert fake.closed is True
+
+    def test_library_item_create_startup_failure_maps_to_503(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        def _unavailable(transport=None):
+            raise knowledge_client.KnowledgeUnavailable(
+                "HERMES_KNOWLEDGE_TIMEOUT must be a number of seconds"
+            )
+
+        monkeypatch.setattr(knowledge_client, "get_client", _unavailable)
+
+        resp = self.client.post("/api/knowledge/library/items", json={"title": "T"})
+
+        assert resp.status_code == 503
+        assert "not configured correctly" in resp.json()["detail"]
+
+    def test_http_mode_never_touches_local_knowledge_modules(self, monkeypatch):
+        """HTTP mode must not import the local checkout or open local SQLite."""
+        import hermes_cli.web_server as web_server
+
+        fake = _FakeKnowledgeServiceClient(
+            responses={"create_library_item": {"ok": True, "draft_id": "d1"}}
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        def _boom(*args, **kwargs):
+            raise AssertionError(
+                "local knowledge checkout must not be touched in HTTP mode"
+            )
+
+        monkeypatch.setattr(web_server, "_knowledge_custom_module", _boom)
+        monkeypatch.setattr(web_server, "_knowledge_conn", _boom)
+        monkeypatch.setattr(web_server, "_knowledge_vault_path", _boom)
+
+        resp = self.client.post("/api/knowledge/library/items", json={"title": "T"})
+
+        assert resp.status_code == 200
+        assert fake.closed is True
 
     def test_automation_boundaries_degrades_without_knowledge_config(self, monkeypatch):
         """An unconfigured Knowledge feature must not 503 the whole inventory."""

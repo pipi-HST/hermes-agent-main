@@ -1,6 +1,8 @@
 """Contract tests for the Hermes Knowledge HTTP client."""
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -527,6 +529,95 @@ def test_concurrent_contract_checks_probe_once():
     finally:
         for client in clients:
             client.close()
+
+
+# ── Library / folder / draft delegation paths ──────────────────────────────
+
+
+def _recording_client():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    return _client(handler), seen
+
+
+def _raw_path(request: httpx.Request) -> bytes:
+    return request.url.raw_path.split(b"?")[0]
+
+
+def test_library_item_client_methods_use_contract_paths():
+    client, seen = _recording_client()
+
+    client.create_library_item(
+        body="B",
+        title="T",
+        source="S",
+        source_type="manual",
+        folder_path="Inbox",
+    )
+    client.patch_library_item("capture_draft", "d 1", title="T2", body=None, tags=["a"])
+    client.delete_library_item("capture", "c/1")
+
+    assert [request.method for request in seen] == ["POST", "PATCH", "DELETE"]
+    assert seen[0].url.path == "/api/library/items"
+    assert json.loads(seen[0].content) == {
+        "body": "B",
+        "title": "T",
+        "source": "S",
+        "source_type": "manual",
+        "folder_path": "Inbox",
+    }
+    assert _raw_path(seen[1]) == b"/api/library/items/capture_draft/d%201"
+    # None fields are omitted: only what the user edited is sent.
+    assert json.loads(seen[1].content) == {"title": "T2", "tags": ["a"]}
+    assert _raw_path(seen[2]) == b"/api/library/items/capture/c%2F1"
+
+
+def test_library_folder_client_methods_use_contract_paths():
+    client, seen = _recording_client()
+
+    client.list_library_folders()
+    client.create_library_folder("新目录")
+    client.rename_library_folder("AI 产品/子目录", "新名字")
+
+    assert [request.method for request in seen] == ["GET", "POST", "PATCH"]
+    assert seen[0].url.path == "/api/library/folders"
+    assert json.loads(seen[1].content) == {"name": "新目录"}
+    assert _raw_path(seen[2]) == (
+        b"/api/library/folders/AI%20%E4%BA%A7%E5%93%81%2F%E5%AD%90%E7%9B%AE%E5%BD%95"
+    )
+    assert json.loads(seen[2].content) == {"name": "新名字"}
+
+
+def test_capture_draft_client_methods_use_contract_paths():
+    client, seen = _recording_client()
+
+    client.patch_capture_draft(
+        "d1",
+        title="T",
+        draft_text="B",
+        summary=None,
+        tags=["a"],
+        capture_intent={"folder_path": "Inbox"},
+    )
+    client.delete_capture_draft("d1")
+    client.delete_reading_draft("r 1")
+
+    assert [request.method for request in seen] == ["PATCH", "DELETE", "DELETE"]
+    # The dashboard route carries an /editable suffix; the service contract
+    # does not — the client must address /api/capture-drafts/{id}.
+    assert _raw_path(seen[0]) == b"/api/capture-drafts/d1"
+    assert json.loads(seen[0].content) == {
+        "title": "T",
+        "draft_text": "B",
+        "tags": ["a"],
+        "capture_intent": {"folder_path": "Inbox"},
+    }
+    assert _raw_path(seen[1]) == b"/api/capture-drafts/d1"
+    assert _raw_path(seen[2]) == b"/api/reading/drafts/r%201"
 
 
 def test_cached_contract_status_does_not_block_on_an_in_flight_probe():

@@ -5060,6 +5060,70 @@ def _knowledge_custom_module(module_name: str, label: str):
         raise HTTPException(status_code=500, detail=f"{label} unavailable: {exc}") from exc
 
 
+def _knowledge_client_startup_error(exc: Exception) -> HTTPException:
+    """Map a ``get_client()`` failure to the dashboard HTTP response.
+
+    Used by every HTTP-mode delegation handler, mirroring the permanent-delete
+    route: an incompatible contract reports 503 with a machine-readable code,
+    while a configuration/transport problem keeps the R2 wording.
+    """
+    from integrations.hermes_knowledge import KnowledgeIncompatible
+
+    if isinstance(exc, KnowledgeIncompatible):
+        return HTTPException(
+            status_code=503,
+            detail={
+                "code": "contract_incompatible",
+                "message": f"knowledge service contract is incompatible: {exc}",
+            },
+        )
+    return HTTPException(
+        status_code=503,
+        detail=f"knowledge service is not configured correctly: {exc}",
+    )
+
+
+def _knowledge_client_operation_error(exc: Exception) -> HTTPException:
+    """Map a knowledge-client operation failure to the dashboard HTTP response.
+
+    Order matters: the specific subclasses are checked before the generic
+    fallback, and :class:`KnowledgeIncompatible` (a ``KnowledgeUnavailable``
+    subclass) is checked first so an incompatible contract is never mistaken
+    for a transient failure.
+    """
+    from integrations.hermes_knowledge.client import (
+        KnowledgeConflict,
+        KnowledgeIncompatible,
+        KnowledgeInvalid,
+        KnowledgeNotFound,
+    )
+
+    if isinstance(exc, KnowledgeIncompatible):
+        return HTTPException(
+            status_code=503,
+            detail={
+                "code": "contract_incompatible",
+                "message": f"knowledge service contract is incompatible: {exc}",
+            },
+        )
+    if isinstance(exc, KnowledgeNotFound):
+        detail = getattr(exc, "detail", None)
+        if not isinstance(detail, (dict, str)) or not detail:
+            detail = str(exc) or "Knowledge object not found"
+        return HTTPException(status_code=404, detail=detail)
+    if isinstance(exc, KnowledgeConflict):
+        detail = getattr(exc, "detail", None)
+        if not isinstance(detail, dict):
+            detail = {"message": str(detail or exc)}
+        return HTTPException(status_code=409, detail=detail)
+    if isinstance(exc, KnowledgeInvalid):
+        detail = getattr(exc, "detail", None)
+        if not isinstance(detail, (dict, str)) or not detail:
+            detail = str(exc)
+        return HTTPException(status_code=422, detail=detail)
+    return HTTPException(status_code=502, detail=f"knowledge service request failed: {exc}")
+
+
 def _knowledge_ai_cancel_module():
     return _knowledge_custom_module("bridge.ai_cancel", "AI operation cancellation")
 
@@ -6131,6 +6195,22 @@ def _knowledge_run_event_row(row: sqlite3.Row) -> dict:
 @app.get("/api/knowledge/library/folders")
 async def get_knowledge_library_folders(request: Request):
     _require_token(request)
+    # HTTP mode: the service owns the vault, so folder listing (and its counts)
+    # must come from the service instead of the dashboard's local SQLite.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.list_library_folders()
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     vault_path = _knowledge_vault_path()
     with _knowledge_conn() as conn:
         items = _knowledge_library_items(conn, vault_path, limit=500)
@@ -6183,6 +6263,23 @@ async def post_knowledge_library_folder(
     folder = _knowledge_folder(body.name)
     if len(folder) > 80:
         raise HTTPException(status_code=400, detail="folder name is too long")
+
+    # HTTP mode: creating a folder must go through the service so its vault and
+    # folder registry stay authoritative.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.create_library_folder(folder)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     _knowledge_save_stored_folder(folder)
     return {"ok": True, "folder": {"path": folder, "name": folder, "count": 0}}
 
@@ -6204,6 +6301,22 @@ async def patch_knowledge_library_folder(
         raise HTTPException(status_code=400, detail="Inbox cannot be renamed")
     if old_folder == new_folder:
         return {"ok": True, "folder": {"path": new_folder, "name": new_folder, "count": 0}, "updated_items": 0}
+
+    # HTTP mode: folder renames rewrite captures inside the service, never in
+    # the dashboard process (there is no local checkout to touch).
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.rename_library_folder(old_folder, new_folder)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
 
     vault_path = _knowledge_vault_path()
     write_service_module = _knowledge_custom_module("bridge.knowledge_write_service", "Knowledge write service")
@@ -6743,6 +6856,28 @@ async def post_knowledge_library_item(request: Request, body: _KnowledgeLibraryC
     title = (body.title or "").strip()
     if not content and not title:
         raise HTTPException(status_code=400, detail="title or body is required")
+
+    # HTTP mode: the service creates the editable library draft (contract v1).
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.create_library_item(
+                body=content or title,
+                title=title,
+                source=body.source,
+                source_type=body.source_type,
+                folder_path=_knowledge_folder(body.folder_path),
+            )
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
     create_editable_capture_draft = capture_bridge.create_editable_capture_draft
     result = create_editable_capture_draft(
@@ -6779,6 +6914,33 @@ async def patch_knowledge_library_item(
     _require_token(request)
     kind = (kind or "").strip()
     folder_path = _knowledge_folder(body.folder_path) if body.folder_path is not None else None
+
+    # HTTP mode: edits are applied by the service, which owns the vault file and
+    # the SQLite row; the dashboard only forwards the fields the user changed.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.patch_library_item(
+                kind,
+                item_id,
+                title=body.title,
+                body=body.body,
+                summary=body.summary,
+                tags=body.tags,
+                folder_path=folder_path,
+                folder_suggestion=body.folder_suggestion,
+                card_suggestion=body.card_suggestion,
+            )
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     if kind == "capture_draft":
         with _knowledge_conn() as conn:
             row = conn.execute("SELECT * FROM capture_drafts WHERE id = ?", (item_id,)).fetchone()
@@ -7210,6 +7372,22 @@ async def permanent_delete_knowledge_library_item(request: Request, kind: str, i
 async def delete_knowledge_library_item(request: Request, kind: str, item_id: str):
     _require_token(request)
     kind = (kind or "").strip()
+
+    # HTTP mode: discarding a draft / archiving a capture is a service write.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.delete_library_item(kind, item_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     if kind == "capture_draft":
         capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
         discard_capture_draft = capture_bridge.discard_capture_draft
@@ -7305,6 +7483,36 @@ async def patch_knowledge_editable_capture_draft(
     body: _KnowledgeEditableCaptureDraftBody,
 ):
     _require_token(request)
+    # HTTP mode: the service owns the draft row.  Server contract is
+    # PATCH /api/capture-drafts/{id} (the /editable suffix is dashboard-only).
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        capture_intent: dict[str, Any] = {}
+        if body.folder_path.strip():
+            capture_intent["folder_path"] = _knowledge_folder(body.folder_path)
+        if body.folder_suggestion is not None:
+            capture_intent["folder_suggestion"] = body.folder_suggestion
+        if body.card_suggestion is not None:
+            capture_intent["card_suggestion"] = body.card_suggestion
+        try:
+            return client.patch_capture_draft(
+                draft_id,
+                title=body.title,
+                draft_text=body.content,
+                summary=body.summary,
+                tags=body.tags,
+                capture_intent=capture_intent,
+            )
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
     update_editable_capture_draft = capture_bridge.update_editable_capture_draft
     return await _run_cancellable_ai_operation(
@@ -7359,6 +7567,22 @@ async def post_knowledge_capture_draft_revise(
 @app.delete("/api/knowledge/capture-drafts/{draft_id}")
 async def delete_knowledge_capture_draft(request: Request, draft_id: str):
     _require_token(request)
+
+    # HTTP mode: abandoning a draft is a service write.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.delete_capture_draft(draft_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
     discard_capture_draft = capture_bridge.discard_capture_draft
     return discard_capture_draft(draft_id=draft_id)
@@ -7716,6 +7940,22 @@ async def post_knowledge_reading_draft_revise(
 @app.delete("/api/knowledge/reading-drafts/{draft_id}")
 async def delete_knowledge_reading_draft(request: Request, draft_id: str):
     _require_token(request)
+
+    # HTTP mode: deleting a reading draft is a service write.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.delete_reading_draft(draft_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     reading_bridge = _knowledge_custom_module("bridge.reading_bridge", "Reading bridge")
     discard_reading_artifact = reading_bridge.discard_reading_artifact
     return discard_reading_artifact(draft_id=draft_id)

@@ -12,6 +12,10 @@ Endpoints used (all under ``/api``, bearer auth):
 * ``PATCH /captures/{id}``
 * ``POST /capture-drafts/{id}/confirmation`` / ``/commit``
 * ``POST /reading/drafts/{id}/confirmation`` / ``/commit``
+* ``POST /library/items`` / ``PATCH /library/items/{kind}/{id}`` / ``DELETE``
+* ``GET  /library/folders`` / ``POST`` / ``PATCH /library/folders/{path}``
+* ``PATCH /capture-drafts/{id}`` / ``DELETE /capture-drafts/{id}``
+* ``DELETE /reading/drafts/{id}``
 * ``DELETE /knowledge/library/items/{kind}/{id}/permanent``
 * ``GET  /knowledge/search``
 * ``POST /knowledge/graph/refresh``
@@ -414,6 +418,85 @@ class KnowledgeClient:
         if folder_path is not None:
             payload["folder_path"] = folder_path
         return self.request("PATCH", f"/api/captures/{quote(str(capture_id), safe='')}", json=payload)
+
+    # -- library items ------------------------------------------------------
+    def create_library_item(
+        self,
+        *,
+        body: str = "",
+        title: str = "",
+        source: str = "",
+        source_type: str = "manual",
+        folder_path: str = "Inbox",
+    ) -> dict[str, Any]:
+        """Create an editable library draft through the service."""
+        return self.request(
+            "POST",
+            "/api/library/items",
+            json={
+                "body": body,
+                "title": title,
+                "source": source,
+                "source_type": source_type,
+                "folder_path": folder_path,
+            },
+        )
+
+    def patch_library_item(self, kind: str, item_id: str, **fields: Any) -> dict[str, Any]:
+        """Update a library item (``capture`` or ``capture_draft``).
+
+        ``None`` fields are omitted from the payload: the caller only sends the
+        fields the user actually edited.
+        """
+        payload = {key: value for key, value in fields.items() if value is not None}
+        return self.request(
+            "PATCH",
+            f"/api/library/items/{quote(str(kind), safe='')}/{quote(str(item_id), safe='')}",
+            json=payload,
+        )
+
+    def delete_library_item(self, kind: str, item_id: str) -> dict[str, Any]:
+        """Discard a draft or archive a capture through the service."""
+        return self.request(
+            "DELETE",
+            f"/api/library/items/{quote(str(kind), safe='')}/{quote(str(item_id), safe='')}",
+        )
+
+    # -- library folders ----------------------------------------------------
+    def list_library_folders(self) -> dict[str, Any]:
+        return self.request("GET", "/api/library/folders")
+
+    def create_library_folder(self, name: str) -> dict[str, Any]:
+        return self.request("POST", "/api/library/folders", json={"name": name})
+
+    def rename_library_folder(self, folder_path: str, name: str) -> dict[str, Any]:
+        return self.request(
+            "PATCH",
+            f"/api/library/folders/{quote(str(folder_path), safe='')}",
+            json={"name": name},
+        )
+
+    # -- capture / reading drafts -------------------------------------------
+    def patch_capture_draft(self, draft_id: str, **fields: Any) -> dict[str, Any]:
+        """Update an editable capture draft (title/draft_text/summary/tags/...)."""
+        payload = {key: value for key, value in fields.items() if value is not None}
+        return self.request(
+            "PATCH",
+            f"/api/capture-drafts/{quote(str(draft_id), safe='')}",
+            json=payload,
+        )
+
+    def delete_capture_draft(self, draft_id: str) -> dict[str, Any]:
+        """Abandon a capture draft through the service."""
+        return self.request(
+            "DELETE", f"/api/capture-drafts/{quote(str(draft_id), safe='')}"
+        )
+
+    def delete_reading_draft(self, draft_id: str) -> dict[str, Any]:
+        """Delete a reading draft through the service."""
+        return self.request(
+            "DELETE", f"/api/reading/drafts/{quote(str(draft_id), safe='')}"
+        )
 
 
 def get_client(transport: httpx.BaseTransport | None = None) -> KnowledgeClient | None:
