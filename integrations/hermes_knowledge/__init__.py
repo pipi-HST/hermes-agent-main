@@ -16,7 +16,17 @@ from pathlib import Path
 
 
 class KnowledgeUnavailable(RuntimeError):
-    """Raised when the Hermes Knowledge backend is not configured/valid."""
+    """Raised when the Hermes Knowledge backend is not configured/valid.
+
+    This is the single base class for every knowledge failure, HTTP client
+    errors included: ``integrations.hermes_knowledge.client`` re-exports this
+    class instead of defining its own, so a caller that catches the package
+    exception also catches transport/contract/HTTP errors.
+    """
+
+
+class KnowledgeIncompatible(KnowledgeUnavailable):
+    """The service speaks an older/incompatible contract."""
 
 
 _ENV_KEYS = ("HERMES_KNOWLEDGE_LOCAL_ROOT", "HERMES_CUSTOM_ROOT")

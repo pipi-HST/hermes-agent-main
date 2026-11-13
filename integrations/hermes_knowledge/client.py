@@ -9,6 +9,7 @@ Endpoints used (all under ``/api``, bearer auth):
 
 * ``GET  /health``
 * ``GET  /captures`` / ``POST /captures``
+* ``PATCH /captures/{id}``
 * ``POST /capture-drafts/{id}/confirmation`` / ``/commit``
 * ``POST /reading/drafts/{id}/confirmation`` / ``/commit``
 * ``DELETE /knowledge/library/items/{kind}/{id}/permanent``
@@ -30,9 +31,11 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
+
+from integrations.hermes_knowledge import KnowledgeIncompatible, KnowledgeUnavailable
 
 SERVICE_NAME = "hermes-knowledge"
 MIN_CONTRACT_VERSION = 1
@@ -44,14 +47,9 @@ _RETRY_ATTEMPTS = 2
 _RETRY_BACKOFF_SECONDS = 0.2
 
 
-class KnowledgeUnavailable(RuntimeError):
-    """The knowledge service is not configured, unreachable, or misbehaving."""
-
-
-class KnowledgeIncompatible(KnowledgeUnavailable):
-    """The service speaks an older/incompatible contract."""
-
-
+# ``KnowledgeUnavailable`` / ``KnowledgeIncompatible`` are re-exported from the
+# package: a second definition here used to make ``except package.Exception``
+# miss every client failure.
 class KnowledgeHttpError(KnowledgeUnavailable):
     """A non-2xx response from the knowledge service."""
 
@@ -394,6 +392,28 @@ class KnowledgeClient:
 
     def search(self, query: str, *, limit: int = 10) -> dict[str, Any]:
         return self.request("GET", "/api/knowledge/search", params={"q": query, "limit": limit})
+
+    def update_capture(
+        self,
+        capture_id: str,
+        *,
+        body: str = "",
+        title: str = "",
+        folder_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Save an edited capture note through the service (contract v1).
+
+        The service owns the vault and the SQLite row, so the dashboard must
+        not write the Markdown file itself when HTTP mode is configured.
+        """
+        payload: dict[str, Any] = {}
+        if body:
+            payload["body"] = body
+        if title:
+            payload["title"] = title
+        if folder_path is not None:
+            payload["folder_path"] = folder_path
+        return self.request("PATCH", f"/api/captures/{quote(str(capture_id), safe='')}", json=payload)
 
 
 def get_client(transport: httpx.BaseTransport | None = None) -> KnowledgeClient | None:

@@ -7371,6 +7371,60 @@ async def patch_knowledge_capture(
     body: _KnowledgeCaptureUpdateBody,
 ):
     _require_token(request)
+
+    # HTTP mode: the Knowledge Service owns the vault and the SQLite row, so
+    # the dashboard must not write the Markdown file behind its back.  The
+    # service returns the same shape the dashboard already consumes
+    # (capture_id/file_path/backup_path/library_postprocess/item).
+    from integrations.hermes_knowledge.client import (
+        KnowledgeConflict,
+        KnowledgeIncompatible,
+        KnowledgeInvalid,
+        KnowledgeNotFound,
+        KnowledgeUnavailable,
+        get_client,
+    )
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "knowledge_unavailable", "message": str(exc)},
+        ) from exc
+    if client is not None:
+        try:
+            return client.update_capture(
+                capture_id,
+                body=body.body or "",
+                title=body.title or "",
+                folder_path=body.folder_path,
+            )
+        except KnowledgeNotFound as exc:
+            raise HTTPException(
+                status_code=404, detail=exc.detail or "Capture not found"
+            ) from exc
+        except KnowledgeConflict as exc:
+            raise HTTPException(
+                status_code=409, detail=exc.detail or str(exc)
+            ) from exc
+        except KnowledgeInvalid as exc:
+            raise HTTPException(
+                status_code=422, detail=exc.detail or str(exc)
+            ) from exc
+        except KnowledgeIncompatible as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "contract_incompatible", "message": str(exc)},
+            ) from exc
+        except KnowledgeUnavailable as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"knowledge service update failed: {exc}",
+            ) from exc
+        finally:
+            client.close()
+
     markdown_writer = _knowledge_custom_module("agents.markdown_writer", "Markdown writer")
     write_service_module = _knowledge_custom_module("bridge.knowledge_write_service", "Knowledge write service")
     repo_module = _knowledge_custom_module("db.repo", "Capture repository")

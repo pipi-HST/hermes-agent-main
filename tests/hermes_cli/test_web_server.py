@@ -34,14 +34,33 @@ def _reset_knowledge_contract_cache():
 class _FakeKnowledgeServiceClient:
     """Stand-in for ``integrations.hermes_knowledge.client.KnowledgeClient``."""
 
-    def __init__(self, *, error=None, result=None, issued=None):
+    def __init__(self, *, error=None, result=None, issued=None, update_result=None):
         self.error = error
         self.result = (
             result if result is not None else {"ok": True, "status": "permanently_deleted"}
         )
         self.issued = issued if issued is not None else {"token": "tok"}
+        self.update_result = (
+            update_result
+            if update_result is not None
+            else {"capture_id": "cap-1", "item": {"id": "cap-1"}}
+        )
         self.closed = False
         self.delete_calls: list[tuple[str, str, str]] = []
+        self.update_calls: list[dict] = []
+
+    def update_capture(self, capture_id, *, body="", title="", folder_path=None):
+        if self.error is not None:
+            raise self.error
+        self.update_calls.append(
+            {
+                "capture_id": capture_id,
+                "body": body,
+                "title": title,
+                "folder_path": folder_path,
+            }
+        )
+        return self.update_result
 
     def issue_library_delete_confirmation(self, kind, item_id):
         if self.error is not None:
@@ -2128,6 +2147,58 @@ class TestWebServerEndpoints:
         assert resp.json()["status"] == "permanently_deleted"
         assert fake.delete_calls == [("capture", "cap-1", "ctok")]
         assert fake.closed is True
+
+    def test_capture_patch_delegates_to_the_knowledge_service(self, monkeypatch):
+        """HTTP mode: the service writes the note, not the dashboard process."""
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        fake = _FakeKnowledgeServiceClient(
+            update_result={
+                "capture_id": "cap-1",
+                "file_path": "notes/cap-1.md",
+                "library_postprocess": {"status": "queued"},
+                "item": {"id": "cap-1", "title": "changed"},
+            }
+        )
+        monkeypatch.setattr(knowledge_client, "get_client", lambda transport=None: fake)
+
+        resp = self.client.patch(
+            "/api/knowledge/captures/cap-1",
+            json={"body": "new body", "title": "changed", "folder_path": "Inbox"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["item"]["title"] == "changed"
+        assert fake.update_calls == [
+            {
+                "capture_id": "cap-1",
+                "body": "new body",
+                "title": "changed",
+                "folder_path": "Inbox",
+            }
+        ]
+        assert fake.closed is True
+
+    def test_capture_patch_maps_service_errors(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        cases = [
+            (knowledge_client.KnowledgeNotFound("gone", status_code=404), 404),
+            (knowledge_client.KnowledgeConflict("busy", status_code=409), 409),
+            (knowledge_client.KnowledgeInvalid("bad", status_code=422), 422),
+            (knowledge_client.KnowledgeUnavailable("down"), 502),
+            (knowledge_client.KnowledgeIncompatible("v0 < v1"), 503),
+        ]
+        for error, expected in cases:
+            fake = _FakeKnowledgeServiceClient(error=error)
+            monkeypatch.setattr(knowledge_client, "get_client", lambda transport=None, f=fake: f)
+
+            resp = self.client.patch(
+                "/api/knowledge/captures/cap-1", json={"body": "x"}
+            )
+
+            assert resp.status_code == expected, (type(error).__name__, resp.status_code)
+            assert fake.closed is True
 
     def test_automation_boundaries_degrades_without_knowledge_config(self, monkeypatch):
         """An unconfigured Knowledge feature must not 503 the whole inventory."""

@@ -565,3 +565,19 @@ def test_cached_contract_status_does_not_block_on_an_in_flight_probe():
         thread.join(timeout=5)
         client.close()
     assert not thread.is_alive()
+
+
+def test_exception_classes_are_shared_with_the_package_module():
+    """A caller catching the package exception must catch client failures.
+
+    ``client.py`` used to define its own ``KnowledgeUnavailable``; it was a
+    different class from ``integrations.hermes_knowledge.KnowledgeUnavailable``,
+    so ``except`` clauses on the package-level name silently missed every
+    transport/HTTP error.
+    """
+    import integrations.hermes_knowledge as package
+    import integrations.hermes_knowledge.client as client_module
+
+    assert client_module.KnowledgeUnavailable is package.KnowledgeUnavailable
+    assert client_module.KnowledgeIncompatible is package.KnowledgeIncompatible
+    assert issubclass(client_module.KnowledgeNotFound, package.KnowledgeUnavailable)
