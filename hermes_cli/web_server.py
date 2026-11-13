@@ -561,6 +561,31 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
+_STATUS_SECRET_RE = re.compile(
+    r"(?i)\b(api[_-]?key|token|secret|password|authorization)\b\s*[=:]\s*\S+"
+)
+_STATUS_URL_CRED_RE = re.compile(r"(?i)\b(https?://)[^/@\s]+@")
+
+
+def _redact_status_text(value: Any, limit: int = 300) -> Any:
+    """Redact credentials/paths from status strings exposed by /api/status."""
+    if not isinstance(value, str):
+        return value
+    text = _STATUS_SECRET_RE.sub(r"\1=<redacted>", value)
+    text = _STATUS_URL_CRED_RE.sub(r"\1<redacted>@", text)
+    if len(text) > limit:
+        text = text[: max(0, limit - 1)].rstrip() + "…"
+    return text
+
+
+def _redact_status_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _redact_status_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_status_payload(item) for item in value]
+    return _redact_status_text(value)
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
@@ -633,6 +658,8 @@ async def get_status():
                 gateway_state = "running"
 
         degraded_platform_states = {"fatal", "retrying", "paused", "disconnected"}
+        gateway_platforms = _redact_status_payload(gateway_platforms)
+        gateway_exit_reason = _redact_status_text(gateway_exit_reason)
         if gateway_running and gateway_state not in {"startup_failed", "draining"} and (
             gateway_status_stale
             or any(
