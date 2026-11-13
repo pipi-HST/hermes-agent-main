@@ -6751,6 +6751,7 @@ _KNOWLEDGE_DELETABLE_TABLES = frozenset(
         "agent_run_objects",
         "capture_version_backups",
         "captures",
+        "review_items",
     }
 )
 

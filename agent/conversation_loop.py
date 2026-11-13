@@ -86,6 +86,33 @@ def _ra():
     return run_agent
 
 
+def _tool_payload_names(payload) -> set:
+    """Return the advertised tool names carried by a provider tool payload.
+
+    The wire shape differs per API mode: chat-completions entries nest the
+    name under ``{"type": "function", "function": {"name": ...}}``, while the
+    Anthropic Messages and Codex Responses payloads put it at the top level
+    (``{"type": "function", "name": ...}`` / ``{"name": ..., "input_schema":
+    ...}``).  Reading only the nested form made the Anthropic/Codex payloads
+    look like an empty tool surface, which used to wipe the validation
+    allowlist.  Unknown shapes are ignored, duplicates are collapsed and
+    empty/missing names are skipped.
+    """
+    names: set = set()
+    if not isinstance(payload, (list, tuple)):
+        return names
+    for tool in payload:
+        if not isinstance(tool, dict):
+            continue
+        name = tool.get("name")
+        if not isinstance(name, str) or not name.strip():
+            function = tool.get("function")
+            name = function.get("name") if isinstance(function, dict) else None
+        if isinstance(name, str) and name.strip():
+            names.add(name)
+    return names
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -3099,31 +3126,45 @@ def run_conversation(
                 if not agent.quiet_mode:
                     agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
 
-                request_tools = (
-                    api_kwargs.get("tools")
-                    if isinstance(api_kwargs, dict) and isinstance(api_kwargs.get("tools"), list)
-                    else agent.tools or []
-                )
-                advertised_tool_names = {
-                    tool.get("function", {}).get("name")
-                    for tool in request_tools
-                    if isinstance(tool, dict)
-                    and isinstance(tool.get("function"), dict)
-                    and tool.get("function", {}).get("name")
-                }
-                if advertised_tool_names != agent.valid_tool_names:
-                    unexpected = advertised_tool_names - agent.valid_tool_names
-                    if unexpected:
-                        # The allowlist is authoritative: a per-request tool
-                        # payload must never widen it.
-                        logging.warning(
-                            "Ignoring tools outside the allowed set: %s",
-                            sorted(unexpected),
-                        )
-                    missing = agent.valid_tool_names - advertised_tool_names
-                    if missing and not unexpected:
+                # Reconcile the validation allowlist for this turn.  The
+                # configured surface (``agent.tools``) is authoritative and is
+                # re-read on every API call, so a refreshed tool surface can
+                # never leave validation pinned to stale names.  The
+                # per-request payload may use a provider-specific shape
+                # (Anthropic Messages / Codex Responses place the tool name at
+                # the top level) and is only allowed to narrow the configured
+                # surface — never to widen it, and never to clear it when its
+                # shape yields no names at all.
+                configured_tool_names = _tool_payload_names(agent.tools)
+                if configured_tool_names:
+                    agent.valid_tool_names = set(configured_tool_names)
+                    requested_tool_names = (
+                        _tool_payload_names(api_kwargs.get("tools"))
+                        if isinstance(api_kwargs, dict)
+                        else set()
+                    )
+                    narrowed = configured_tool_names & requested_tool_names
+                    if narrowed:
+                        unexpected = requested_tool_names - configured_tool_names
+                        if unexpected:
+                            # The allowlist is authoritative: a per-request
+                            # tool payload may only narrow it, never widen it.
+                            logging.warning(
+                                "Ignoring tools outside the allowed set: %s",
+                                sorted(unexpected),
+                            )
                         # Narrowing is fine (caller filtered tools for this turn).
-                        agent.valid_tool_names = set(advertised_tool_names)
+                        agent.valid_tool_names = narrowed
+                    elif requested_tool_names:
+                        # The payload shape/prefix yielded names that match none
+                        # of the configured tools; treat it as unreadable rather
+                        # than as an empty surface and keep the allowlist.
+                        logging.debug(
+                            "Advertised tools (%d) do not overlap the configured "
+                            "tool surface (%d); keeping it unchanged.",
+                            len(requested_tool_names),
+                            len(configured_tool_names),
+                        )
                 
                 if agent.verbose_logging:
                     for tc in assistant_message.tool_calls:

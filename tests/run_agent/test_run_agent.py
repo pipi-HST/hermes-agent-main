@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from agent.codex_responses_adapter import _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
+from agent.conversation_loop import _tool_payload_names
 
 import run_agent
 from run_agent import AIAgent
@@ -2605,6 +2606,58 @@ class TestHandleMaxIterations:
         ]
 
 
+class TestToolPayloadNames:
+    """The advertised-name derivation must read every provider tool shape.
+
+    Regression coverage for the session-wide tool outage where the
+    Anthropic Messages / Codex Responses payload (top-level ``name``) was
+    read as an empty tool surface and the validation allowlist got cleared.
+    """
+
+    def test_chat_completions_shape(self):
+        assert _tool_payload_names(_make_tool_defs("web_search", "terminal")) == {
+            "web_search",
+            "terminal",
+        }
+
+    def test_anthropic_messages_shape(self):
+        from agent.transports import get_transport
+
+        tools = get_transport("anthropic_messages").convert_tools(
+            _make_tool_defs("web_search", "terminal")
+        )
+        assert all("name" in tool and "function" not in tool for tool in tools)
+        assert _tool_payload_names(tools) == {"web_search", "terminal"}
+
+    def test_codex_responses_shape(self):
+        from agent.transports import get_transport
+
+        tools = get_transport("codex_responses").convert_tools(
+            _make_tool_defs("web_search")
+        )
+        assert _tool_payload_names(tools) == {"web_search"}
+
+    def test_collapses_duplicates_and_ignores_non_names(self):
+        payload = [
+            {"type": "function", "function": {"name": "web_search"}},
+            {"type": "function", "name": "web_search"},
+            {"name": "terminal"},
+            {},
+            {"type": "function"},
+            {"name": ""},
+            {"name": None},
+            {"function": {"name": ""}},
+            {"function": []},
+            "not-a-tool",
+        ]
+        assert _tool_payload_names(payload) == {"web_search", "terminal"}
+
+    def test_non_list_payload_has_no_names(self):
+        assert _tool_payload_names(None) == set()
+        assert _tool_payload_names({"name": "web_search"}) == set()
+        assert _tool_payload_names("web_search") == set()
+
+
 class TestRunConversation:
     """Tests for the main run_conversation method.
 
@@ -2782,6 +2835,74 @@ class TestRunConversation:
         assert result["final_response"] == "Found it"
         mock_handle.assert_called_once()
         assert agent.valid_tool_names == {"search_my_notes"}
+
+    def test_provider_shaped_tool_payload_does_not_clear_allowlist(self, agent):
+        """Anthropic/Codex-shaped payloads must not blank the allowlist."""
+        self._setup_agent(agent)
+        agent.tools = _make_tool_defs("web_search")
+        agent.valid_tool_names = {"web_search"}
+        tool_call = _mock_tool_call(name="web_search", arguments="{}", call_id="call-anthropic")
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[tool_call]),
+            _mock_response(content="Searching done", finish_reason="stop"),
+        ]
+        # Exact shape the Anthropic Messages transport puts on the wire:
+        # top-level ``name`` + ``input_schema``, no ``function`` wrapper.
+        api_kwargs = {
+            "model": "test/model",
+            "messages": [],
+            "max_tokens": 16,
+            "tools": [
+                {
+                    "name": "web_search",
+                    "description": "web_search tool",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ],
+        }
+
+        with (
+            patch.object(agent, "_build_api_kwargs", return_value=api_kwargs),
+            patch("run_agent.handle_function_call", return_value="search result") as mock_handle,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search AI")
+
+        assert result["final_response"] == "Searching done"
+        mock_handle.assert_called_once()
+        assert agent.valid_tool_names == {"web_search"}
+
+    def test_request_tool_payload_cannot_widen_allowlist(self, agent):
+        """A tool that only exists in the request payload must not validate."""
+        self._setup_agent(agent)
+        agent.tools = _make_tool_defs("web_search")
+        agent.valid_tool_names = {"web_search"}
+        tool_call = _mock_tool_call(name="shell_exec", arguments="{}", call_id="call-extra")
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[tool_call]),
+            _mock_response(content="Done", finish_reason="stop"),
+        ]
+        api_kwargs = {
+            "model": "test/model",
+            "messages": [],
+            "max_tokens": 16,
+            "tools": _make_tool_defs("web_search", "shell_exec"),
+        }
+
+        with (
+            patch.object(agent, "_build_api_kwargs", return_value=api_kwargs),
+            patch("run_agent.handle_function_call", return_value="shell output") as mock_handle,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("run shell")
+
+        assert result["final_response"] == "Done"
+        mock_handle.assert_not_called()
+        assert agent.valid_tool_names == {"web_search"}
 
     def test_reasoning_only_local_resumed_no_compression_triggered(self, agent):
         """Reasoning-only responses no longer trigger compression — prefill then accepted."""

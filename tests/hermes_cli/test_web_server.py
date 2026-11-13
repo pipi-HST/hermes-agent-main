@@ -1904,6 +1904,80 @@ class TestWebServerEndpoints:
             assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} = 'cap-1'").fetchone()[0] == 0
         conn.close()
 
+    def test_knowledge_library_capture_permanent_delete_legacy_review_items_schema(self, monkeypatch, tmp_path):
+        """Legacy two-column ``review_items`` must not 500 the permanent delete.
+
+        Old vaults only have ``review_items(id, capture_id)``, which misses the
+        modern (capture_id, object_type, object_id) tuple, so deletion falls
+        back to the column-delete helper — which must accept the table.
+        """
+        import sqlite3
+
+        custom_root = tmp_path / "hermes-custom"
+        data_dir = custom_root / "data"
+        vault = tmp_path / "vault"
+        data_dir.mkdir(parents=True)
+        (vault / "notes").mkdir(parents=True)
+        (vault / "_archive" / "raw").mkdir(parents=True)
+        (vault / "notes" / "cap-1.md").write_text("# 入库文件\n", encoding="utf-8")
+        (vault / "_archive" / "raw" / "cap-1.md").write_text("raw", encoding="utf-8")
+        (custom_root / "config.yaml").write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
+        db_path = data_dir / "captures.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE captures (
+                id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL DEFAULT '',
+                raw_path TEXT NOT NULL DEFAULT '',
+                review_state TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE garden_cards (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                capture_ids TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE garden_drafts (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                capture_ids TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE capture_drafts (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                committed_capture_id TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE review_items (
+                id TEXT PRIMARY KEY,
+                capture_id TEXT NOT NULL DEFAULT ''
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO captures (id, file_path, raw_path, review_state) VALUES (?, ?, ?, ?)",
+            ("cap-1", "notes/cap-1.md", "_archive/raw/cap-1.md", "captured"),
+        )
+        conn.execute("INSERT INTO review_items (id, capture_id) VALUES (?, ?)", ("ri-legacy", "cap-1"))
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        monkeypatch.setenv("HERMES_KNOWLEDGE_DB", str(db_path))
+
+        response = self.client.delete("/api/knowledge/library/items/capture/cap-1/permanent")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "permanently_deleted"
+        assert not (vault / "notes" / "cap-1.md").exists()
+        conn = sqlite3.connect(db_path)
+        assert conn.execute("SELECT COUNT(*) FROM review_items WHERE capture_id = 'cap-1'").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM captures WHERE id = 'cap-1'").fetchone()[0] == 0
+        conn.close()
+
     def test_knowledge_library_selection_chat_uses_capture_selection_context(self, monkeypatch, tmp_path):
         import sqlite3
         import hermes_cli.web_server as ws
