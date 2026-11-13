@@ -740,3 +740,154 @@ def test_exception_classes_are_shared_with_the_package_module():
     assert client_module.KnowledgeUnavailable is package.KnowledgeUnavailable
     assert client_module.KnowledgeIncompatible is package.KnowledgeIncompatible
     assert issubclass(client_module.KnowledgeNotFound, package.KnowledgeUnavailable)
+
+
+# ── Tool dispatch / call_tool ──────────────────────────────────────────────
+
+
+def test_call_tool_encodes_args_and_kwargs():
+    client, seen = _recording_client()
+
+    result = client.call_tool(
+        "rag_bridge",
+        "search_knowledge_base",
+        args=["q", 2],
+        kwargs={"limit": 3, "nested": {"a": 1}},
+    )
+
+    assert result == {"ok": True}
+    assert seen[0].method == "POST"
+    assert _raw_path(seen[0]) == b"/api/tools/rag_bridge/search_knowledge_base"
+    assert json.loads(seen[0].content) == {
+        "args": ["q", 2],
+        "kwargs": {"limit": 3, "nested": {"a": 1}},
+    }
+
+
+def test_call_tool_defaults_to_empty_args_and_kwargs():
+    client, seen = _recording_client()
+
+    client.call_tool("rag_bridge", "search")
+
+    assert json.loads(seen[0].content) == {"args": [], "kwargs": {}}
+
+
+def test_call_tool_encodes_unsafe_path_segments():
+    client, seen = _recording_client()
+
+    client.call_tool("a/b", "c d")
+
+    assert _raw_path(seen[0]) == b"/api/tools/a%2Fb/c%20d"
+
+
+def test_call_tool_returns_service_error_payload_as_is():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"error": "bridge raised"})
+
+    assert _client(handler).call_tool("rag_bridge", "search") == {
+        "error": "bridge raised"
+    }
+
+
+def test_dispatch_uses_http_client_when_configured(monkeypatch):
+    import integrations.hermes_knowledge.tool_bridge as tool_bridge
+
+    calls: list[tuple] = []
+    closed: list[bool] = []
+
+    class _FakeClient:
+        def call_tool(self, module_name, function_name, *, args=None, kwargs=None):
+            calls.append((module_name, function_name, args, kwargs))
+            return {"ok": True}
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(tool_bridge, "get_client", lambda: _FakeClient())
+
+    result = tool_bridge.dispatch(
+        "rag_bridge", "search_knowledge_base", "q", limit=3, filters={"tag": "ai"}
+    )
+
+    assert result == {"ok": True}
+    assert calls == [
+        (
+            "rag_bridge",
+            "search_knowledge_base",
+            ["q"],
+            {"limit": 3, "filters": {"tag": "ai"}},
+        )
+    ]
+    assert closed == [True]
+
+
+def test_dispatch_local_mode_imports_local_checkout(monkeypatch):
+    from types import SimpleNamespace
+
+    import integrations.hermes_knowledge.tool_bridge as tool_bridge
+
+    ensure_calls: list[bool] = []
+    import_calls: list[str] = []
+
+    def _fake_import(name):
+        import_calls.append(name)
+        return SimpleNamespace(
+            run=lambda *a, **k: {"local": True, "args": a, "kwargs": k}
+        )
+
+    monkeypatch.setattr(tool_bridge, "get_client", lambda: None)
+    monkeypatch.setattr(
+        tool_bridge, "ensure_custom_path", lambda: ensure_calls.append(True)
+    )
+    monkeypatch.setattr(tool_bridge.importlib, "import_module", _fake_import)
+
+    result = tool_bridge.dispatch("rag_bridge", "run", "q", limit=2)
+
+    assert ensure_calls == [True]
+    assert import_calls == ["bridge.rag_bridge"]
+    assert result == {"local": True, "args": ("q",), "kwargs": {"limit": 2}}
+
+
+def test_dispatch_normalises_non_json_kwargs(monkeypatch):
+    from pathlib import Path
+
+    import integrations.hermes_knowledge.tool_bridge as tool_bridge
+
+    captured: dict = {}
+
+    class _FakeClient:
+        def call_tool(self, module_name, function_name, *, args=None, kwargs=None):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return {"ok": True}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(tool_bridge, "get_client", lambda: _FakeClient())
+
+    tool_bridge.dispatch(
+        "rag_bridge", "run", Path("notes/a.md"), target=Path("b.md")
+    )
+
+    assert captured["args"] == [str(Path("notes/a.md"))]
+    assert captured["kwargs"] == {"target": str(Path("b.md"))}
+
+
+def test_dispatch_rejects_unserialisable_arguments(monkeypatch):
+    import integrations.hermes_knowledge.tool_bridge as tool_bridge
+
+    class _FakeClient:
+        def call_tool(self, *args, **kwargs):  # pragma: no cover - must not run
+            raise AssertionError("knowledge service must not be called")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(tool_bridge, "get_client", lambda: _FakeClient())
+
+    circular: list = []
+    circular.append(circular)
+
+    with pytest.raises(KnowledgeUnavailable, match="payload"):
+        tool_bridge.dispatch("rag_bridge", "run", payload=circular)

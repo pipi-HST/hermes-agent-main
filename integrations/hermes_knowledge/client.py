@@ -569,6 +569,31 @@ class KnowledgeClient:
         """Save an answer draft through the service (same envelope as local)."""
         return self.request("POST", "/api/knowledge/answer-drafts", json=dict(payload))
 
+    # -- tool dispatch ------------------------------------------------------
+    def call_tool(
+        self,
+        module_name: str,
+        function_name: str,
+        *,
+        args: list[Any] | None = None,
+        kwargs: dict[str, Any] | None = None,
+    ) -> Any:
+        """Invoke a whitelisted ``bridge.<module>.<function>`` on the service.
+
+        This is the HTTP-mode replacement for importing a local checkout's
+        bridge modules.  The service returns the bridge result dict as-is
+        (including its own ``{"error": ...}`` shape — the tool layer already
+        wraps results in the envelope).
+        """
+        return self.request(
+            "POST",
+            f"/api/tools/{quote(str(module_name), safe='')}/{quote(str(function_name), safe='')}",
+            json={
+                "args": list(args or []),
+                "kwargs": dict(kwargs or {}),
+            },
+        )
+
 
 def get_client(transport: httpx.BaseTransport | None = None) -> KnowledgeClient | None:
     """Return a configured, contract-compatible client.

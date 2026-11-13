@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import importlib
 import os
 import sys
 from typing import Any
@@ -44,10 +43,16 @@ def envelope_success_json(payload: dict[str, Any]) -> str:
 
 
 def call_custom_bridge(module_name: str, function_name: str, *args, **kwargs):
-    ensure_hermes_custom_path()
-    module = importlib.import_module(f"bridge.{module_name}")
-    function = getattr(module, function_name)
-    return function(*args, **kwargs)
+    """Call a custom bridge function (local checkout or knowledge service).
+
+    Local mode keeps the previous behaviour (validated checkout inserted on
+    ``sys.path``, then ``bridge.<module>`` imported).  With
+    ``HERMES_KNOWLEDGE_URL`` configured the call is dispatched to the knowledge
+    service instead; see :func:`integrations.hermes_knowledge.tool_bridge.dispatch`.
+    """
+    from integrations.hermes_knowledge.tool_bridge import dispatch
+
+    return dispatch(module_name, function_name, *args, **kwargs)
 
 
 def envelope_error_json(*, agent: str, intent: str, exc: Exception, meta: dict[str, Any] | None = None) -> str:

@@ -1772,6 +1772,10 @@ def _replace_knowledge_sources(source_map: list[dict], knowledge_sources: list[d
 
 
 def _enrich_gateway_knowledge_sources(sources: list[dict]) -> list[dict]:
+    if _knowledge_http_mode_configured():
+        # HTTP mode: the knowledge service owns the vault, so never fall back to
+        # reading a local SQLite DB.  Enrichment is best-effort and silent.
+        return _enrich_gateway_knowledge_sources_http(sources)
     config = _load_knowledge_config()
     if not config:
         return sources
@@ -1788,6 +1792,82 @@ def _enrich_gateway_knowledge_sources(sources: list[dict]) -> list[dict]:
         return sources
     finally:
         conn.close()
+
+
+# HTTP-mode source lookups: one service request per distinct title per process,
+# so a long-lived TUI gateway does not hammer the knowledge service for every
+# rendered answer.
+_HTTP_KNOWLEDGE_SOURCE_CACHE: dict[str, "dict | None"] = {}
+
+
+def _knowledge_http_mode_configured() -> bool:
+    return bool((os.environ.get("HERMES_KNOWLEDGE_URL") or "").strip())
+
+
+def _enrich_gateway_knowledge_sources_http(sources: list[dict]) -> list[dict]:
+    from integrations.hermes_knowledge.client import get_client
+
+    try:
+        client = get_client()
+    except Exception as exc:
+        logger.debug("Hermes knowledge HTTP client unavailable: %s", exc)
+        return sources
+    if client is None:
+        return sources
+    try:
+        return [
+            _enrich_gateway_knowledge_source_http(client, source)
+            for source in sources
+        ]
+    except Exception as exc:
+        logger.debug("failed to enrich gateway knowledge sources over HTTP: %s", exc)
+        return sources
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def _enrich_gateway_knowledge_source_http(client: Any, source: dict) -> dict:
+    """Attach service-side identity/open_url to one knowledge source."""
+    if not isinstance(source, dict):
+        return source
+    enriched = dict(source)
+    title = str(source.get("title") or source.get("name") or "").strip()
+    if not title:
+        return enriched
+    item = _http_knowledge_source_lookup(client, title)
+    if not item:
+        return enriched
+    item_id = str(item.get("id") or "").strip()
+    if not item_id:
+        return enriched
+    item_kind = str(item.get("kind") or "").strip()
+    enriched["item_id"] = item_id
+    if item_kind in {"capture", "capture_draft"}:
+        enriched["item_kind"] = item_kind
+        enriched["open_url"] = _knowledge_source_open_url(item_kind, item_id)
+    return enriched
+
+
+def _http_knowledge_source_lookup(client: Any, title: str) -> dict | None:
+    cache_key = title.casefold()
+    if cache_key in _HTTP_KNOWLEDGE_SOURCE_CACHE:
+        cached = _HTTP_KNOWLEDGE_SOURCE_CACHE[cache_key]
+        return dict(cached) if isinstance(cached, dict) else None
+    item: dict | None = None
+    try:
+        payload = client.list_library_items(search=title, limit=1)
+    except Exception as exc:
+        logger.debug("knowledge source lookup failed for %r: %s", title, exc)
+        payload = None
+    if isinstance(payload, dict):
+        items = payload.get("items")
+        if isinstance(items, list) and items and isinstance(items[0], dict):
+            item = dict(items[0])
+    _HTTP_KNOWLEDGE_SOURCE_CACHE[cache_key] = item
+    return item
 
 
 def _load_knowledge_config() -> tuple[Path, Path] | None:
