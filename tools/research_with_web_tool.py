@@ -6,7 +6,6 @@ import threading
 from typing import Any
 
 from tools.hermes_custom_envelope import (
-    ensure_hermes_custom_path,
     envelope_error_json,
     envelope_success_json,
 )
@@ -19,13 +18,30 @@ WEB_CONTEXT_ANSWER_STYLE_CONTRACT = (
 
 
 async def async_web_assist_answer(**kwargs):
-    ensure_hermes_custom_path()
-    try:
-        from bridge.research_bridge import async_web_assist_answer as entry
-    except ImportError:  # pragma: no cover - compatibility with older hermes-custom checkouts
-        from bridge.research_bridge import async_light_web_answer as entry
+    """Research entry point: local checkout or the knowledge service.
 
-    return await entry(**kwargs)
+    In HTTP mode the service runs the async bridge in its threadpool, so the
+    blocking client call is pushed off this event loop.  Older checkouts only
+    ship ``async_light_web_answer``; that case is a 404 from the dispatcher and
+    an ``AttributeError`` in local mode.
+    """
+    from integrations.hermes_knowledge.client import KnowledgeNotFound
+    from tools.hermes_custom_envelope import call_custom_bridge
+
+    try:
+        return await asyncio.to_thread(
+            call_custom_bridge,
+            "research_bridge",
+            "async_web_assist_answer",
+            **kwargs,
+        )
+    except (KnowledgeNotFound, AttributeError):
+        return await asyncio.to_thread(
+            call_custom_bridge,
+            "research_bridge",
+            "async_light_web_answer",
+            **kwargs,
+        )
 
 
 _async_research_entry = async_web_assist_answer

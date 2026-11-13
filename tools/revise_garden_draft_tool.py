@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from tools.hermes_custom_envelope import (
-    ensure_hermes_custom_path,
     envelope_error_json,
     envelope_success_json,
 )
@@ -33,10 +32,9 @@ REVISE_GARDEN_DRAFT_SCHEMA = {
 
 
 def do_revise(**kwargs):
-    ensure_hermes_custom_path()
-    from bridge.garden_bridge import revise_garden_draft
+    from tools.hermes_custom_envelope import call_custom_bridge
 
-    return revise_garden_draft(**kwargs)
+    return call_custom_bridge("garden_bridge", "revise_garden_draft", **kwargs)
 
 
 def _handler(params: dict, **kw) -> str:

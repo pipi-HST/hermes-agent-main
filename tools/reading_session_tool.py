@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from tools.hermes_custom_envelope import (
-    ensure_hermes_custom_path,
     envelope_error_json,
     envelope_success_json,
 )
@@ -119,21 +118,26 @@ COMMIT_SCHEMA = {
 
 
 def _reading_bridge():
-    ensure_hermes_custom_path()
-    from bridge.reading_bridge import (
-        commit_reading_artifact,
-        discuss_reading,
-        show_reading_session,
-        start_reading_session,
-        summarize_reading_session,
-    )
+    """Bind the reading bridge calls through the shared dispatch helper.
+
+    Local mode keeps the previous behaviour (validated checkout + direct
+    import); HTTP mode routes each call to the knowledge service, so the
+    reading session tools work without a local checkout.
+    """
+    from tools.hermes_custom_envelope import call_custom_bridge
+
+    def _bind(function_name: str):
+        def _call(*args, **kwargs):
+            return call_custom_bridge("reading_bridge", function_name, *args, **kwargs)
+
+        return _call
 
     return {
-        "commit": commit_reading_artifact,
-        "discuss": discuss_reading,
-        "show": show_reading_session,
-        "start": start_reading_session,
-        "summarize": summarize_reading_session,
+        "commit": _bind("commit_reading_artifact"),
+        "discuss": _bind("discuss_reading"),
+        "show": _bind("show_reading_session"),
+        "start": _bind("start_reading_session"),
+        "summarize": _bind("summarize_reading_session"),
     }
 
 
