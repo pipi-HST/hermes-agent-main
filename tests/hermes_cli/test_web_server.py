@@ -2086,6 +2086,81 @@ class TestWebServerEndpoints:
         assert fake.delete_calls == [("capture", "cap-1", "ctok")]
         assert fake.closed is True
 
+    def test_automation_boundaries_degrades_without_knowledge_config(self, monkeypatch):
+        """An unconfigured Knowledge feature must not 503 the whole inventory."""
+        import hermes_cli.web_server as web_server
+
+        for key in ("HERMES_KNOWLEDGE_URL", "HERMES_KNOWLEDGE_LOCAL_ROOT", "HERMES_CUSTOM_ROOT"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "_read_launchagent_plist", lambda label: {})
+        monkeypatch.setattr(web_server, "_launchagent_status", lambda label: ("not_loaded", None))
+
+        resp = self.client.get("/api/knowledge/automation-boundaries")
+
+        assert resp.status_code == 200
+        items = {item["id"]: item for item in resp.json()["items"]}
+        # Non-knowledge automation data still reports normally.
+        assert "gateway_ticker:cron" in items
+        assert items["gateway_ticker:cron"]["enabled"] is False
+        # Knowledge-specific items degrade to empty paths instead of failing.
+        watcher = items["watcher:watch_vault"]
+        assert watcher["writes_paths"] == []
+        assert watcher["source_path"] == ""
+        repair = items["repair:repair_data"]
+        assert repair["source_path"] == ""
+
+    def test_automation_boundaries_resolves_knowledge_paths_when_configured(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        custom_root = tmp_path / "hermes-custom"
+        (custom_root / "scripts").mkdir(parents=True)
+        monkeypatch.delenv("HERMES_KNOWLEDGE_URL", raising=False)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_LOCAL_ROOT", str(custom_root))
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "_read_launchagent_plist", lambda label: {})
+        monkeypatch.setattr(web_server, "_launchagent_status", lambda label: ("not_loaded", None))
+
+        resp = self.client.get("/api/knowledge/automation-boundaries")
+
+        assert resp.status_code == 200
+        items = {item["id"]: item for item in resp.json()["items"]}
+        watcher = items["watcher:watch_vault"]
+        assert watcher["source_path"] == str(custom_root / "scripts" / "watch_vault.py")
+        assert str(custom_root / "data") in watcher["writes_paths"]
+        assert items["repair:repair_data"]["source_path"] == str(
+            custom_root / "scripts" / "repair_data.py"
+        )
+
+    def test_automation_boundaries_degrades_one_bad_cron_item(self, monkeypatch):
+        """One malformed cron job must not hide the rest of the inventory."""
+        import cron.jobs as cron_jobs
+        import hermes_cli.web_server as web_server
+
+        def _list_jobs(include_disabled=True):
+            return [
+                {"id": "j1", "name": "daily-review", "enabled": True},
+                {"id": "j2", "name": "broken-job", "enabled": True},
+            ]
+
+        def _boundary(job):
+            if job.get("id") == "j2":
+                raise RuntimeError("cannot describe this job")
+            return {"id": "cron:j1", "name": "daily-review", "kind": "cron"}
+
+        monkeypatch.setattr(cron_jobs, "list_jobs", _list_jobs)
+        monkeypatch.setattr(web_server, "_automation_boundary_for_cron_job", _boundary)
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "_read_launchagent_plist", lambda label: {})
+        monkeypatch.setattr(web_server, "_launchagent_status", lambda label: ("not_loaded", None))
+
+        resp = self.client.get("/api/knowledge/automation-boundaries")
+
+        assert resp.status_code == 200
+        item_ids = {item["id"] for item in resp.json()["items"]}
+        assert "cron:j1" in item_ids
+        assert "cron:j2" not in item_ids
+
     def test_knowledge_library_selection_chat_uses_capture_selection_context(self, monkeypatch, tmp_path):
         import sqlite3
         import hermes_cli.web_server as ws

@@ -805,6 +805,80 @@ def _format_document_context_note(path: str, mime_type: str = "") -> str:
     )
 
 
+# ── Session document registry ───────────────────────────────────────────────
+# Documents the gateway itself received for a session.  Keyed by session_key,
+# LRU-bounded so a long-running gateway cannot grow it forever, and holding a
+# small list per session (one chat message can carry several attachments) so a
+# follow-up request can point the agent at every file that is still on disk.
+_SESSION_DOCUMENTS_MAX_SESSIONS = 512
+_SESSION_DOCUMENTS_MAX_PER_SESSION = 16
+
+
+def _session_documents_registry(owner: Any) -> "OrderedDict[str, List[tuple[str, str]]]":
+    """Return the runner's document registry, creating it for test fixtures."""
+    registry = getattr(owner, "_session_documents", None)
+    if not isinstance(registry, OrderedDict):
+        registry = OrderedDict()
+        owner._session_documents = registry
+    return registry
+
+
+def _remember_session_documents(
+    owner: Any,
+    session_key: str,
+    documents: "List[tuple[str, str]]",
+) -> "List[tuple[str, str]]":
+    """Record documents delivered to ``session_key`` (newest last, deduped).
+
+    The registry is an LRU over sessions: touching a session moves it to the
+    newest position and exceeding the cap evicts the least recently used one.
+    """
+    registry = _session_documents_registry(owner)
+    remembered = list(registry.get(session_key) or [])
+    seen = {path for path, _mime in remembered}
+    for path, mime_type in documents:
+        path = str(path or "")
+        if not path or path in seen:
+            continue
+        remembered.append((path, str(mime_type or "")))
+        seen.add(path)
+    if len(remembered) > _SESSION_DOCUMENTS_MAX_PER_SESSION:
+        remembered = remembered[-_SESSION_DOCUMENTS_MAX_PER_SESSION:]
+    registry[session_key] = remembered
+    registry.move_to_end(session_key)
+    while len(registry) > _SESSION_DOCUMENTS_MAX_SESSIONS:
+        registry.popitem(last=False)
+    return remembered
+
+
+def _live_session_documents(owner: Any, session_key: str) -> "List[tuple[str, str]]":
+    """Return the session's documents that still exist, pruning dead entries.
+
+    A file can disappear (temp cleanup, user deleted it) between the message
+    that delivered it and the follow-up that references it; injecting a dead
+    path would send the agent chasing a file that no longer exists.
+    """
+    registry = getattr(owner, "_session_documents", None)
+    if not isinstance(registry, dict):
+        return []
+    remembered = list(registry.get(session_key) or [])
+    if not remembered:
+        return []
+    live = [(path, mime) for path, mime in remembered if os.path.isfile(path)]
+    if live:
+        registry[session_key] = live
+    else:
+        registry.pop(session_key, None)
+    return live
+
+
+def _forget_session_documents(owner: Any, session_key: str) -> None:
+    """Drop the session's document memory at a conversation boundary."""
+    registry = getattr(owner, "_session_documents", None)
+    if isinstance(registry, dict):
+        registry.pop(session_key, None)
+
+
 _DOCUMENT_CONTEXT_RE = re.compile(
     r"\[User sent a document: (?P<name>.*?); path: (?P<path>.*?)(?:; type: (?P<mime>.*?))?(?:; size: .*?)?\. "
     r"If the user wants this document",
@@ -1335,6 +1409,11 @@ class GatewayRunner:
         # cannot grow unbounded over a long-running gateway lifetime.
         self._session_sources: "OrderedDict[str, SessionSource]" = OrderedDict()
         self._session_sources_max = 512
+        # Documents received for each live session, LRU-bounded.  Values are
+        # lists because one message can carry several attachments; /new and
+        # session auto-resets drop the entry, and follow-ups only inject paths
+        # that still exist on disk.
+        self._session_documents: "OrderedDict[str, List[tuple[str, str]]]" = OrderedDict()
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -7309,6 +7388,7 @@ class GatewayRunner:
             import mimetypes as _mimetypes
 
             _TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
+            _delivered_documents: List[tuple[str, str]] = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype in {"", "application/octet-stream"}:
@@ -7323,11 +7403,7 @@ class GatewayRunner:
                     continue
 
                 context_note = _format_document_context_note(path, mtype)
-                _session_documents = getattr(self, "_session_documents", None)
-                if _session_documents is None:
-                    _session_documents = {}
-                    self._session_documents = _session_documents
-                _session_documents[session_key] = (path, mtype)
+                _delivered_documents.append((path, mtype))
                 if not (message_text or "").strip():
                     previous_instruction = _latest_user_text_instruction(history)
                     if previous_instruction:
@@ -7338,6 +7414,11 @@ class GatewayRunner:
                         )
                 message_text = f"{context_note}\n\n{message_text}"
 
+            if _delivered_documents:
+                # Register every attachment for this session so a later
+                # follow-up can reference all of them, not just the last one.
+                _remember_session_documents(self, session_key, _delivered_documents)
+
         if (
             not event.media_urls
             and _looks_like_document_followup_request(message_text)
@@ -7346,15 +7427,22 @@ class GatewayRunner:
             # Only trust documents the gateway itself received for this session.
             # Re-parsing a "path:" out of chat history let user-authored text (or
             # prompt-injected content) point the agent at an arbitrary file.
-            remembered = getattr(self, "_session_documents", {}).get(session_key)
-            recent_document = (
-                _format_document_context_note(*remembered) if remembered else ""
-            )
-            if recent_document:
+            remembered_documents = _live_session_documents(self, session_key)
+            if remembered_documents:
+                recent_documents = "\n".join(
+                    _format_document_context_note(path, mime_type)
+                    for path, mime_type in remembered_documents
+                )
+                if len(remembered_documents) == 1:
+                    recent_header = "[Recent document available for this request]"
+                    request_header = "[User request for the recent document]"
+                else:
+                    recent_header = "[Recent documents available for this request]"
+                    request_header = "[User request for the recent documents]"
                 message_text = (
-                    "[Recent document available for this request]\n"
-                    f"{recent_document}\n\n"
-                    "[User request for the recent document]\n"
+                    f"{recent_header}\n"
+                    f"{recent_documents}\n\n"
+                    f"{request_header}\n"
                     f"{message_text}"
                 )
 
@@ -8275,6 +8363,7 @@ class GatewayRunner:
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
+                _forget_session_documents(self, session_key)
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
                     "maximum context size and could not be compressed further. "
@@ -8651,6 +8740,10 @@ class GatewayRunner:
         self._set_session_reasoning_override(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
+
+        # Forget documents attached to the expired conversation — a follow-up
+        # after /new must not inherit the previous session's files.
+        _forget_session_documents(self, session_key)
 
         # Clear session-scoped dangerous-command approvals and /yolo state.
         # /new is a conversation-boundary operation — approval state from the

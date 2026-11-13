@@ -2,14 +2,10 @@
 from __future__ import annotations
 
 import json
-import sys
 
+from integrations.hermes_life import ensure_life_path
 from tools.hermes_custom_envelope import envelope_error_json
 from tools.registry import registry
-
-HERMES_LIFE_ROOT = "/Users/pipi/hermes-life"
-if HERMES_LIFE_ROOT not in sys.path:
-    sys.path.insert(0, HERMES_LIFE_ROOT)
 
 RECORD_LIFE_EVENT_SCHEMA = {
     "name": "record_life_event",
@@ -37,6 +33,7 @@ RECORD_LIFE_EVENT_SCHEMA = {
 
 
 def do_record_life_event(*args, **kwargs):
+    ensure_life_path()
     from hermes_life.bridge.life_bridge import record_life_event
 
     return record_life_event(*args, **kwargs)
@@ -44,6 +41,7 @@ def do_record_life_event(*args, **kwargs):
 
 def _life_envelope_json(payload: dict) -> str:
     try:
+        ensure_life_path()
         from hermes_life.bridge.result_envelope import envelope_json
     except Exception:
         return json.dumps(payload, ensure_ascii=False)

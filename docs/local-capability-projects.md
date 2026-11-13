@@ -2,10 +2,12 @@
 
 这个 Hermes runtime 本地接了两个能力项目。
 
-| 能力 | 本地路径 | runtime 工具 |
-|------|----------|--------------|
-| Knowledge | `/Users/pipi/hermes-custom` | Capture、Library、RAG、Theme、Garden、Review、Canvas |
-| Life | `/Users/pipi/hermes-life` | `record_life_event`、`life_tick` |
+| 能力 | 本地路径（环境变量） | runtime 工具 |
+|------|----------------------|--------------|
+| Knowledge | `$HERMES_KNOWLEDGE_LOCAL_ROOT`（旧名 `HERMES_CUSTOM_ROOT`） | Capture、Library、RAG、Theme、Garden、Review、Canvas |
+| Life | `$HERMES_LIFE_ROOT` | `record_life_event`、`life_tick` |
+
+两个路径都不再硬编码：未设置时工具不报错注册失败，只在调用时返回明确的错误 envelope。
 
 ## 规则
 

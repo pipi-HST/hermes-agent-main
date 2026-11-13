@@ -2863,6 +2863,33 @@ def _automation_boundary(
     }
 
 
+def _knowledge_write_path(*parts: str) -> str:
+    """Best-effort path under the Knowledge vault for the automation inventory.
+
+    ``/api/knowledge/automation-boundaries`` is an observability endpoint: when
+    the Knowledge service is not configured it must still describe the rest of
+    the automation surface.  A 503 from ``_knowledge_vault_path()`` therefore
+    degrades to an empty path for that one item instead of failing the request.
+    """
+    try:
+        return str(_knowledge_vault_path().joinpath(*parts))
+    except Exception:  # noqa: BLE001 - unconfigured feature degrades to empty
+        return ""
+
+
+def _knowledge_checkout_path(*parts: str) -> str:
+    """Best-effort path under the Knowledge checkout (empty when unconfigured)."""
+    try:
+        return str(_knowledge_custom_root().joinpath(*parts))
+    except Exception:  # noqa: BLE001 - unconfigured feature degrades to empty
+        return ""
+
+
+def _known_paths(*paths: str) -> list[str]:
+    """Drop empty (unresolved) paths so degraded items stay clean."""
+    return [path for path in paths if path]
+
+
 def _automation_boundary_for_cron_job(job: dict[str, Any]) -> dict[str, Any]:
     name = str(job.get("name") or job.get("id") or "cron job")
     toolsets = job.get("enabled_toolsets") or job.get("toolsets") or []
@@ -2874,7 +2901,7 @@ def _automation_boundary_for_cron_job(job: dict[str, Any]) -> dict[str, Any]:
     if "theme_scan" in lowered or "theme-scan" in name_lower:
         read_write = "knowledge_storage_write"
         writes_tables = ["captures", "pending_questions", "theme_candidates"]
-        writes_paths = [str(_knowledge_vault_path() / "themes")]
+        writes_paths = _known_paths(_knowledge_write_path("themes"))
         risk = "high"
         description = "Scheduled Theme View maintenance; disabled jobs cannot auto-trigger."
     elif "daily_review" in lowered or "daily-review" in lowered or "knowledge-review" in toolsets:
@@ -2927,7 +2954,13 @@ async def get_knowledge_automation_boundaries():
         _log.exception("Failed to list Hermes cron jobs")
         cron_jobs = []
     for job in cron_jobs:
-        items.append(_automation_boundary_for_cron_job(job))
+        try:
+            items.append(_automation_boundary_for_cron_job(job))
+        except Exception:
+            _log.exception(
+                "Failed to describe automation boundary for cron job %r",
+                job.get("id") or job.get("name"),
+            )
 
     for label, name, description, writes_tables, writes_paths, risk in (
         (
@@ -2943,7 +2976,7 @@ async def get_knowledge_automation_boundaries():
             "Knowledge storage watcher",
             "LaunchAgent watches local Knowledge storage and calls repair_data(apply=True, rename_readable=True).",
             ["captures", "capture_drafts", "reading_drafts"],
-            [str(_knowledge_vault_path()), str(_knowledge_custom_root() / "data")],
+            _known_paths(_knowledge_write_path(), _knowledge_checkout_path("data")),
             "high",
         ),
     ):
@@ -3024,7 +3057,7 @@ async def get_knowledge_automation_boundaries():
                 runtime_status="configured" if theme_enabled else "disabled",
                 read_write="knowledge_storage_write",
                 writes_tables=["captures", "pending_questions", "theme_candidates"],
-                writes_paths=[str(_knowledge_vault_path() / "themes")],
+                writes_paths=_known_paths(_knowledge_write_path("themes")),
                 toolsets=["knowledge-advanced"],
                 risk_level="high",
                 description="Theme View clustering and local Knowledge storage maintenance tool; disabled unless the theme-scan cron is enabled or invoked manually.",
@@ -3063,7 +3096,7 @@ async def get_knowledge_automation_boundaries():
                 runtime_status="configured",
                 read_write="knowledge_storage_write",
                 writes_tables=["capture_drafts", "agent_runs"],
-                writes_paths=[str(_knowledge_vault_path())],
+                writes_paths=_known_paths(_knowledge_write_path()),
                 toolsets=["personal-assistant"],
                 risk_level="medium",
                 description="User-invoked capture draft tool; not an automatic background job.",
@@ -3089,10 +3122,10 @@ async def get_knowledge_automation_boundaries():
                 runtime_status=_launchagent_status("com.pipi.hermes-vault-watcher")[0],
                 read_write="knowledge_storage_write",
                 writes_tables=["captures", "capture_drafts", "reading_drafts"],
-                writes_paths=[str(_knowledge_vault_path()), str(_knowledge_custom_root() / "data")],
+                writes_paths=_known_paths(_knowledge_write_path(), _knowledge_checkout_path("data")),
                 risk_level="high",
                 description="Polls local Knowledge storage and runs repair_data in apply mode after detected changes.",
-                source_path=str(_knowledge_custom_root() / "scripts" / "watch_vault.py"),
+                source_path=_knowledge_checkout_path("scripts", "watch_vault.py"),
             ),
             _automation_boundary(
                 item_id="repair:repair_data",
@@ -3102,10 +3135,10 @@ async def get_knowledge_automation_boundaries():
                 runtime_status="configured",
                 read_write="knowledge_storage_write",
                 writes_tables=["captures", "capture_drafts"],
-                writes_paths=[str(_knowledge_vault_path()), str(_knowledge_custom_root() / "data" / "backups")],
+                writes_paths=_known_paths(_knowledge_write_path(), _knowledge_checkout_path("data", "backups")),
                 risk_level="high",
                 description="Repair script is read-only unless called with apply=True; the Knowledge storage watcher calls it with apply=True.",
-                source_path=str(_knowledge_custom_root() / "scripts" / "repair_data.py"),
+                source_path=_knowledge_checkout_path("scripts", "repair_data.py"),
             ),
         ]
     )
