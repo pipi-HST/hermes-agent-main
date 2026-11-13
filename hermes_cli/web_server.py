@@ -4815,7 +4815,29 @@ class _KnowledgeLibrarySelectionChatBody(BaseModel):
 
 
 def _knowledge_custom_root() -> Path:
-    return Path(os.environ.get("HERMES_CUSTOM_ROOT", "/Users/pipi/hermes-custom")).expanduser()
+    """Return the validated Hermes Knowledge checkout, or fail closed."""
+    from integrations.hermes_knowledge import KnowledgeUnavailable, configured_root, validate_root
+
+    root = configured_root()
+    if root is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "feature_disabled",
+                "message": (
+                    "Hermes Knowledge is not configured. Set HERMES_KNOWLEDGE_URL "
+                    "(HTTP mode) or HERMES_KNOWLEDGE_LOCAL_ROOT (local checkout) "
+                    "and restart the dashboard."
+                ),
+            },
+        )
+    try:
+        return validate_root(root)
+    except KnowledgeUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "feature_disabled", "message": str(exc)},
+        ) from exc
 
 
 def _knowledge_custom_import_failure_detail(
@@ -5029,8 +5051,11 @@ def _clip_text(text: str, limit: int = 360) -> str:
 def _knowledge_read_note(vault_path: Path, file_path: str) -> tuple[dict, str] | None:
     if not file_path:
         return None
-    path = vault_path / file_path
-    if not path.exists() or not path.is_file():
+    try:
+        # Same containment rule as the other knowledge paths: resolve under the
+        # vault, reject absolute/'..' escapes and symlinks out of the vault.
+        path = _knowledge_local_file_path(vault_path, file_path)
+    except HTTPException:
         return None
     text = path.read_text(encoding="utf-8")
     if text.startswith("---"):
@@ -6234,15 +6259,20 @@ def _knowledge_local_file_path(vault_path: Path, file_path: str) -> Path:
 
 
 def _open_local_file(target: Path) -> None:
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    if sys.platform.startswith("win"):
+        # os.startfile avoids cmd.exe parsing: a file name containing '&' or
+        # '^' could break out of ``cmd /c start`` and run a command.
+        os.startfile(str(target))  # type: ignore[attr-defined]
+        return
     if sys.platform == "darwin":
         cmd = ["open", str(target)]
     elif sys.platform.startswith("linux"):
         cmd = ["xdg-open", str(target)]
-    elif sys.platform.startswith("win"):
-        cmd = ["cmd", "/c", "start", "", str(target)]
     else:
         raise HTTPException(status_code=400, detail="local open is not supported on this platform")
-    subprocess.Popen(cmd)
+    subprocess.Popen(cmd, shell=False)
 
 
 @app.post("/api/knowledge/library/items/{kind}/{item_id}/open-local")
@@ -6871,11 +6901,10 @@ async def permanent_delete_knowledge_library_item(request: Request, kind: str, i
 
         file_path = str(row["file_path"] or "")
         raw_path = str(row["raw_path"] or "") if "raw_path" in row.keys() else ""
-        deleted_file = _knowledge_unlink_storage_file(vault_path, file_path)
-        deleted_raw = ""
-        if raw_path and raw_path != file_path:
-            deleted_raw = _knowledge_unlink_storage_file(vault_path, raw_path)
 
+        # Commit the database side FIRST. Unlinking first (the old order) left
+        # orphaned rows when the commit failed and destroyed the note with no
+        # recovery path. Files that fail to unlink are reported for retry.
         deleted_rows = {
             "capture_embeddings": _knowledge_delete_by_column(conn, "capture_embeddings", "capture_id", item_id),
             "capture_metadata": _knowledge_delete_by_column(conn, "capture_metadata", "capture_id", item_id),
@@ -6887,6 +6916,19 @@ async def permanent_delete_knowledge_library_item(request: Request, kind: str, i
         }
         conn.commit()
 
+    unlink_warnings: list[str] = []
+    deleted_file = ""
+    deleted_raw = ""
+    try:
+        deleted_file = _knowledge_unlink_storage_file(vault_path, file_path)
+    except Exception as exc:  # noqa: BLE001 - surfaced to the caller below
+        unlink_warnings.append(f"knowledge file left in place: {type(exc).__name__}: {exc}")
+    if raw_path and raw_path != file_path:
+        try:
+            deleted_raw = _knowledge_unlink_storage_file(vault_path, raw_path)
+        except Exception as exc:  # noqa: BLE001
+            unlink_warnings.append(f"raw file left in place: {type(exc).__name__}: {exc}")
+
     return {
         "ok": True,
         "status": "permanently_deleted",
@@ -6896,6 +6938,7 @@ async def permanent_delete_knowledge_library_item(request: Request, kind: str, i
             "raw_file": deleted_raw,
             "rows": deleted_rows,
         },
+        "warnings": unlink_warnings,
         "message": "已彻底删除入库文件及其本地索引记录。",
     }
 

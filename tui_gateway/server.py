@@ -1791,9 +1791,13 @@ def _enrich_gateway_knowledge_sources(sources: list[dict]) -> list[dict]:
 
 
 def _load_knowledge_config() -> tuple[Path, Path] | None:
-    custom_root = Path(os.environ.get("HERMES_CUSTOM_ROOT") or Path.home() / "hermes-custom")
-    if str(custom_root) not in sys.path:
-        sys.path.insert(0, str(custom_root))
+    from integrations.hermes_knowledge import KnowledgeUnavailable, ensure_custom_path
+
+    try:
+        custom_root = ensure_custom_path()
+    except KnowledgeUnavailable as exc:
+        logger.debug("Hermes knowledge is not configured: %s", exc)
+        return None
     try:
         from agents.capture_agent import load_config
 

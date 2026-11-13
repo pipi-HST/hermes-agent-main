@@ -8,13 +8,16 @@ import os
 import sys
 from typing import Any
 
-DEFAULT_HERMES_CUSTOM_ROOT = "/Users/pipi/hermes-custom"
+from integrations.hermes_knowledge import KnowledgeUnavailable, ensure_custom_path
 
 
 def ensure_hermes_custom_path() -> None:
-    custom_root = os.environ.get("HERMES_CUSTOM_ROOT", DEFAULT_HERMES_CUSTOM_ROOT)
-    if custom_root not in sys.path:
-        sys.path.insert(0, custom_root)
+    """Insert the validated Hermes Knowledge checkout into ``sys.path``.
+
+    Raises :class:`KnowledgeUnavailable` when the checkout is not configured;
+    there is no hard-coded default path any more.
+    """
+    ensure_custom_path()
 
 
 def _load_result_envelope():

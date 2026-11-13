@@ -211,7 +211,12 @@ def _summarize_handler(args: dict, **kw) -> str:
 
 def _commit_handler(args: dict, **kw) -> str:
     try:
-        return envelope_success_json(do_commit(draft_id=args.get("draft_id", "")))
+        return envelope_success_json(
+            do_commit(
+                draft_id=args.get("draft_id", ""),
+                confirmation=kw.get("user_task", ""),
+            )
+        )
     except Exception as exc:
         return envelope_error_json(agent="reading", intent="commit_reading_artifact", exc=exc)
 
