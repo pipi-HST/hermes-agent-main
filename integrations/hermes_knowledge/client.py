@@ -498,6 +498,77 @@ class KnowledgeClient:
             "DELETE", f"/api/reading/drafts/{quote(str(draft_id), safe='')}"
         )
 
+    # -- library reads ------------------------------------------------------
+    def list_library_items(self, **query: Any) -> dict[str, Any]:
+        """List library items; empty query values are not sent."""
+        params = {
+            key: value
+            for key, value in query.items()
+            if value is not None and value != ""
+        }
+        return self.request("GET", "/api/library/items", params=params)
+
+    def get_library_item(self, kind: str, item_id: str) -> dict[str, Any]:
+        return self.request(
+            "GET",
+            f"/api/library/items/{quote(str(kind), safe='')}/{quote(str(item_id), safe='')}",
+        )
+
+    # -- garden / cards -----------------------------------------------------
+    def create_garden_draft(
+        self,
+        *,
+        capture_ids: list[str] | None = None,
+        title: str = "",
+        card_kind: str = "",
+        instruction: str = "",
+    ) -> dict[str, Any]:
+        """Run garden synthesis (and its implicit commit) through the service."""
+        return self.request(
+            "POST",
+            "/api/garden/drafts",
+            json={
+                "capture_ids": [str(item) for item in (capture_ids or [])],
+                "title": title,
+                "card_kind": card_kind,
+                "instruction": instruction,
+            },
+        )
+
+    def list_garden_cards(self, *, limit: int = 100, status: str = "") -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        return self.request("GET", "/api/garden/cards", params=params)
+
+    def delete_garden_card(self, card_id: str) -> dict[str, Any]:
+        return self.request(
+            "DELETE", f"/api/garden/cards/{quote(str(card_id), safe='')}"
+        )
+
+    # -- graph / answer drafts ---------------------------------------------
+    def graph(
+        self,
+        *,
+        focus_kind: str = "",
+        focus_id: str = "",
+        depth: int = 1,
+        limit: int = 80,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"depth": depth, "limit": limit}
+        if focus_kind:
+            params["focus_kind"] = focus_kind
+        if focus_id:
+            params["focus_id"] = focus_id
+        return self.request("GET", "/api/knowledge/graph", params=params)
+
+    def refresh_graph(self) -> dict[str, Any]:
+        return self.request("POST", "/api/knowledge/graph/refresh")
+
+    def create_answer_draft(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Save an answer draft through the service (same envelope as local)."""
+        return self.request("POST", "/api/knowledge/answer-drafts", json=dict(payload))
+
 
 def get_client(transport: httpx.BaseTransport | None = None) -> KnowledgeClient | None:
     """Return a configured, contract-compatible client.

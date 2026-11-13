@@ -620,6 +620,74 @@ def test_capture_draft_client_methods_use_contract_paths():
     assert _raw_path(seen[2]) == b"/api/reading/drafts/r%201"
 
 
+# ── Library reads / garden / cards / graph / answer paths ──────────────────
+
+
+def test_library_read_client_methods():
+    client, seen = _recording_client()
+
+    client.list_library_items(folder="AI", view="", search="", limit=50)
+    client.get_library_item("capture", "c/1")
+
+    assert [request.method for request in seen] == ["GET", "GET"]
+    assert seen[0].url.path == "/api/library/items"
+    # Empty query values are not sent.
+    assert dict(seen[0].url.params) == {"folder": "AI", "limit": "50"}
+    assert _raw_path(seen[1]) == b"/api/library/items/capture/c%2F1"
+
+
+def test_garden_client_methods():
+    client, seen = _recording_client()
+
+    client.create_garden_draft(
+        capture_ids=["c1", "c2"],
+        title="T",
+        card_kind="viewpoint",
+        instruction="I",
+    )
+    client.list_garden_cards(limit=10)
+    client.list_garden_cards(limit=5, status="active")
+    client.delete_garden_card("k 1")
+
+    assert [request.method for request in seen] == ["POST", "GET", "GET", "DELETE"]
+    assert seen[0].url.path == "/api/garden/drafts"
+    assert json.loads(seen[0].content) == {
+        "capture_ids": ["c1", "c2"],
+        "title": "T",
+        "card_kind": "viewpoint",
+        "instruction": "I",
+    }
+    assert seen[1].url.path == "/api/garden/cards"
+    assert dict(seen[1].url.params) == {"limit": "10"}
+    assert dict(seen[2].url.params) == {"limit": "5", "status": "active"}
+    assert _raw_path(seen[3]) == b"/api/garden/cards/k%201"
+
+
+def test_graph_and_answer_client_methods():
+    client, seen = _recording_client()
+
+    client.graph()
+    client.graph(focus_kind="capture", focus_id="c1", depth=2, limit=40)
+    client.refresh_graph()
+    client.create_answer_draft({"assistant_answer": "a", "user_message": "q"})
+
+    assert [request.method for request in seen] == ["GET", "GET", "POST", "POST"]
+    assert seen[0].url.path == "/api/knowledge/graph"
+    assert dict(seen[0].url.params) == {"depth": "1", "limit": "80"}
+    assert dict(seen[1].url.params) == {
+        "depth": "2",
+        "limit": "40",
+        "focus_kind": "capture",
+        "focus_id": "c1",
+    }
+    assert seen[2].url.path == "/api/knowledge/graph/refresh"
+    assert seen[3].url.path == "/api/knowledge/answer-drafts"
+    assert json.loads(seen[3].content) == {
+        "assistant_answer": "a",
+        "user_message": "q",
+    }
+
+
 def test_cached_contract_status_does_not_block_on_an_in_flight_probe():
     """The probe must never hold the cache lock across network I/O.
 

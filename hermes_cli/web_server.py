@@ -6390,6 +6390,31 @@ async def get_knowledge_library_items(
     limit: int = 200,
 ):
     _require_token(request)
+
+    # HTTP mode: the service owns the vault, so list reads must come from it.
+    # Normalise to the local branch's shape exactly ({"items", "total"}); the
+    # contract's extra ``counts`` block is not part of the dashboard response.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            payload = client.list_library_items(
+                folder=folder, view=view, search=search, limit=limit
+            )
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+        payload = payload if isinstance(payload, dict) else {}
+        items = payload.get("items")
+        items = items if isinstance(items, list) else []
+        total = payload.get("total")
+        return {"items": items, "total": total if isinstance(total, int) else len(items)}
+
     vault_path = _knowledge_vault_path()
     with _knowledge_conn() as conn:
         items = _knowledge_library_items(
@@ -6407,6 +6432,26 @@ async def get_knowledge_library_items(
 async def get_knowledge_library_item(request: Request, kind: str, item_id: str):
     _require_token(request)
     kind = (kind or "").strip()
+
+    # HTTP mode: single-item reads are served by the service.  Keep the local
+    # response shape exactly ({"item": ...}); the service envelope's ``ok``
+    # flag is not part of the dashboard response.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            payload = client.get_library_item(kind, item_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+        payload = payload if isinstance(payload, dict) else {}
+        return {"item": payload.get("item")}
+
     vault_path = _knowledge_vault_path()
     with _knowledge_conn() as conn:
         if kind == "capture":
@@ -7542,7 +7587,13 @@ async def post_knowledge_capture_draft_commit(request: Request, draft_id: str):
     result = await _run_cancellable_ai_operation(
         request,
         "capture.commit",
-        lambda: commit_capture_draft(draft_id, confirmation_source="dashboard"),
+        lambda: commit_capture_draft(
+            draft_id,
+            confirmation_source="dashboard",
+            # The dashboard route already authenticated the user and the click
+            # is the confirmation; the bridge must not demand a chat phrase.
+            token_verified=True,
+        ),
     )
     return result
 
@@ -7717,6 +7768,36 @@ async def patch_knowledge_capture(
 @app.post("/api/knowledge/answer-drafts")
 async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDraftBody):
     _require_token(request)
+
+    # HTTP mode: the service saves the answer draft.  Unlike the local branch
+    # this is a plain request, so client-side cancellation of the AI operation is
+    # not available; the response keeps the envelope shape the local branch
+    # returns so the dashboard can consume it unchanged.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        payload = {
+            "hermes_session_id": body.hermes_session_id,
+            "user_message": body.user_message,
+            "assistant_answer": body.assistant_answer,
+            "instruction": body.instruction,
+            "output_type": body.output_type,
+            "assistant_message_id": body.assistant_message_id,
+            "sources": body.sources,
+            "target_capture_id": body.target_capture_id,
+            "answer_source": body.answer_source,
+        }
+        try:
+            return client.create_answer_draft(payload)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     answer_bridge = _knowledge_custom_module("bridge.answer_bridge", "Answer bridge")
     save_answer_to_knowledge = answer_bridge.save_answer_to_knowledge
     return await _run_cancellable_ai_operation(
@@ -7739,6 +7820,29 @@ async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDr
 @app.post("/api/knowledge/garden-drafts")
 async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDraftBody):
     _require_token(request)
+
+    # HTTP mode: garden synthesis and its implicit commit run inside the
+    # service; the envelope it returns matches the local bridge envelope, so it
+    # is passed through unchanged.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.create_garden_draft(
+                capture_ids=body.capture_ids,
+                title=body.title,
+                card_kind=body.card_kind,
+                instruction=body.instruction,
+            )
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     garden_bridge = _knowledge_custom_module("bridge.garden_bridge", "Garden bridge")
     commit_garden_draft = garden_bridge.commit_garden_draft
     synthesize_garden = garden_bridge.synthesize_garden
@@ -7771,6 +7875,8 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
         lambda: commit_garden_draft(
             draft_id=draft_id,
             confirmation_source="dashboard",
+            # Dashboard click == confirmation; see the capture commit above.
+            token_verified=True,
         ),
     )
 
@@ -7917,7 +8023,11 @@ async def post_knowledge_reading_draft_commit(request: Request, draft_id: str):
     return await _run_cancellable_ai_operation(
         request,
         "reading.commit",
-        lambda: commit_reading_artifact(draft_id=draft_id),
+        lambda: commit_reading_artifact(
+            draft_id=draft_id,
+            # Dashboard click == confirmation; see the capture commit above.
+            token_verified=True,
+        ),
     )
 
 
@@ -8051,6 +8161,39 @@ def _knowledge_card_row(
 @app.get("/api/knowledge/cards")
 async def get_knowledge_cards(request: Request, limit: int = 100):
     _require_token(request)
+
+    # HTTP mode: card reads come from the service.  Rebuild the response with
+    # the local shape exactly ({"cards", "groups", "total"}): the service
+    # returns {"items", "total"}, and ``groups`` is derived from card kinds the
+    # same way the local branch derives it.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            payload = client.list_garden_cards(limit=max(1, min(limit, 300)))
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+        payload = payload if isinstance(payload, dict) else {}
+        cards = payload.get("items")
+        cards = cards if isinstance(cards, list) else []
+        groups = {kind: 0 for kind in _KNOWLEDGE_CARD_KINDS}
+        for card in cards:
+            card_kind = str(card.get("kind") or "") if isinstance(card, dict) else ""
+            if card_kind:
+                groups[card_kind] = groups.get(card_kind, 0) + 1
+        total = payload.get("total")
+        return {
+            "cards": cards,
+            "groups": groups,
+            "total": total if isinstance(total, int) else len(cards),
+        }
+
     vault_path = _knowledge_vault_path()
     with _knowledge_conn() as conn:
         rows = conn.execute(
@@ -8089,6 +8232,23 @@ async def get_knowledge_card(request: Request, card_id: str):
 @app.delete("/api/knowledge/cards/{card_id}")
 async def delete_knowledge_card(request: Request, card_id: str):
     _require_token(request)
+
+    # HTTP mode: card deletion is a service write; its envelope ({"ok",
+    # "status": "deleted", "id"}) is returned unchanged.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.delete_garden_card(card_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     garden_bridge = _knowledge_custom_module("bridge.garden_bridge", "Garden bridge")
     archive_garden_card = garden_bridge.archive_garden_card
     return archive_garden_card(card_id=card_id)
@@ -8097,6 +8257,23 @@ async def delete_knowledge_card(request: Request, card_id: str):
 @app.post("/api/knowledge/graph/refresh")
 async def refresh_knowledge_graph(request: Request):
     _require_token(request)
+
+    # HTTP mode: the graph rebuild runs inside the service, which owns the
+    # graph DB; the response is the same graph payload the local branch returns.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.refresh_graph()
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     graph_module = _knowledge_custom_module("agents.knowledge_graph", "Knowledge graph service")
     conn = _knowledge_graph_conn()
     try:
@@ -8114,6 +8291,28 @@ async def get_knowledge_graph(
     limit: int = 80,
 ):
     _require_token(request)
+
+    # HTTP mode: graph reads are served by the service.  Forward the same query
+    # parameters and clamp them exactly like the local branch.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.graph(
+                focus_kind=focus_kind,
+                focus_id=focus_id,
+                depth=depth,
+                limit=max(1, min(limit, 120)),
+            )
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     graph_module = _knowledge_custom_module("agents.knowledge_graph", "Knowledge graph service")
     conn = _knowledge_graph_conn()
     try:

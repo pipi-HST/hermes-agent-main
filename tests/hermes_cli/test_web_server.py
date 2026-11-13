@@ -95,6 +95,42 @@ class _FakeKnowledgeServiceClient:
     def delete_reading_draft(self, draft_id):
         return self._respond("delete_reading_draft", draft_id)
 
+    def list_library_items(self, **query):
+        return self._respond("list_library_items", **query)
+
+    def get_library_item(self, kind, item_id):
+        return self._respond("get_library_item", kind, item_id)
+
+    def create_garden_draft(self, *, capture_ids=None, title="", card_kind="", instruction=""):
+        return self._respond(
+            "create_garden_draft",
+            capture_ids=capture_ids,
+            title=title,
+            card_kind=card_kind,
+            instruction=instruction,
+        )
+
+    def list_garden_cards(self, *, limit=100, status=""):
+        return self._respond("list_garden_cards", limit=limit, status=status)
+
+    def delete_garden_card(self, card_id):
+        return self._respond("delete_garden_card", card_id)
+
+    def graph(self, *, focus_kind="", focus_id="", depth=1, limit=80):
+        return self._respond(
+            "graph",
+            focus_kind=focus_kind,
+            focus_id=focus_id,
+            depth=depth,
+            limit=limit,
+        )
+
+    def refresh_graph(self):
+        return self._respond("refresh_graph")
+
+    def create_answer_draft(self, payload):
+        return self._respond("create_answer_draft", payload)
+
     def update_capture(self, capture_id, *, body="", title="", folder_path=None):
         if self.error is not None:
             raise self.error
@@ -2517,6 +2553,275 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert fake.closed is True
 
+    # ── HTTP-mode delegation: library reads / garden / cards / graph ────────
+
+    def test_library_items_read_delegates_and_matches_local_shape(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "list_library_items": {
+                    "items": [{"id": "cap-1", "kind": "capture"}],
+                    "total": 1,
+                    "counts": {"capture": 1, "capture_draft": 0, "all": 1},
+                }
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.get(
+            "/api/knowledge/library/items",
+            params={"folder": "AI 产品", "search": "日报", "limit": 50},
+        )
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        # Same top-level shape as the local branch; the contract-only "counts"
+        # block is not part of the dashboard response.
+        assert set(payload) == {"items", "total"}
+        assert payload["items"] == [{"id": "cap-1", "kind": "capture"}]
+        assert payload["total"] == 1
+        call = fake.calls[0]
+        assert call["method"] == "list_library_items"
+        assert call["kwargs"] == {
+            "folder": "AI 产品",
+            "view": "",
+            "search": "日报",
+            "limit": 50,
+        }
+        assert fake.closed is True
+
+    def test_library_item_detail_delegates_and_matches_local_shape(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "get_library_item": {"ok": True, "item": {"id": "cap-1", "title": "T"}}
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.get("/api/knowledge/library/items/capture/cap-1")
+
+        assert resp.status_code == 200
+        assert set(resp.json()) == {"item"}
+        assert resp.json()["item"]["title"] == "T"
+        call = fake.calls[0]
+        assert call["method"] == "get_library_item"
+        assert call["args"] == ("capture", "cap-1")
+        assert fake.closed is True
+
+    def test_garden_draft_create_delegates_envelope(self, monkeypatch):
+        envelope = {
+            "status": "ok",
+            "agent": "garden",
+            "intent": "garden.synthesize",
+            "chat_preview": "已生成卡片",
+            "durable_artifacts": [{"type": "garden_card", "id": "k1"}],
+            "meta": {},
+        }
+        fake = _FakeKnowledgeServiceClient(responses={"create_garden_draft": envelope})
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post(
+            "/api/knowledge/garden-drafts",
+            json={
+                "capture_ids": ["cap-1"],
+                "title": "T",
+                "card_kind": "viewpoint",
+                "instruction": "I",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == envelope
+        call = fake.calls[0]
+        assert call["method"] == "create_garden_draft"
+        assert call["kwargs"] == {
+            "capture_ids": ["cap-1"],
+            "title": "T",
+            "card_kind": "viewpoint",
+            "instruction": "I",
+        }
+        assert fake.closed is True
+
+    def test_cards_read_delegates_and_rebuilds_local_shape(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "list_garden_cards": {
+                    "items": [
+                        {"id": "k1", "kind": "viewpoint"},
+                        {"id": "k2", "kind": "method"},
+                        {"id": "k3", "kind": "viewpoint"},
+                    ],
+                    "total": 3,
+                }
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.get("/api/knowledge/cards", params={"limit": 500})
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        # Same top-level shape as the local branch: {"cards", "groups", "total"}.
+        assert set(payload) == {"cards", "groups", "total"}
+        assert len(payload["cards"]) == 3
+        assert payload["groups"] == {
+            "viewpoint": 2,
+            "method": 1,
+            "fact": 0,
+            "risk": 0,
+        }
+        assert payload["total"] == 3
+        call = fake.calls[0]
+        assert call["method"] == "list_garden_cards"
+        # Local branch clamps the limit to 300 before reading.
+        assert call["kwargs"] == {"limit": 300, "status": ""}
+        assert fake.closed is True
+
+    def test_card_delete_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "delete_garden_card": {"ok": True, "status": "deleted", "id": "k1"}
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.delete("/api/knowledge/cards/k1")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "status": "deleted", "id": "k1"}
+        assert fake.calls[0]["method"] == "delete_garden_card"
+        assert fake.calls[0]["args"] == ("k1",)
+        assert fake.closed is True
+
+    def test_graph_read_delegates_with_query_parameters(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={"graph": {"nodes": [{"id": "n1"}], "edges": []}}
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.get(
+            "/api/knowledge/graph",
+            params={
+                "focus_kind": "capture",
+                "focus_id": "cap-1",
+                "depth": 2,
+                "limit": 500,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"nodes": [{"id": "n1"}], "edges": []}
+        call = fake.calls[0]
+        assert call["method"] == "graph"
+        # Query parameters pass through; the local branch clamps limit to 120.
+        assert call["kwargs"] == {
+            "focus_kind": "capture",
+            "focus_id": "cap-1",
+            "depth": 2,
+            "limit": 120,
+        }
+        assert fake.closed is True
+
+    def test_graph_refresh_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={"refresh_graph": {"ok": True, "nodes": 4, "edges": 6}}
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post("/api/knowledge/graph/refresh")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "nodes": 4, "edges": 6}
+        assert fake.calls[0]["method"] == "refresh_graph"
+        assert fake.closed is True
+
+    def test_answer_draft_delegates_and_keeps_envelope(self, monkeypatch):
+        envelope = {
+            "status": "ok",
+            "agent": "answer",
+            "intent": "answer.create_draft",
+            "chat_preview": "已保存",
+            "durable_artifacts": [],
+            "meta": {"draft_id": "r1"},
+        }
+        fake = _FakeKnowledgeServiceClient(responses={"create_answer_draft": envelope})
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post(
+            "/api/knowledge/answer-drafts",
+            json={
+                "assistant_answer": "answer",
+                "user_message": "question",
+                "output_type": "viewpoint",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == envelope
+        call = fake.calls[0]
+        assert call["method"] == "create_answer_draft"
+        payload = call["args"][0]
+        assert payload["assistant_answer"] == "answer"
+        assert payload["user_message"] == "question"
+        assert payload["output_type"] == "viewpoint"
+        assert fake.closed is True
+
+    def test_library_read_error_mapping(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        cases = [
+            (knowledge_client.KnowledgeNotFound("gone", status_code=404), 404),
+            (knowledge_client.KnowledgeUnavailable("down"), 502),
+        ]
+        for error, expected in cases:
+            fake = _FakeKnowledgeServiceClient(error=error)
+            self._patch_knowledge_client(monkeypatch, fake)
+
+            resp = self.client.get("/api/knowledge/library/items")
+
+            assert resp.status_code == expected, (type(error).__name__, resp.status_code)
+            assert fake.closed is True
+
+    def test_garden_draft_error_mapping(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        cases = [
+            (knowledge_client.KnowledgeConflict("busy", status_code=409), 409),
+            (knowledge_client.KnowledgeIncompatible("v0 < v1"), 503),
+        ]
+        for error, expected in cases:
+            fake = _FakeKnowledgeServiceClient(error=error)
+            self._patch_knowledge_client(monkeypatch, fake)
+
+            resp = self.client.post(
+                "/api/knowledge/garden-drafts", json={"capture_ids": ["cap-1"]}
+            )
+
+            assert resp.status_code == expected, (type(error).__name__, resp.status_code)
+            assert fake.closed is True
+
+    def test_http_mode_library_read_never_touches_local_modules(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        fake = _FakeKnowledgeServiceClient(
+            responses={"list_library_items": {"items": [], "total": 0}}
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        def _boom(*args, **kwargs):
+            raise AssertionError(
+                "local knowledge checkout must not be touched in HTTP mode"
+            )
+
+        monkeypatch.setattr(web_server, "_knowledge_custom_module", _boom)
+        monkeypatch.setattr(web_server, "_knowledge_conn", _boom)
+        monkeypatch.setattr(web_server, "_knowledge_vault_path", _boom)
+
+        resp = self.client.get("/api/knowledge/library/items")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"items": [], "total": 0}
+        assert fake.closed is True
+
     def test_automation_boundaries_degrades_without_knowledge_config(self, monkeypatch):
         """An unconfigured Knowledge feature must not 503 the whole inventory."""
         import hermes_cli.web_server as web_server
@@ -3012,6 +3317,56 @@ class TestWebServerEndpoints:
         assert response.status_code == 200
         assert response.json()["meta"]["reading_draft_id"] == "draft1"
         assert called["assistant_answer"] == "因为它可复用。"
+
+    def test_local_commit_routes_pass_token_verified(self, monkeypatch):
+        """Local mode: the dashboard click is the confirmation.
+
+        The confirmation gate no longer trusts a ``confirmation_source`` string,
+        so the dashboard's own commit routes must tell the bridge that the
+        request was already confirmed (``token_verified=True``) or every commit
+        would fail with a "please confirm" error envelope.
+        """
+        import types
+        import hermes_cli.web_server as web_server
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        monkeypatch.setattr(knowledge_client, "get_client", lambda transport=None: None)
+
+        calls: dict[str, dict] = {}
+
+        def record(name):
+            def _call(*args, **kwargs):
+                calls[name] = {"args": args, **kwargs}
+                return {"status": "ok", "intent": name}
+
+            return _call
+
+        fake_capture = types.ModuleType("bridge.capture_bridge")
+        fake_capture.commit_capture_draft = record("commit_capture_draft")
+        fake_reading = types.ModuleType("bridge.reading_bridge")
+        fake_reading.commit_reading_artifact = record("commit_reading_artifact")
+        fake_garden = types.ModuleType("bridge.garden_bridge")
+        fake_garden.commit_garden_draft = record("commit_garden_draft")
+
+        def fake_custom_module(module_name, label):
+            mapping = {
+                "bridge.capture_bridge": fake_capture,
+                "bridge.reading_bridge": fake_reading,
+                "bridge.garden_bridge": fake_garden,
+            }
+            if module_name not in mapping:
+                raise AssertionError((module_name, label))
+            return mapping[module_name]
+
+        monkeypatch.setattr(web_server, "_knowledge_custom_module", fake_custom_module)
+
+        assert self.client.post("/api/knowledge/capture-drafts/draft-1/commit").status_code == 200
+        assert self.client.post("/api/knowledge/reading-drafts/draft-1/commit").status_code == 200
+
+        assert calls["commit_capture_draft"]["token_verified"] is True
+        assert calls["commit_capture_draft"]["args"] == ("draft-1",)
+        assert calls["commit_reading_artifact"]["token_verified"] is True
+        assert calls["commit_reading_artifact"]["draft_id"] == "draft-1"
 
     def test_get_knowledge_reading_draft_returns_full_text(self, monkeypatch, tmp_path):
         import sqlite3
