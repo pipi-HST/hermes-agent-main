@@ -337,14 +337,16 @@ def test_direct_reply_includes_file_artifact_media_for_weixin():
         "Return USER_VISIBLE_REPLY as-is as the chat response."
     )
 
-    assert (
-        direct_reply_from_tool_result_content(
-            "search_my_notes",
-            content,
-            platform="weixin",
-        )
-        == "MEDIA:/tmp/rag.md"
+    # The adapter keeps the user-visible reply and appends the MEDIA line; the
+    # old expectation dropped the text entirely, which lost the confirmation
+    # message whenever a file artifact was attached.
+    reply = direct_reply_from_tool_result_content(
+        "search_my_notes",
+        content,
+        platform="weixin",
     )
+    assert "已生成完整报告。" in reply
+    assert "MEDIA:/tmp/rag.md" in reply
 
 
 def test_direct_reply_suppresses_mirrored_send_message_confirmation_for_weixin():
