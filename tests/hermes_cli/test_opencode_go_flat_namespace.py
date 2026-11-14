@@ -126,9 +126,29 @@ def _run_switch(raw_input: str, **extra):
         # For other providers, return empty so tests don't depend on them.
         return []
 
-    with patch(
-        "hermes_cli.model_switch.list_provider_models",
-        side_effect=fake_list_provider_models,
+    def fake_validate_requested_model(model, provider, **_kwargs):
+        # Catalog validation is network-backed and auto-corrects to whatever
+        # the provider currently calls "latest" (e.g. deepseek-v4.1-flash).
+        # These tests are about provider routing, so accept the requested ID
+        # as-is and stay hermetic.
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": "",
+            "corrected_model": "",
+        }
+
+    with (
+        patch(
+            "hermes_cli.model_switch.list_provider_models",
+            side_effect=fake_list_provider_models,
+        ),
+        patch(
+            # switch_model imports this lazily from hermes_cli.models.
+            "hermes_cli.models.validate_requested_model",
+            side_effect=fake_validate_requested_model,
+        ),
     ):
         return switch_model(raw_input=raw_input, **defaults)
 

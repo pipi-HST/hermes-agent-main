@@ -78,7 +78,10 @@ class TestDashboardStatus:
 
 
 class TestDashboardStop:
-    def test_stop_when_nothing_running(self, capsys):
+    def test_stop_when_nothing_running(self, capsys, monkeypatch):
+        # The launchd teardown only runs on macOS; pretend to be there so the
+        # flag-dispatch path (not the host platform) is what gets exercised.
+        monkeypatch.setattr(sys, "platform", "darwin")
         with patch(
             "hermes_cli.dashboard_service.get_dashboard_launchd_status",
             return_value=MagicMock(installed=False),
@@ -92,8 +95,11 @@ class TestDashboardStop:
         out = capsys.readouterr().out
         assert "No hermes dashboard processes running" in out
 
-    def test_stop_kills_and_exits_zero_when_all_killed(self, capsys):
+    def test_stop_kills_and_exits_zero_when_all_killed(self, capsys, monkeypatch):
         """After the kill, if the second scan returns empty we exit 0."""
+        # Managed-service mode is macOS-only; force it so the restart hint
+        # logic is covered on every platform.
+        monkeypatch.setattr(sys, "platform", "darwin")
         # First scan: finds two processes.  Second (verification) scan: empty.
         scans = iter([[12345, 12346], []])
         with patch(

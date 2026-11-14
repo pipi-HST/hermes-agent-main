@@ -5184,12 +5184,17 @@ async def post_knowledge_ai_operation_cancel(request: Request, operation_id: str
 
 
 def _knowledge_db_path() -> Path:
-    return Path(
-        os.environ.get(
-            "HERMES_KNOWLEDGE_DB",
-            str(_knowledge_custom_root() / "data" / "captures.db"),
-        )
-    ).expanduser()
+    """Path to the knowledge SQLite DB.
+
+    ``HERMES_KNOWLEDGE_DB`` must win without touching ``_knowledge_custom_root``:
+    the old form passed the checkout-derived default as a function argument,
+    which Python evaluates eagerly, so setting the env var still raised the
+    fail-closed 503 when no checkout was configured.
+    """
+    configured = (os.environ.get("HERMES_KNOWLEDGE_DB") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return _knowledge_custom_root() / "data" / "captures.db"
 
 
 def _knowledge_vault_path() -> Path:

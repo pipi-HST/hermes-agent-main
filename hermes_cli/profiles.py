@@ -728,7 +728,14 @@ def create_profile(
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                shutil.copytree(
+                    source_skills,
+                    profile_dir / "skills",
+                    dirs_exist_ok=True,
+                    # Never clone bytecode caches: they are regenerable and on
+                    # Windows a locked __pycache__ makes profile deletion fail.
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+                )
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
@@ -822,6 +829,46 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
         return None
 
 
+def _rmtree_force(path: Path, *, attempts: int = 3) -> None:
+    """Remove a profile directory even when files are read-only or briefly locked.
+
+    On Windows a plain ``shutil.rmtree`` fails with ``WinError 145`` when a
+    child directory (typically ``__pycache__``) is still held by a running
+    process, and with ``PermissionError`` for read-only files created by a
+    copied checkout.  Profile deletion used to swallow that error and leave the
+    directory behind while reporting success; clear the read-only bit, retry a
+    few times and only then give up.
+    """
+    import time
+
+    def _clear_readonly(func, target, exc_info):
+        # Re-raise after the chmod attempt: shutil treats a returning onerror as
+        # "handled" and would leave the file/dir behind while reporting success.
+        os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+        func(target)
+
+    last_error: OSError | None = None
+    # Windows: bundled skills contain deeply nested schema files that exceed
+    # MAX_PATH, and rmdir fails with WinError 145 unless the \\?\ prefix is used.
+    target = str(path)
+    if sys.platform.startswith("win"):
+        resolved = str(path.resolve())
+        if not resolved.startswith("\\\\?\\"):
+            target = "\\\\?\\" + resolved
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(target, onerror=_clear_readonly)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.2 * (attempt + 1))
+    if last_error is not None:
+        raise last_error
+
+
 def delete_profile(name: str, yes: bool = False) -> Path:
     """Delete a profile, its wrapper script, and its gateway service.
 
@@ -902,7 +949,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # 4. Remove profile directory
     try:
-        shutil.rmtree(profile_dir)
+        _rmtree_force(profile_dir)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")

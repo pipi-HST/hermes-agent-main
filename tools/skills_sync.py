@@ -32,6 +32,11 @@ from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
+# Never copy bytecode caches into a profile: they are regenerable and a
+# locked __pycache__ breaks profile deletion on Windows.
+_SKILL_COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
+
+
 
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
@@ -141,8 +146,12 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
         return skills
 
     for skill_md in bundled_dir.rglob("SKILL.md"):
-        path_str = str(skill_md)
-        if "/.git/" in path_str or "/.github/" in path_str or "/.hub/" in path_str:
+        # Skip hidden segments (.git, .github, .hub, ...) on every platform:
+        # matching "/.git/" against str(path) silently failed on Windows where
+        # the separator is "\", so a nested .git/hooks/SKILL.md was treated as
+        # a bundled skill.
+        relative_parts = skill_md.relative_to(bundled_dir).parts
+        if any(part.startswith(".") for part in relative_parts):
             continue
         skill_dir = skill_md.parent
         skill_name = _read_skill_name(skill_md, skill_dir.name)
@@ -228,7 +237,7 @@ def sync_skills(quiet: bool = False) -> dict:
                         )
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copytree(skill_src, dest)
+                    shutil.copytree(skill_src, dest, ignore=_SKILL_COPY_IGNORE)
                     copied.append(skill_name)
                     manifest[skill_name] = bundled_hash
                     if not quiet:
@@ -268,7 +277,7 @@ def sync_skills(quiet: bool = False) -> dict:
                     backup = dest.with_suffix(".bak")
                     shutil.move(str(dest), str(backup))
                     try:
-                        shutil.copytree(skill_src, dest)
+                        shutil.copytree(skill_src, dest, ignore=_SKILL_COPY_IGNORE)
                         manifest[skill_name] = bundled_hash
                         updated.append(skill_name)
                         if not quiet:

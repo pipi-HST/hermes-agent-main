@@ -170,7 +170,9 @@ class TestComputeRelativeDest:
         bundled = Path("/repo/skills")
         skill_dir = Path("/repo/skills/mlops/axolotl")
         dest = _compute_relative_dest(skill_dir, bundled)
-        assert str(dest).endswith("mlops/axolotl")
+        # Platform-agnostic: compare path segments, not the rendered string
+        # (Windows joins with "\").
+        assert dest.parts[-2:] == ("mlops", "axolotl")
 
     def test_flat_skill(self):
         bundled = Path("/repo/skills")

@@ -315,15 +315,19 @@ class TestWebServerEndpoints:
 
         assert ws._discover_dashboard_plugins() == []
 
-    def test_knowledge_file_url_uses_percent_encoded_spaces(self):
+    def test_knowledge_file_url_uses_percent_encoded_spaces(self, tmp_path):
         import hermes_cli.web_server as ws
 
+        root = tmp_path / "Hermes" / "knowledge"
+        root.mkdir(parents=True)
         url = ws._knowledge_file_url(
-            Path("/Users/pipi/Hermes/knowledge"),
+            root,
             "captures/Subagent 的三岔路-2026-06-17-6de5161b.md",
         )
 
-        assert url.startswith("file:///Users/pipi/Hermes/knowledge/captures/")
+        # Platform independent: the vault URI prefix comes from the resolved
+        # temp path (the old assertion hard-coded the macOS home directory).
+        assert url.startswith(root.resolve().as_uri() + "/captures/")
         assert "%E7%9A%84" in url
         assert "+" not in url
 
@@ -352,25 +356,34 @@ class TestWebServerEndpoints:
         )
         conn.commit()
         conn.close()
-        calls: list[list[str]] = []
 
         monkeypatch.setenv("HERMES_KNOWLEDGE_DB", str(db_path))
         monkeypatch.setattr(ws, "_knowledge_vault_path", lambda: vault)
-        monkeypatch.setattr(ws.subprocess, "Popen", lambda cmd, **_kwargs: calls.append(cmd))
+        opened: list[list[str]] = []
+
+        def fake_startfile(path, *args, **kwargs):
+            opened.append(["startfile", str(path)])
+
+        if sys.platform.startswith("win"):
+            # Windows opens through os.startfile (no cmd.exe parsing).
+            monkeypatch.setattr(ws.os, "startfile", fake_startfile, raising=False)
+            expected_cmd = ["startfile", str(target.resolve())]
+        else:
+            monkeypatch.setattr(
+                ws.subprocess, "Popen", lambda cmd, **_kwargs: opened.append(cmd)
+            )
+            if sys.platform == "darwin":
+                expected_cmd = ["open", str(target.resolve())]
+            elif sys.platform.startswith("linux"):
+                expected_cmd = ["xdg-open", str(target.resolve())]
+            else:
+                expected_cmd = []
 
         response = self.client.post("/api/knowledge/library/items/capture/cap-1/open-local")
 
         assert response.status_code == 200
         assert response.json() == {"ok": True, "path": str(target.resolve())}
-        if sys.platform == "darwin":
-            expected_cmd = ["open", str(target.resolve())]
-        elif sys.platform.startswith("linux"):
-            expected_cmd = ["xdg-open", str(target.resolve())]
-        elif sys.platform.startswith("win"):
-            expected_cmd = ["cmd", "/c", "start", "", str(target.resolve())]
-        else:
-            expected_cmd = []
-        assert calls == [expected_cmd]
+        assert opened == [expected_cmd]
 
     @pytest.mark.parametrize(
         ("kind", "file_path", "expected_status"),
@@ -3398,7 +3411,10 @@ class TestWebServerEndpoints:
         conn.commit()
         conn.close()
 
+        vault = tmp_path / "vault"
+        vault.mkdir()
         monkeypatch.setattr(web_server, "_knowledge_db_path", lambda: db_path)
+        monkeypatch.setattr(web_server, "_knowledge_vault_path", lambda: vault)
 
         response = self.client.get("/api/knowledge/reading-drafts/draft1")
 
@@ -3441,7 +3457,10 @@ class TestWebServerEndpoints:
         conn.commit()
         conn.close()
 
+        vault = tmp_path / "vault"
+        vault.mkdir()
         monkeypatch.setattr(web_server, "_knowledge_db_path", lambda: db_path)
+        monkeypatch.setattr(web_server, "_knowledge_vault_path", lambda: vault)
 
         response = self.client.get("/api/knowledge/reading-drafts")
 
