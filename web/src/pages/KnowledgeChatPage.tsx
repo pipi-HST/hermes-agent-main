@@ -266,6 +266,8 @@ export default function KnowledgeChatPage() {
   const [editableStatus, setEditableStatus] = useState<EditableCaptureStatus>("empty");
   const [editableError, setEditableError] = useState("");
   const [libraryFolders, setLibraryFolders] = useState<KnowledgeLibraryFolder[]>([]);
+  // The developer inspector (tool calls / object events) is closed by default so
+  // the page reads as a user-facing topic studio. The top-bar toggle still opens it.
   const [showInspector, setShowInspector] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     readStoredWidth(CHAT_SIDEBAR_WIDTH_KEY, DEFAULT_CHAT_SIDEBAR_WIDTH),
@@ -1789,7 +1791,7 @@ export default function KnowledgeChatPage() {
       ? "检查这份回答沉淀草稿，满意后点确认保存；不满意可以回到对话继续追问..."
       : mode === "draft_review"
       ? "写修改意见，比如：把方法论部分展开、保留更多原文例子、删掉模板化表达..."
-      : "直接问知识库、上传文件、粘贴材料，或者让 Hermes 整理主题关联...";
+      : "直接问知识库，或让 Hermes 做跨篇灵感扫描与专题输出；也可以上传文件、粘贴材料...";
 
   const openGatewaySource = useCallback((source: {
     url?: string;
@@ -1813,10 +1815,15 @@ export default function KnowledgeChatPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 text-foreground">
-      <header className="flex h-[52px] shrink-0 items-center justify-between gap-3 rounded-lg border border-border bg-background px-4">
-        <h1 className="min-w-0 truncate text-base font-semibold tracking-normal text-foreground">
-          满血对话
-        </h1>
+      <header className="flex min-h-[52px] shrink-0 items-center justify-between gap-3 rounded-lg border border-border bg-background px-4 py-1.5">
+        <div className="min-w-0">
+          <h1 className="min-w-0 truncate text-base font-semibold tracking-normal text-foreground">
+            专题洞察与输出专区 (Topics & Output Studio)
+          </h1>
+          <p className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">
+            跨篇灵感发现 · RAG 知识合成输出 · 文稿沉淀：把散落的卡片与资料，合成属于你的专题成果。
+          </p>
+        </div>
         <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs">
             <StatusPill
               icon={state.connection === "open" ? CheckCircle2 : Clock3}

@@ -5,12 +5,15 @@ export interface KnowledgeAnswerSource extends MarkdownSource {
   domain?: string;
 }
 
+const MODEL_SUPPLEMENT_MARKER = "💡 延伸补充（模型通识）：";
+
 export function KnowledgeAnswerView({
   content,
   onSourceOpen,
   onSourceOpenLocal,
   sources,
   streaming,
+  searchBackend,
 }: {
   content: string;
   onSourceOpen?: (source: KnowledgeAnswerSource) => void;
@@ -20,6 +23,8 @@ export function KnowledgeAnswerView({
     web?: KnowledgeAnswerSource[];
   };
   streaming?: boolean;
+  /** "deepseek" | "fallback" | "unknown" — surfaced when the search degraded. */
+  searchBackend?: string;
 }) {
   const knowledge = [
     ...(sources?.knowledge ?? []),
@@ -28,15 +33,40 @@ export function KnowledgeAnswerView({
   const web = (sources?.web ?? []).filter((source) => !isKnowledgeAnswerSource(source));
   const presentation = buildSourcePresentation(content, knowledge, web);
   const citationSources = [...presentation.knowledge, ...presentation.web];
+  const blocks = splitModelSupplementBlocks(
+    stripTrailingReferenceSection(presentation.content),
+  );
+  const degraded =
+    Boolean(searchBackend) && searchBackend !== "deepseek" && searchBackend !== "unknown";
 
   return (
     <>
-      <Markdown
-        content={stripTrailingReferenceSection(presentation.content)}
-        onSourceOpen={(source) => openKnowledgeSource(source, onSourceOpen)}
-        sources={citationSources}
-        streaming={streaming}
-      />
+      {blocks.map((block, index) =>
+        block.supplement ? (
+          <div
+            key={`supplement-${index}`}
+            className="my-3 rounded-lg border border-amber-300/60 bg-amber-50/60 px-3 py-2 dark:border-amber-500/30 dark:bg-amber-950/20"
+          >
+            <div className="mb-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+              💡 延伸补充（模型通识）
+            </div>
+            <Markdown content={block.text} sources={citationSources} streaming={streaming} />
+          </div>
+        ) : (
+          <Markdown
+            key={`body-${index}`}
+            content={block.text}
+            onSourceOpen={(source) => openKnowledgeSource(source, onSourceOpen)}
+            sources={citationSources}
+            streaming={streaming}
+          />
+        ),
+      )}
+      {degraded ? (
+        <div className="mt-2 text-xs text-warning">
+          当前使用备用搜索源（{searchBackend}），联网结果的可信度与 DeepSeek 原生搜索不同。
+        </div>
+      ) : null}
       {!streaming ? (
         <KnowledgeSourceList
           content={presentation.content}
@@ -47,6 +77,24 @@ export function KnowledgeAnswerView({
       ) : null}
     </>
   );
+}
+
+function splitModelSupplementBlocks(
+  content: string,
+): { text: string; supplement: boolean }[] {
+  return content
+    .split(/\n{2,}/)
+    .map((paragraph) => {
+      const trimmed = paragraph.trimStart();
+      if (!trimmed.startsWith(MODEL_SUPPLEMENT_MARKER)) {
+        return { text: paragraph, supplement: false };
+      }
+      return {
+        text: trimmed.slice(MODEL_SUPPLEMENT_MARKER.length).trimStart(),
+        supplement: true,
+      };
+    })
+    .filter((block) => block.text.trim().length > 0);
 }
 
 function KnowledgeSourceList({
@@ -148,6 +196,9 @@ function SourceLink({
 }) {
   const label = source.title || source.id || source.url || "未命名来源";
   const isKnowledge = isKnowledgeAnswerSource(source);
+  const badge = sourceBadge(source);
+  const badgeClass =
+    "rounded border border-border/70 bg-background/70 px-1 py-0 text-[0.65rem] font-normal text-muted-foreground no-underline";
   const suffix = source.section
     ? ` / ${source.section}`
     : source.url && !isKnowledge
@@ -162,6 +213,7 @@ function SourceLink({
         className="inline-flex items-center gap-1 text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary/60"
       >
         <ExternalLink className="h-3 w-3" />
+        <span className={badgeClass}>{badge}</span>
         [{source.ref || fallbackRef}] {label}{suffix}
       </a>
     );
@@ -171,10 +223,18 @@ function SourceLink({
   const canOpen = canOpenKnowledgeSource(source, onSourceOpen);
   const canOpenLocal = canOpenKnowledgeSourceLocal(source, onSourceOpenLocal);
   const fileUrl = source.file_url || "";
-  if (!canOpen && !canOpenLocal && !fileUrl) return <span>{text}</span>;
+  if (!canOpen && !canOpenLocal && !fileUrl) {
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1.5">
+        <span className={badgeClass}>{badge}</span>
+        <span>{text}</span>
+      </span>
+    );
+  }
 
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
+      <span className={badgeClass}>{badge}</span>
       {canOpen ? (
         <button
           type="button"
@@ -262,8 +322,8 @@ function orderedGroups(
   citedRefs: string[],
 ): Array<{ label: string; sources: KnowledgeAnswerSource[] }> {
   const groups = [
-    { label: "知识库来源", sources: knowledge, fallbackOrder: 0 },
-    { label: "联网来源", sources: web, fallbackOrder: 1 },
+    { label: "📚 个人知识库（卡片与资料）", sources: knowledge, fallbackOrder: 0 },
+    { label: "🌐 DeepSeek 联网来源", sources: web, fallbackOrder: 1 },
   ].filter((group) => group.sources.length);
   if (!citedRefs.length) return groups;
   const order = new Map(citedRefs.map((ref, index) => [ref, index]));
@@ -363,6 +423,22 @@ function isKnowledgeAnswerSource(source: KnowledgeAnswerSource): boolean {
     type === "capture_draft" ||
     ref.startsWith("K") ||
     /^\d+$/.test(ref),
+  );
+}
+
+function sourceBadge(source: KnowledgeAnswerSource): string {
+  if (!isKnowledgeAnswerSource(source)) return "🌐 网页";
+  if (isKnowledgeCardSource(source)) return "🗂️ 卡片";
+  return "📄 资料";
+}
+
+function isKnowledgeCardSource(source: KnowledgeAnswerSource): boolean {
+  const type = (source.type || "").toLowerCase();
+  return Boolean(
+    type === "knowledge_card" ||
+    type === "garden_card" ||
+    source.item_kind === "garden_card" ||
+    (source.title && source.title.includes("【知识卡片】")),
   );
 }
 

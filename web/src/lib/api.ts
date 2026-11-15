@@ -1253,6 +1253,9 @@ export interface KnowledgeCard {
   source_theme: string;
   sources: KnowledgeSource[];
   source_count: number;
+  /** How many times an answer actually cited this card with [n]. */
+  citation_count?: number;
+  last_cited_at?: string;
   schema_version?: string;
   payload?: KnowledgeCardPayload;
   core_arguments?: Array<Record<string, unknown> | string>;

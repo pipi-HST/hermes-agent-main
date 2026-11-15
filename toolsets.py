@@ -491,7 +491,27 @@ TOOLSETS = {
     },
 
     "personal-assistant": {
-        "description": "Personal AI Assistant - Supervisor mode, 8 routing tools",
+        "description": "Personal AI Assistant - Supervisor mode, 14 core knowledge lifecycle tools",
+        "tools": [
+            # 1. 伴读解惑与整理闭环 (3)
+            "start_reading_session", "discuss_reading", "summarize_reading_session",
+            # 2. 好文收集与入库闭环 (3)
+            "capture_content", "commit_capture_draft", "refine_capture",
+            # 3. 卡片沉淀与确认闭环 (4)
+            "save_answer_to_knowledge", "commit_reading_artifact",
+            "synthesize_garden", "commit_garden_draft",
+            # 4. 专题检索、灵感扫描与消息推送闭环 (4)
+            "search_my_notes", "continue_rag_answer",
+            "theme_scan", "send_message",
+        ],
+        "includes": [],
+    },
+
+    # Frozen pre-convergence surface (23 tools) kept only so historical scripts
+    # and tests that pin the old exposure keep working.  Never route new work
+    # through this entry.
+    "personal-assistant-legacy": {
+        "description": "Legacy Supervisor toolset (23 tools) - compatibility only",
         "tools": [
             "capture_content", "revise_capture_draft", "commit_capture_draft",
             "show_capture_draft", "refine_capture", "search_my_notes",

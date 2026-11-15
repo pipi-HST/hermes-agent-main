@@ -70,11 +70,13 @@ test("真实浏览器提交的文章可展示目录并被纯知识库 RAG 引用
     return rect.top >= 0 && rect.top <= window.innerHeight;
   }, targetId)).toBe(true);
 
-  await page.getByRole("link", { name: "工作台" }).click();
+  await page.getByRole("link", { name: "专题输出" }).click();
   await expect(page.getByText("已连接", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
-  const localOnlyButton = page.getByRole("button", { name: "仅知识库" });
-  await localOnlyButton.click();
-  await expect(localOnlyButton).toHaveClass(/bg-primary/);
+  const webToggle = page.getByRole("button", { name: /联网搜索/ });
+  await expect(webToggle).toHaveAttribute("aria-pressed", "true");
+  await webToggle.click();
+  await expect(webToggle).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByText("📚 默认检索个人知识库（卡片 + 资料）")).toBeVisible();
   await expect(page.getByText(/gateway not connected/)).toHaveCount(0);
 
   const composer = page.getByRole("textbox", { name: /直接问知识库/ });
@@ -85,8 +87,8 @@ test("真实浏览器提交的文章可展示目录并被纯知识库 RAG 引用
   await expect(sourceSummary).toBeVisible({ timeout: 120_000 });
   await sourceSummary.click();
   const sourceDetails = sourceSummary.locator("xpath=..");
-  await expect(sourceDetails.getByText("知识库来源", { exact: true })).toBeVisible();
-  await expect(sourceDetails.getByText("联网来源", { exact: true })).toHaveCount(0);
+  await expect(sourceDetails.getByText("📚 个人知识库（卡片与资料）", { exact: true })).toBeVisible();
+  await expect(sourceDetails.getByText("🌐 DeepSeek 联网来源", { exact: true })).toHaveCount(0);
   const knowledgeSource = sourceDetails.getByRole("button", {
     name: new RegExp(title),
   }).first();

@@ -187,6 +187,12 @@ const LIBRARY_NOT_FOUND_PATTERNS = [
   "Capture draft not found",
 ];
 
+const ARTICLE_AI_STARTERS: Array<{ label: string; prompt: string }> = [
+  { label: "总结核心结论", prompt: "请用三句话总结这篇资料的核心结论，并指出它回答了什么真问题。" },
+  { label: "讲懂不懂的段落", prompt: "请用通俗的语言讲懂这篇资料里最难理解的概念，并举一个实际例子。" },
+  { label: "提炼 3 张卡片", prompt: "请把这篇资料提炼成 3 张可复用的知识卡片，每张都说明适用场景与边界。" },
+];
+
 function isLibraryNotFoundError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return message.startsWith("404:") && LIBRARY_NOT_FOUND_PATTERNS.some((pattern) => message.includes(pattern));
@@ -1772,8 +1778,18 @@ export default function KnowledgeLibraryPage() {
           onExit={() => setReadingFullscreen(false)}
         />
       ) : null}
-      <header className="flex h-[52px] shrink-0 items-center justify-between rounded-lg border border-border bg-background px-4">
-        <h1 className="min-w-0 truncate text-base font-semibold tracking-normal">知识库</h1>
+      <header className="flex min-h-[52px] shrink-0 items-center justify-between gap-3 rounded-lg border border-border bg-background px-4 py-1.5">
+        <div className="min-w-0">
+          <h1 className="min-w-0 truncate text-base font-semibold tracking-normal">📄 资料伴读</h1>
+          <p className="mt-0.5 hidden truncate text-[11px] leading-4 text-muted-foreground sm:block">
+            左栏选资料/专题 → 中栏沉浸阅读与划词 → 右栏 AI 伴读解惑并一键提炼卡片
+          </p>
+          {detail?.folder_path ? (
+            <div className="mt-1 inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+              🧭 专题：{detail.folder_path}
+            </div>
+          ) : null}
+        </div>
         <div className="flex items-center gap-2">
           <div className="relative">
             <button
@@ -1885,7 +1901,7 @@ export default function KnowledgeLibraryPage() {
             <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
               <div className="shrink-0 border-b border-border p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <h2 className="text-sm font-semibold">知识库</h2>
+                  <h2 className="text-sm font-semibold">资料与专题</h2>
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
@@ -2154,7 +2170,7 @@ export default function KnowledgeLibraryPage() {
 	                  aiPanelOpen={aiPanelOpen}
 	                />
 	              ) : (
-	                <EmptyState text="从左侧文件夹或文件列表选择一个文件。" />
+	                <EmptyState text="从左栏选择一份资料或专题开始伴读。选中正文里的任意一段，右侧 AI 会结合上下文为你解惑，并可一键提炼成知识卡片。" />
 	              )}
 	            </section>
 	            {detail && workbenchMode === "browse" && aiPanelOpen && !allSidebarsCollapsed ? (
@@ -2178,6 +2194,7 @@ export default function KnowledgeLibraryPage() {
                       question={chatQuestion}
                       savingAnswerId={savingArticleAnswerId}
                       onAsk={() => void askArticleAi()}
+                      onAskPrompt={(prompt) => void askArticleAi({ question: prompt })}
                       onClose={() => setAiPanelMode("collapsed")}
                       onQuestionChange={setChatQuestion}
                       onResearchModeChange={setArticleResearchMode}
@@ -3304,6 +3321,7 @@ function ArticleAIPanel({
   question,
   savingAnswerId,
   onAsk,
+  onAskPrompt,
   onClose,
   onQuestionChange,
   onResearchModeChange,
@@ -3321,6 +3339,7 @@ function ArticleAIPanel({
   question: string;
   savingAnswerId: string;
   onAsk: () => void;
+  onAskPrompt: (prompt: string) => void;
   onClose: () => void;
   onQuestionChange: (value: string) => void;
   onResearchModeChange: (mode: KnowledgeResearchMode) => void;
@@ -3336,7 +3355,10 @@ function ArticleAIPanel({
       <div className="shrink-0 border-b border-border/70 px-3 py-2.5">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold" title={detail.title || "未命名文件"}>AI 对话</h2>
+            <h2 className="truncate text-sm font-semibold" title={detail.title || "未命名文件"}>AI 伴读</h2>
+            <p className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">
+              结合当前资料与知识库，解惑、追问、一键提炼卡片
+            </p>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <button
@@ -3401,7 +3423,22 @@ function ArticleAIPanel({
             ) : null}
           </div>
         ) : (
-          <EmptyState text="选中文章中的一段话，或直接输入问题。" />
+          <div className="space-y-2">
+            <EmptyState text="划选正文中的一段话，或直接输入问题；AI 会结合当前资料与知识库为你解惑。" />
+            <div className="flex flex-wrap gap-1.5">
+              {ARTICLE_AI_STARTERS.map((starter) => (
+                <button
+                  key={starter.label}
+                  type="button"
+                  disabled={loading}
+                  onClick={() => onAskPrompt(starter.prompt)}
+                  className="rounded-full border border-border bg-background/60 px-2.5 py-1 text-xs text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:opacity-45"
+                >
+                  {starter.label}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
       </div>
 
@@ -3471,11 +3508,6 @@ function CollapsedAIPanelRail({
     </aside>
   );
 }
-
-const ARTICLE_RESEARCH_MODES: Array<{ label: string; mode: KnowledgeResearchMode }> = [
-  { label: "直出", mode: "current_article_only" },
-  { label: "知识库+联网", mode: "local_web" },
-];
 
 function selectionChatHistory(messages: ArticleChatMessage[]): KnowledgeChatHistoryMessage[] {
   return successfulArticleChatPairs(messages)
@@ -3567,25 +3599,32 @@ function ResearchModeControl({
   mode: KnowledgeResearchMode;
   onChange: (mode: KnowledgeResearchMode) => void;
 }) {
+  const webEnabled = mode === "local_web" || mode === "web_only";
   return (
-    <div className="mt-2 flex min-w-0 items-center gap-1 overflow-x-auto border-t border-border/60 pt-2">
-      {ARTICLE_RESEARCH_MODES.map((item) => (
-        <button
-          key={item.mode}
-          type="button"
-          disabled={disabled}
-          onClick={() => onChange(item.mode)}
-          className={cn(
-            "shrink-0 rounded px-1.5 py-0.5 text-xs font-medium transition",
-            mode === item.mode
-              ? "bg-primary/10 text-foreground"
-              : "text-muted-foreground hover:text-foreground",
-            disabled && "opacity-45",
-          )}
-        >
-          {item.label}
-        </button>
-      ))}
+    <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/60 pt-2">
+      <button
+        type="button"
+        disabled={disabled}
+        aria-pressed={webEnabled}
+        onClick={() => onChange(webEnabled ? "current_article_only" : "local_web")}
+        title={
+          webEnabled
+            ? "关闭联网搜索，仅使用当前笔记与个人知识库"
+            : "开启 DeepSeek 联网搜索，与个人知识库联合解答"
+        }
+        className={cn(
+          "inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition",
+          webEnabled
+            ? "border-primary/50 bg-primary/15 font-medium text-primary"
+            : "border-border bg-background/80 text-muted-foreground hover:border-primary/40 hover:text-foreground",
+          disabled && "opacity-45",
+        )}
+      >
+        🌐 联网搜索{webEnabled ? " · 已开启" : ""}
+      </button>
+      <span className="min-w-0 truncate text-[11px] leading-5 text-muted-foreground">
+        {webEnabled ? "⚡ DeepSeek 联网搜索 + 个人知识库联合解答" : "📚 当前笔记 + 个人知识库"}
+      </span>
     </div>
   );
 }
@@ -4567,7 +4606,7 @@ function researchModeLabel(mode: KnowledgeResearchMode): string {
     case "local_only":
       return "知识库";
     case "local_web":
-      return "知识库+联网";
+      return "联网搜索 + 知识库";
     case "web_only":
       return "联网";
   }
@@ -4750,10 +4789,12 @@ function EmptyState({
     <div className="flex min-h-[260px] items-center justify-center px-4 text-center">
       <div className="max-w-sm">
         <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
-        <p className="mt-3 text-sm font-medium text-foreground">{text}</p>
-        <p className="mt-1 text-sm leading-6 text-muted-foreground">
-          可以从粘贴材料、空白文件或本地 Markdown 导入开始。
-        </p>
+        <p className="mt-3 text-sm font-medium leading-6 text-foreground">{text}</p>
+        {(onCreate || onImport) ? (
+          <p className="mt-1 text-sm leading-6 text-muted-foreground">
+            可以从粘贴材料、空白文件或本地 Markdown 导入开始。
+          </p>
+        ) : null}
         {(onCreate || onImport) ? (
           <div className="mt-4 flex flex-wrap justify-center gap-2">
             {onCreate ? (

@@ -44,32 +44,32 @@ const KIND_META: Record<
   }
 > = {
   viewpoint: {
-    label: "观点",
-    description: "判断、解释框架、可复用看法",
+    label: "洞察 / 金句",
+    description: "有启发的行业判断、核心结论与思考火花",
     icon: Sparkles,
     tone: "border-[#bdd7d2] bg-[#edf5f2] text-[#255f54]",
     active: "border-[#8fbbb2] bg-[#e1eeea] text-[#173f38]",
     rail: "bg-[#5f998e]",
   },
   method: {
-    label: "方法",
-    description: "流程、策略、操作方式",
+    label: "方法 / 框架",
+    description: "问题拆解套路、产品框架与面试方法论",
     icon: Workflow,
     tone: "border-[#c9d9bd] bg-[#f0f5eb] text-[#496d35]",
     active: "border-[#adc49a] bg-[#e7efdf] text-[#344f25]",
     rail: "bg-[#7fa66a]",
   },
   fact: {
-    label: "事实",
-    description: "事实材料、定义、背景知识",
+    label: "新知 / 概念",
+    description: "搞懂的技术概念、行业黑话与基础原理",
     icon: BookMarked,
     tone: "border-[#e1d3aa] bg-[#f7f2e6] text-[#725c24]",
     active: "border-[#cbb879] bg-[#f1e8cf] text-[#554419]",
     rail: "bg-[#b99d4a]",
   },
   risk: {
-    label: "风险",
-    description: "误区、边界、失败模式",
+    label: "避坑 / 边界",
+    description: "实践误区、适用边界与踩坑反思",
     icon: ShieldAlert,
     tone: "border-[#e1c1bb] bg-[#f7eeeb] text-[#8a3f32]",
     active: "border-[#d4a59c] bg-[#f1e2de] text-[#653026]",
@@ -270,13 +270,13 @@ export default function KnowledgeCardsBoardPage() {
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-xs font-medium text-primary">
               <Layers3 className="h-3.5 w-3.5" />
-              Knowledge Cards
+              Knowledge Cards · 个人认知资产
             </div>
             <h1 className="mt-1 text-2xl font-semibold tracking-normal text-foreground md:text-3xl">
-              可复用知识卡片
+              个人知识卡片库
             </h1>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-              这里展示已经沉淀的观点、方法、事实和风险。卡片服务于复用，Theme View 服务于关系地图。
+              从资料伴读中提炼出的新知概念、方法框架与核心洞察——拒绝“收藏=学会”，只沉淀内化后的个人认知。
             </p>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
@@ -312,6 +312,12 @@ export default function KnowledgeCardsBoardPage() {
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
               刷新
             </button>
+            <Link
+              to="/knowledge-chat"
+              className="inline-flex items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-foreground transition hover:border-primary/55 hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
+            >
+              🧭 去专题输出
+            </Link>
           </div>
         </div>
       </header>
@@ -372,11 +378,11 @@ export default function KnowledgeCardsBoardPage() {
               })}
             </FilterSection>
 
-            <FilterSection title="来源主题">
+            <FilterSection title="所属专题">
               <FilterButton
                 active={activeTheme === "all"}
                 count={cards.length}
-                label="全部来源"
+                label="全部专题"
                 onClick={() => setActiveTheme("all")}
               />
               {themes.length ? (
@@ -391,7 +397,7 @@ export default function KnowledgeCardsBoardPage() {
                 ))
               ) : (
         <p className="rounded-md border border-dashed border-border bg-background/45 px-3 py-3 text-xs leading-5 text-muted-foreground">
-                  暂无 Theme 来源。由主题方向生成的卡片会显示在这里。
+                  暂无专题归属。随专题输出沉淀下来的卡片会显示在这里。
                 </p>
               )}
             </FilterSection>
@@ -1037,6 +1043,11 @@ function KnowledgeCardTile({
 
       <div className="mt-auto pl-1 pt-4">
         <SourcePreview sources={card.sources} />
+        {card.citation_count ? (
+          <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+            🔥 被引用 {card.citation_count} 次
+          </div>
+        ) : null}
       </div>
     </button>
   );
@@ -1077,8 +1088,14 @@ function CardInspector({
             快速操作
           </h3>
           <Link
+            to={cardTopicOutputPath(card)}
+            className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+          >
+            🚀 带着此卡片去「专题输出」
+          </Link>
+          <Link
             to={`/cards-board/${encodeURIComponent(card.id)}`}
-            className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-foreground transition hover:border-primary/55 hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
+            className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-foreground transition hover:border-primary/55 hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
           >
             <BookOpenText className="h-4 w-4" />
             打开完整详情
@@ -1093,7 +1110,7 @@ function CardInspector({
           </h3>
           <div className="mt-2 space-y-2 text-sm leading-6 text-muted-foreground">
             <PathLine label="存储位置" value={card.file_path} />
-            <PathLine label="来源主题" value={card.source_theme} />
+            <PathLine label="所属专题" value={card.source_theme} />
           </div>
         </section>
         ) : null}
@@ -1188,6 +1205,17 @@ function CardReadingPage({
                 <SourceChip title={`可信度：${confidenceLabel(card.payload?.confidence)}`} />
                 <SourceChip title={`${card.sources.length} 篇来源`} muted={card.sources.length === 0} />
                 {card.schema_version ? <SourceChip title={card.schema_version} muted /> : null}
+              </div>
+              <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-center">
+                <Link
+                  to={cardTopicOutputPath(card)}
+                  className="inline-flex items-center justify-center gap-2 rounded-md border border-primary bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-[0_14px_34px_-24px_rgba(47,111,95,0.75)] transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+                >
+                  🚀 带着此卡片去「专题输出」
+                </Link>
+                <span className="text-xs leading-5 text-muted-foreground">
+                  把这张卡片作为选题起点，交给专题输出专区做跨篇 RAG 合成。
+                </span>
               </div>
             </header>
 
@@ -1319,7 +1347,7 @@ function StructuredCardContent({ card }: { card: KnowledgeCard }) {
         {(card.file_path || card.source_theme) ? (
           <div className="space-y-2 text-sm leading-6 text-muted-foreground">
             <PathLine label="存储位置" value={card.file_path} />
-            <PathLine label="来源主题" value={card.source_theme} />
+            <PathLine label="所属专题" value={card.source_theme} />
           </div>
         ) : null}
         {card.markdown?.trim() ? (
@@ -1637,9 +1665,9 @@ function EmptyState() {
     <div className="flex min-h-[360px] items-center justify-center">
       <div className="max-w-md rounded-lg border border-dashed border-border bg-background/55 px-6 py-8 text-center">
         <Layers3 className="mx-auto h-8 w-8 text-muted-foreground" />
-        <h2 className="mt-3 text-base font-semibold text-foreground">暂无知识卡片</h2>
+        <h2 className="mt-3 text-base font-semibold text-foreground">还没有沉淀下来的知识卡片</h2>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          当你从材料、阅读讨论或 Theme View 中确认沉淀知识卡片后，它们会出现在这里。
+          在「📄 资料伴读」里划选重点、让 AI 伴读解惑，再一键提炼卡片；被确认过的洞察、方法、新知与避坑经验会沉淀到这里。
         </p>
         <div className="mt-4 flex justify-center">
           <Link
@@ -1704,6 +1732,11 @@ function normalizedArguments(items?: Array<Record<string, unknown> | string>): s
       return [claim, evidence, note].filter(Boolean).join("：");
     })
     .filter(Boolean);
+}
+
+function cardTopicOutputPath(card: KnowledgeCard): string {
+  const prompt = `请结合我的知识卡片《${card.title}》（专题：${card.source_theme || "核心认知"}）以及知识库中的相关资料，帮我梳理一份结构化的思考与输出框架。`;
+  return `/knowledge-chat?prompt=${encodeURIComponent(prompt)}`;
 }
 
 function cardToPlainText(card: KnowledgeCard): string {

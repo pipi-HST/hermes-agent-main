@@ -87,6 +87,10 @@ export function WorkbenchSidebar({
   return (
     <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
       <div className="shrink-0 border-b border-border/80 p-3">
+        <div className="mb-2 flex items-center gap-1.5 text-[0.68rem] font-medium uppercase tracking-[0.16em] text-muted-foreground/80">
+          <span aria-hidden>🧭</span>
+          专题输出工作台
+        </div>
         <div className="mb-3 flex gap-2">
           <button
             type="button"

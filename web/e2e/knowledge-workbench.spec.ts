@@ -244,7 +244,7 @@ test("切换到仅知识库不会断开 Gateway", async ({ page }) => {
 
   await page.goto(`/knowledge-chat?session=${state.sessionId}`);
   await expect(page.getByText("已连接", { exact: true }).first()).toBeVisible();
-  await page.getByRole("button", { name: "仅知识库" }).click();
+  await page.getByRole("button", { name: /联网搜索/ }).click();
 
   await expect(page.getByText("已连接", { exact: true }).first()).toBeVisible();
   await expect(page.getByText(/gateway not connected/)).toHaveCount(0);

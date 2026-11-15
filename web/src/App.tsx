@@ -64,22 +64,24 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   return <Navigate to="/knowledge-chat" replace />;
 }
 
+// The three knowledge routes are one learning loop, so the sidebar keeps them
+// in learning order: read the source material, distill cards, then output a topic.
 const KNOWLEDGE_LIBRARY_NAV_ITEM: NavItem = {
   path: "/knowledge-library",
-  label: "知识库",
+  label: "📄 资料伴读",
   icon: Database,
-};
-
-const WORKBENCH_NAV_ITEM: NavItem = {
-  path: "/knowledge-chat",
-  label: "工作台",
-  icon: Sparkles,
 };
 
 const CARDS_BOARD_NAV_ITEM: NavItem = {
   path: "/cards-board",
-  label: "知识卡片",
+  label: "🗂️ 知识卡片",
   icon: Layers3,
+};
+
+const WORKBENCH_NAV_ITEM: NavItem = {
+  path: "/knowledge-chat",
+  label: "🧭 专题输出",
+  icon: Sparkles,
 };
 
 /**
@@ -121,8 +123,8 @@ function ChatRouteSink() {
 
 const KNOWLEDGE_NAV_ITEMS: NavItem[] = [
   KNOWLEDGE_LIBRARY_NAV_ITEM,
-  WORKBENCH_NAV_ITEM,
   CARDS_BOARD_NAV_ITEM,
+  WORKBENCH_NAV_ITEM,
 ];
 
 function buildRoutes(
@@ -417,6 +419,9 @@ export default function App() {
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
+                <li className="px-5 pb-1.5 pt-0.5 text-[0.68rem] font-medium uppercase tracking-[0.16em] text-muted-foreground/80">
+                  学习闭环 · 三步沉淀
+                </li>
                 {KNOWLEDGE_NAV_ITEMS.map((item) => (
                   <SidebarNavLink
                     closeMobile={closeMobile}
