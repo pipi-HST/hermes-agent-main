@@ -82,19 +82,39 @@ export function KnowledgeAnswerView({
 function splitModelSupplementBlocks(
   content: string,
 ): { text: string; supplement: boolean }[] {
-  return content
-    .split(/\n{2,}/)
-    .map((paragraph) => {
-      const trimmed = paragraph.trimStart();
-      if (!trimmed.startsWith(MODEL_SUPPLEMENT_MARKER)) {
-        return { text: paragraph, supplement: false };
-      }
-      return {
-        text: trimmed.slice(MODEL_SUPPLEMENT_MARKER.length).trimStart(),
-        supplement: true,
-      };
-    })
-    .filter((block) => block.text.trim().length > 0);
+  // Only a top-level paragraph that *opens* with the marker becomes a callout.
+  // Splitting on blank lines alone used to cut fenced code blocks and tables in
+  // half, so the fence state is tracked while walking the paragraphs.
+  const blocks: { text: string; supplement: boolean }[] = [];
+  let buffer: string[] = [];
+  let inFence = false;
+
+  const flush = () => {
+    if (!buffer.length) return;
+    const paragraph = buffer.join("\n");
+    buffer = [];
+    const trimmed = paragraph.trimStart();
+    if (!trimmed.startsWith(MODEL_SUPPLEMENT_MARKER)) {
+      blocks.push({ text: paragraph, supplement: false });
+      return;
+    }
+    blocks.push({
+      text: trimmed.slice(MODEL_SUPPLEMENT_MARKER.length).trimStart(),
+      supplement: true,
+    });
+  };
+
+  for (const line of content.split("\n")) {
+    const isFence = line.trimStart().startsWith("```");
+    if (isFence) inFence = !inFence;
+    if (!inFence && line.trim() === "" && !isFence) {
+      flush();
+      continue;
+    }
+    buffer.push(line);
+  }
+  flush();
+  return blocks.filter((block) => block.text.trim().length > 0);
 }
 
 function KnowledgeSourceList({

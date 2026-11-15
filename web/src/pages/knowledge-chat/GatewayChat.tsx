@@ -393,7 +393,7 @@ function TopicInspirationRadar({
     <div>
       <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-foreground">
         <Lightbulb className="h-3.5 w-3.5 text-primary/80" />
-        💡 跨篇灵感与输出选题提案 (Topic Inspiration Cards)
+        💡 示例选题模板（点击右侧「扫描跨篇新灵感」基于最新资料实时生成）
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
         {TOPIC_FILTERS.map((item) => (

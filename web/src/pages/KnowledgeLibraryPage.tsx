@@ -129,6 +129,13 @@ interface ArticleAiRequestContext {
   force_web?: boolean;
 }
 
+function readSearchBackend(status: unknown): string | undefined {
+  if (!status || typeof status !== "object") return undefined;
+  const value = (status as Record<string, unknown>).search_backend;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+
 interface ArticleChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -3931,6 +3938,9 @@ function ArticleAssistantAnswer({
             onSourceOpenLocal={(source) => onOpenSourceLocal(source as KnowledgeResearchSource)}
             sources={message.sources}
             streaming={message.pending}
+            searchBackend={readSearchBackend(
+              message.researchTrace?.provider_status ?? message.responseMeta?.provider_status,
+            )}
           />
         )}
       </div>
