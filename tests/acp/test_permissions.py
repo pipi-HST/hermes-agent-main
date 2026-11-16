@@ -2,8 +2,11 @@
 
 import asyncio
 import inspect
+import os
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from acp.schema import (
     AllowedOutcome,
@@ -177,6 +180,10 @@ import warnings  # noqa: E402
 
 
 class TestSchedulerFailure:
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="CPython on Windows keeps cr_frame on a closed coroutine",
+    )
     def test_scheduler_failure_closes_permission_coroutine(self):
         """If run_coroutine_threadsafe raises, the coro is closed and we return 'deny'."""
         loop = MagicMock(spec=asyncio.AbstractEventLoop)

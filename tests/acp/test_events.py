@@ -2,6 +2,7 @@
 
 import asyncio
 import gc
+import os
 import warnings
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -384,6 +385,10 @@ class TestMessageCallback:
 # ---------------------------------------------------------------------------
 
 class TestSendUpdate:
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="CPython on Windows keeps cr_frame on a closed coroutine",
+    )
     def test_scheduler_failure_closes_update_coroutine(self, event_loop_fixture):
         """If run_coroutine_threadsafe raises, _send_update must close the coro."""
         created = {"coro": None}

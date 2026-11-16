@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
+
+import pytest
 
 from acp_adapter.edit_approval import (
     EditProposal,
@@ -59,6 +63,10 @@ def test_write_file_rejection_does_not_mutate_existing_file(tmp_path):
     assert target.read_text(encoding="utf-8") == "before\n"
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="ACP write_file needs the Unix local environment used by CI",
+)
 def test_write_file_approval_mutates_and_request_includes_diff(tmp_path):
     target = tmp_path / "sample.txt"
     target.write_text("before\n", encoding="utf-8")
@@ -88,6 +96,10 @@ def test_write_file_approval_mutates_and_request_includes_diff(tmp_path):
     assert proposal.new_text == "after\n"
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="ACP write_file needs the Unix local environment used by CI",
+)
 def test_write_file_new_file_request_has_empty_old_text(tmp_path):
     target = tmp_path / "new.txt"
     proposals = []
@@ -154,6 +166,10 @@ def test_patch_replace_rejection_does_not_mutate(tmp_path):
     assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="ACP patch needs the Unix local environment used by CI",
+)
 def test_patch_replace_approval_request_includes_full_file_diff(tmp_path):
     target = tmp_path / "sample.txt"
     target.write_text("alpha\nbeta\n", encoding="utf-8")
@@ -183,7 +199,7 @@ def test_patch_replace_approval_request_includes_full_file_diff(tmp_path):
 
 def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_path):
     workspace_file = tmp_path / "src.py"
-    tmp_file = Path("/tmp/hermes-acp-auto-approve-test.txt")
+    tmp_file = Path(tempfile.gettempdir()) / "hermes-acp-auto-approve-test.txt"
     env_file = tmp_path / ".env"
 
     assert should_auto_approve_edit(
