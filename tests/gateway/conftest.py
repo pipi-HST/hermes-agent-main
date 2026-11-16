@@ -96,7 +96,12 @@ def _ensure_discord_mock() -> None:
     this function (it short-circuits when already present) rather than
     maintaining their own mock setup.
     """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    existing = sys.modules.get("discord")
+    if (
+        existing is not None
+        and not isinstance(existing, MagicMock)
+        and getattr(existing, "__file__", None)
+    ):
         return  # Real library is installed — nothing to mock
 
     from types import SimpleNamespace
@@ -311,6 +316,12 @@ def _scan_for_plugin_adapter_antipattern(source: str) -> list[str]:
                 )
 
     return offenses
+
+
+@pytest.fixture(autouse=True)
+def _stable_discord_mock():
+    """Keep a comprehensive discord stand-in even if another test replaced it."""
+    _ensure_discord_mock()
 
 
 def pytest_configure(config):
