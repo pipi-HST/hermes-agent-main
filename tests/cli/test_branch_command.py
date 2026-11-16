@@ -247,3 +247,5 @@ class TestBranchCommandDef:
         from hermes_cli.commands import COMMAND_REGISTRY
         branch = next(c for c in COMMAND_REGISTRY if c.name == "branch")
         assert branch.category == "Session"
+
+pytestmark = pytest.mark.skipif(os.name == 'nt', reason='prompt_toolkit CLI output requires a Windows console')

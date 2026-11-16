@@ -1,6 +1,8 @@
 """Tests for CLI browser CDP auto-launch helpers."""
 
 import os
+
+import pytest
 import subprocess
 from unittest.mock import patch
 
@@ -72,6 +74,7 @@ class TestChromeDebugLaunch:
         assert command is not None
         assert command.startswith("/usr/bin/chromium --remote-debugging-port=9222")
 
+    @pytest.mark.skipif(os.name == "nt", reason="WSL Chrome path probing is Linux-only")
     def test_manual_command_uses_wsl_windows_chrome_when_available(self):
         chrome = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
 

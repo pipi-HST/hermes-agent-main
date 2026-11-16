@@ -161,6 +161,7 @@ class TestNonImageFileDrop:
 # Tests: backslash-escaped spaces (macOS drag-and-drop)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(os.name == "nt", reason="file-drop URI/tilde parsing uses POSIX paths")
 class TestEscapedSpaces:
     def test_escaped_spaces_in_path(self, tmp_image_with_spaces):
         r"""macOS drags produce paths like /path/to/my\ file.png"""
@@ -244,6 +245,7 @@ class TestEdgeCases:
         assert result is not None
         assert result["is_image"] is False
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows symlink creation needs admin privilege")
     def test_symlink_to_file(self, tmp_image, tmp_path):
         link = tmp_path / "link.png"
         link.symlink_to(tmp_image)

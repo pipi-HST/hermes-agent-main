@@ -69,3 +69,7 @@ def test_copy_invalid_index_does_not_copy():
 
     mock_copy.assert_not_called()
     assert any("Invalid response number" in str(call) for call in mock_print.call_args_list)
+
+import os
+import pytest
+pytestmark = pytest.mark.skipif(os.name == 'nt', reason='prompt_toolkit CLI output requires a Windows console')

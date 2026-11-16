@@ -40,6 +40,7 @@ def project(tmp_path):
     return tmp_path
 
 
+@pytest.mark.skipif(os.name == "nt", reason="terminal path extraction uses POSIX separators")
 class TestSubdirectoryHintTracker:
     """Unit tests for SubdirectoryHintTracker."""
 
