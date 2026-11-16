@@ -13,6 +13,15 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
+    launchOptions: {
+      // Chromium's crashpad handler can kill the Windows test process.
+      args: [
+        "--disable-crash-reporter",
+        "--disable-breakpad",
+        "--no-sandbox",
+        "--disable-gpu",
+      ],
+    },
   },
   projects: [
     {
