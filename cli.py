@@ -1849,6 +1849,8 @@ from hermes_constants import is_termux as _is_termux_environment
 
 def _termux_example_image_path(filename: str = "cat.png") -> str:
     """Return a realistic example media path for the current Termux setup."""
+    import posixpath
+
     candidates = [
         os.path.expanduser("~/storage/shared"),
         "/sdcard",
@@ -1857,8 +1859,8 @@ def _termux_example_image_path(filename: str = "cat.png") -> str:
     ]
     for root in candidates:
         if os.path.isdir(root):
-            return os.path.join(root, "Pictures", filename)
-    return os.path.join("~/storage/shared", "Pictures", filename)
+            return posixpath.join(root, "Pictures", filename)
+    return posixpath.join("~/storage/shared", "Pictures", filename)
 
 
 def _split_path_input(raw: str) -> tuple[str, str]:

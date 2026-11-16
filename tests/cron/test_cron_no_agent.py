@@ -330,3 +330,7 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+import os
+import pytest
+pytestmark = pytest.mark.skipif(os.name == 'nt', reason='no-agent cron scripts execute bash in CI')

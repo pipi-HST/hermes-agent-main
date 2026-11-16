@@ -4,6 +4,8 @@ import types
 from contextlib import nullcontext
 from types import SimpleNamespace
 
+import os
+
 import pytest
 
 from hermes_cli.auth import AuthError
@@ -140,6 +142,7 @@ def test_hermes_cli_init_does_not_eagerly_resolve_runtime_provider(monkeypatch):
     assert calls["count"] == 0
 
 
+@pytest.mark.skipif(os.name == "nt", reason="prompt_toolkit needs a Windows console")
 def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     cli = _import_cli()
     calls = {"count": 0}

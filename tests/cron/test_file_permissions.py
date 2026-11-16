@@ -2,6 +2,10 @@
 
 import json
 import os
+
+import pytest
+
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="Windows does not expose POSIX mode bits")
 import stat
 import tempfile
 import unittest

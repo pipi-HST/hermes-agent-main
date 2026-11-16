@@ -65,7 +65,8 @@ class TestCLIQuickCommands:
         cli.process_command("/empty")
         cli.console.print.assert_called_once()
         args = cli.console.print.call_args[0][0]
-        assert "no output" in args.lower()
+        text = args.plain if hasattr(args, "plain") else str(args)
+        assert "no output" in text.lower()
 
     def test_alias_command_routes_to_target(self):
         """Alias quick commands rewrite to the target command."""
@@ -246,3 +247,7 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+import os
+import pytest
+pytestmark = pytest.mark.skipif(os.name == 'nt', reason='quick-command tests use prompt_toolkit and Unix shell commands')

@@ -3,7 +3,11 @@
 import subprocess
 from pathlib import Path
 
+import os
+
 import pytest
+
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="Windows symlink creation needs admin privilege")
 
 
 @pytest.fixture

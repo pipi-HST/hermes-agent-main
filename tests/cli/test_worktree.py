@@ -417,6 +417,7 @@ class TestMultipleWorktrees:
             assert not Path(info["path"]).exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows symlink creation needs admin privilege")
 class TestWorktreeDirectorySymlink:
     """Test .worktreeinclude with directories (symlinked)."""
 
