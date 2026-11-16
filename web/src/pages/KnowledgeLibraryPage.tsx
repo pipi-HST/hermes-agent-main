@@ -129,10 +129,19 @@ interface ArticleAiRequestContext {
   force_web?: boolean;
 }
 
-function readSearchBackend(status: unknown): string | undefined {
-  if (!status || typeof status !== "object") return undefined;
-  const value = (status as Record<string, unknown>).search_backend;
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+function readSearchBackend(...statuses: unknown[]): string | undefined {
+  for (const status of statuses) {
+    if (!status || typeof status !== "object") continue;
+    const record = status as Record<string, unknown>;
+    const value = record.search_backend;
+    if (typeof value === "string" && value.trim()) return value.trim();
+    const provider = record.provider_status;
+    if (provider && typeof provider === "object") {
+      const nested = (provider as Record<string, unknown>).search_backend;
+      if (typeof nested === "string" && nested.trim()) return nested.trim();
+    }
+  }
+  return undefined;
 }
 
 
@@ -1494,19 +1503,19 @@ export default function KnowledgeLibraryPage() {
       history_summary: historySummary,
       history_summary_version: historySummaryVersion,
       history_overflow: selectionChatHistoryOverflow(chatMessagesByMode),
-      force_web: false,
+      force_web: requestMode === "local_web" || requestMode === "web_only",
     };
     requestBody.history = selectionChatHistory(modeMessages);
     requestBody.history_summary = historySummary;
     requestBody.history_summary_version = historySummaryVersion;
     requestBody.history_overflow = selectionChatHistoryOverflow(chatMessagesByMode);
-    requestBody.force_web = Boolean(requestBody.force_web && requestBody.mode === "local_web");
+    requestBody.force_web = requestBody.mode === "local_web" || requestBody.mode === "web_only";
     if ((requestBody.selected_text || "").trim().length > MAX_SELECTION_SEARCH_CHARS) {
       setChatError(SELECTION_TOO_LONG_MESSAGE);
       return;
     }
     const assistantId = `assistant-${Date.now()}`;
-    const pendingTrace = pendingResearchTrace(question, requestMode);
+    const pendingTrace = pendingResearchTrace(question, requestMode, Boolean(requestBody.force_web));
     const userMessage: ArticleChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
@@ -1706,18 +1715,19 @@ export default function KnowledgeLibraryPage() {
         hermes_session_id: "knowledge-library",
         user_message: [...chatMessages].reverse().find((item) => item.role === "user")?.content || chatQuestion || detail.title,
         assistant_answer: message.content,
-        instruction: outputType === "knowledge_card" ? "把知识库右侧 AI 回答做成卡片" : "把知识库右侧 AI 回答存成 Capture Note",
+        instruction: outputType === "knowledge_card" ? "把知识库右侧 AI 回答做成卡片" : "把知识库右侧 AI 回答存成资料笔记",
         output_type: outputType,
         assistant_message_id: message.id,
         sources: articleSourcesForSave(message.sources, detail),
         answer_source: "provided",
+        folder_path: detail.folder_path || "",
       });
       const draftId =
         typeof result.meta?.reading_draft_id === "string"
           ? result.meta.reading_draft_id
           : "";
       await refreshAll();
-      setNotice(result.chat_preview || (outputType === "knowledge_card" ? "已生成知识卡片草稿。" : "已生成 Capture Note 草稿。"));
+      setNotice(result.chat_preview || (outputType === "knowledge_card" ? "已生成知识卡片草稿。" : "已生成资料笔记草稿。"));
       if (draftId) {
         navigate(`/knowledge-chat?answerDraft=${encodeURIComponent(draftId)}`);
       }
@@ -1730,6 +1740,21 @@ export default function KnowledgeLibraryPage() {
 
   const openKnowledgeSource = useCallback((source: KnowledgeResearchSource) => {
     const rawKind = String(source.item_kind || "").trim();
+    const sourceType = String(source.type || "").trim().toLowerCase();
+    const openUrl = String(source.open_url || "").trim();
+    const cardUrl = openUrl.startsWith("/cards-board/") ? openUrl : "";
+    const isCard = cardUrl !== "" || rawKind === "garden_card" || rawKind === "knowledge_card"
+      || sourceType === "garden_card" || sourceType === "knowledge_card";
+    if (isCard) {
+      const cardId = String(source.item_id || source.id || "").trim();
+      if (!cardId && !cardUrl) {
+        setNotice("这个知识卡片来源暂时缺少可打开的卡片信息。");
+        return;
+      }
+      if (!confirmLeaveCurrentWork()) return;
+      navigate(cardUrl || `/cards-board/${encodeURIComponent(cardId)}`);
+      return;
+    }
     const kind = rawKind === "capture_draft" ? "capture_draft" : rawKind === "capture" ? "capture" : "";
     const itemId = String(source.item_id || "").trim();
     if (!kind || !itemId) {
@@ -1755,7 +1780,7 @@ export default function KnowledgeLibraryPage() {
       title: source.title || itemId,
       folder_path: folder,
     }) as KnowledgeLibraryItem);
-  }, [allItems, confirmLeaveCurrentWork, loadDetail, switchMode]);
+  }, [allItems, confirmLeaveCurrentWork, loadDetail, navigate, switchMode]);
 
   const openKnowledgeSourceLocal = useCallback(async (source: KnowledgeResearchSource) => {
     const itemId = String(source.item_id || "").trim();
@@ -3636,8 +3661,12 @@ function ResearchModeControl({
   );
 }
 
-function pendingResearchTrace(question: string, mode: KnowledgeResearchMode): KnowledgeResearchTrace {
-  const usesWeb = mode === "web_only";
+function pendingResearchTrace(
+  question: string,
+  mode: KnowledgeResearchMode,
+  forceWeb = false,
+): KnowledgeResearchTrace {
+  const usesWeb = mode === "web_only" || forceWeb;
   return {
     mode,
     plan_status: usesWeb ? "planned_web_forced_by_mode" : "planned",
@@ -3939,7 +3968,9 @@ function ArticleAssistantAnswer({
             sources={message.sources}
             streaming={message.pending}
             searchBackend={readSearchBackend(
-              message.researchTrace?.provider_status ?? message.responseMeta?.provider_status,
+              message.researchTrace,
+              message.responseMeta?.provider_status,
+              message.responseMeta,
             )}
           />
         )}
@@ -4619,6 +4650,8 @@ function researchModeLabel(mode: KnowledgeResearchMode): string {
       return "联网搜索 + 知识库";
     case "web_only":
       return "联网";
+    case "theme_scan":
+      return "跨篇灵感扫描";
   }
 }
 

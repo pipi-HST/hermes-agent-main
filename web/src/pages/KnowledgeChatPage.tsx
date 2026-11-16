@@ -26,6 +26,8 @@ import {
   extractSourceHints,
   initialKnowledgeChatState,
   knowledgeChatReducer,
+  searchBackendFromToolSummaries,
+  searchBackendFromTrace,
   toolProgressEventsFromSummary,
   type KnowledgeMessage,
 } from "@/lib/knowledgeChatState";
@@ -113,6 +115,7 @@ interface ToolCompletePayload {
   source_map?: Array<Record<string, unknown>>;
   web_sources?: Array<Record<string, unknown>>;
   retrieved_web_sources?: Array<Record<string, unknown>>;
+  research_trace?: Record<string, unknown>;
 }
 
 interface ErrorPayload {
@@ -162,6 +165,8 @@ const KNOWLEDGE_TOOLSETS_BY_MODE: Record<KnowledgeResearchMode, string[]> = {
   local_only: ["knowledge-local"],
   local_web: ["knowledge-web-research"],
   web_only: ["knowledge-web-research"],
+  // toolsets.py exposes theme_scan/theme_candidates/generate_canvas as "knowledge-advanced".
+  theme_scan: ["knowledge-local", "knowledge-advanced"],
 };
 const CHAT_SIDEBAR_WIDTH_KEY = "hermes.knowledgeChat.sidebarWidth";
 const CHAT_INSPECTOR_WIDTH_KEY = "hermes.knowledgeChat.inspectorWidth";
@@ -643,6 +648,7 @@ export default function KnowledgeChatPage() {
         sourceMap: ev.payload?.source_map,
         webSources: ev.payload?.web_sources,
         retrievedWebSources: ev.payload?.retrieved_web_sources,
+        searchBackend: searchBackendFromTrace(ev.payload?.research_trace),
       });
       if (/capture|draft/i.test(toolName)) {
         void loadDrafts();
@@ -957,7 +963,7 @@ export default function KnowledgeChatPage() {
     if (!answerDraftDetail) return;
     const captureId = readingDraftCaptureId(answerDraftDetail);
     if (answerDraftDetail.output_type !== "local_learning_note" || answerDraftDetail.status !== "committed" || !captureId) {
-      setDraftError("只有已入库的 Capture Note 可以转换成知识卡片。");
+      setDraftError("只有已入库的资料笔记可以转换成知识卡片。");
       return;
     }
     const operation = beginAiOperation("reading-card");
@@ -1626,7 +1632,7 @@ export default function KnowledgeChatPage() {
       return {
         type: "reading_draft",
         id: answerDraftDetail.id,
-        label: answerDraftDetail.title || "Capture Note",
+        label: answerDraftDetail.title || "资料笔记",
       };
     }
     if (mode === "draft_review" && draftDetail?.id) {
@@ -1661,7 +1667,7 @@ export default function KnowledgeChatPage() {
   }, [answerDraftDetail, draftDetail, editableDraft, mode, state.sourceHints]);
   const sourceEmptyText =
     mode === "answer_draft_review"
-      ? "当前 Capture Note 没有可识别的引用来源。"
+      ? "当前资料笔记没有可识别的引用来源。"
       : mode === "draft_review" || mode === "editable_capture"
         ? "当前材料没有额外引用来源。"
         : "当前回答还没有可识别的来源。RAG 工具返回引用时会在这里集中展示。";
@@ -1678,7 +1684,7 @@ export default function KnowledgeChatPage() {
       ? "还没有工具调用。让 Hermes 检索知识库、展开草稿或整理知识卡片时，这里会显示状态流转。"
       : objectEventsLoading
         ? "正在读取当前对象的工具记录..."
-        : `当前${mode === "answer_draft_review" ? "Capture Note" : "材料"}还没有可追踪的工具调用记录。`;
+        : `当前${mode === "answer_draft_review" ? "资料笔记" : "材料"}还没有可追踪的工具调用记录。`;
 
   useEffect(() => {
     if (!inspectorObjectRef) {
@@ -1805,7 +1811,9 @@ export default function KnowledgeChatPage() {
     }
     const openUrl = source.open_url || (
       source.item_kind && source.item_id
-        ? `/knowledge-library?kind=${encodeURIComponent(source.item_kind)}&item=${encodeURIComponent(source.item_id)}`
+        ? source.item_kind === "garden_card" || source.item_kind === "knowledge_card"
+          ? `/cards-board/${encodeURIComponent(source.item_id)}`
+          : `/knowledge-library?kind=${encodeURIComponent(source.item_kind)}&item=${encodeURIComponent(source.item_id)}`
         : ""
     );
     if (openUrl) {
@@ -2101,6 +2109,7 @@ function withResearchModeInstruction(text: string, mode: KnowledgeResearchMode):
     local_only: "仅知识库",
     local_web: "知识库 + 联网搜索",
     web_only: "联网搜索",
+    theme_scan: "跨篇灵感扫描",
   };
   const citationInstruction =
     mode === "local_web" || mode === "web_only"
@@ -2109,11 +2118,13 @@ function withResearchModeInstruction(text: string, mode: KnowledgeResearchMode):
   const toolInstruction =
     mode === "local_web"
       ? "请调用 research_with_web 统一完成知识库与联网检索；不要调用未提供的独立知识库搜索工具。"
-      : mode === "web_only"
-        ? "请调用 research_with_web 完成联网检索；不要调用未提供的独立网页抽取或知识库搜索工具。"
-        : mode === "local_only"
-          ? "请只使用当前可用的知识库检索工具，不要调用联网搜索工具。"
-          : "";
+      : mode === "theme_scan"
+        ? "请调用 theme_scan 扫描知识卡片之间的跨篇关联；已有候选组用 theme_candidates 查看，需要关系画布时调用 generate_canvas。不要用 search_my_notes 临时拼组。"
+        : mode === "web_only"
+          ? "请调用 research_with_web 完成联网检索；不要调用未提供的独立网页抽取或知识库搜索工具。"
+          : mode === "local_only"
+            ? "请只使用当前可用的知识库检索工具，不要调用联网搜索工具。"
+            : "";
   return [
     `【Hermes Knowledge 检索模式：${label[mode]}（mode=${mode}）】`,
     toolInstruction,
@@ -2323,6 +2334,9 @@ function gatewayMessagesToWorkbench(messages: GatewayResumeMessage[]): {
     const sourceHints = message.role === "assistant"
       ? extractSourceHints(fullAnswer || text, pendingToolSummaries)
       : undefined;
+    const searchBackend = message.role === "assistant"
+      ? searchBackendFromTrace(message.research_trace) ?? searchBackendFromToolSummaries(pendingToolSummaries)
+      : undefined;
     visibleMessages.push({
       id: `history-${index}-${now}`,
       role: (message.role === "assistant" ? "assistant" : "user") as KnowledgeMessage["role"],
@@ -2330,6 +2344,7 @@ function gatewayMessagesToWorkbench(messages: GatewayResumeMessage[]): {
       createdAt: now - (messages.length - index) * 1000,
       status: "complete" as const,
       sourceHints,
+      searchBackend,
     });
     if (message.role === "assistant") {
       pendingToolSummaries = [];

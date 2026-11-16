@@ -229,7 +229,7 @@ export function intentLabel(intent: string): string {
 
 export function answerDraftTypeLabel(type: string): string {
   return ({
-    local_learning_note: "Capture Note",
+    local_learning_note: "资料笔记",
     knowledge_card: "知识卡片",
     enhance_capture: "主笔记增强",
   } as Record<string, string>)[type] ?? "回答沉淀";

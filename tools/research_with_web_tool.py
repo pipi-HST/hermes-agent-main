@@ -83,6 +83,11 @@ RESEARCH_WITH_WEB_SCHEMA = {
                 "description": "用户明确要求导出完整研究报告时为 true；普通回答为 false。",
                 "default": False,
             },
+            "force_web": {
+                "type": "boolean",
+                "description": "用户已明确开启联网搜索时为 true；强制至少执行一次公开网页检索。",
+                "default": False,
+            },
         },
         "required": ["query"],
     },
@@ -99,6 +104,7 @@ def _handler(args: dict, **kw) -> str:
                 article_context=args.get("article_context") or None,
                 selection_context=args.get("selection_context") or None,
                 export_file=bool(args.get("export_file", False)),
+                force_web=bool(args.get("force_web", False)),
                 event_callback=_research_event_callback(progress_callback),
             )
         )

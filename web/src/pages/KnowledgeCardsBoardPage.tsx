@@ -5,6 +5,7 @@ import {
   BookOpenText,
   BookMarked,
   Check,
+  ChevronDown,
   CircleDot,
   Copy,
   ExternalLink,
@@ -24,6 +25,7 @@ import {
   api,
   type KnowledgeCard,
   type KnowledgeCardKind,
+  type KnowledgeGardenDraftItem,
   type KnowledgeGraphEdge,
   type KnowledgeGraphNode,
   type KnowledgeGraphNodeKind,
@@ -115,6 +117,12 @@ export default function KnowledgeCardsBoardPage() {
   const [deletingId, setDeletingId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [pendingDrafts, setPendingDrafts] = useState<KnowledgeGardenDraftItem[]>([]);
+  const [pendingDraftsLoading, setPendingDraftsLoading] = useState(true);
+  const [pendingDraftsError, setPendingDraftsError] = useState("");
+  const [pendingDraftsExpanded, setPendingDraftsExpanded] = useState(false);
+  const [pendingDraftActionId, setPendingDraftActionId] = useState("");
+  const [pendingDraftAction, setPendingDraftAction] = useState<"commit" | "discard" | "">("");
 
   const loadCards = useCallback(async () => {
     setLoading(true);
@@ -133,6 +141,19 @@ export default function KnowledgeCardsBoardPage() {
       setLoading(false);
     }
   }, [routeCardId]);
+
+  const loadPendingDrafts = useCallback(async () => {
+    setPendingDraftsLoading(true);
+    setPendingDraftsError("");
+    try {
+      const payload = await api.listKnowledgeGardenDrafts(50, "draft_ready");
+      setPendingDrafts(payload.items);
+    } catch (err) {
+      setPendingDraftsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingDraftsLoading(false);
+    }
+  }, []);
 
   const loadDetail = useCallback(async (cardId: string) => {
     if (!cardId) {
@@ -154,6 +175,10 @@ export default function KnowledgeCardsBoardPage() {
   useEffect(() => {
     void loadCards();
   }, [loadCards]);
+
+  useEffect(() => {
+    void loadPendingDrafts();
+  }, [loadPendingDrafts]);
 
   useEffect(() => {
     if (routeCardId && routeCardId !== selectedId) {
@@ -246,6 +271,55 @@ export default function KnowledgeCardsBoardPage() {
     }
   }, [filteredCards, navigate, routeCardId, selectedId]);
 
+  const commitPendingDraft = useCallback(async (draft: KnowledgeGardenDraftItem) => {
+    if (pendingDraftActionId) return;
+    const title = draft.title || "未命名卡片草稿";
+    setPendingDraftActionId(draft.id);
+    setPendingDraftAction("commit");
+    setError("");
+    setNotice("");
+    try {
+      const result = await api.commitKnowledgeGardenDraft(draft.id);
+      if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
+        throw new Error(result.error || result.errors?.[0] || "确认入库失败。");
+      }
+      setNotice(`已确认入库卡片草稿：《${title}》。`);
+      await Promise.all([loadCards(), loadPendingDrafts()]);
+    } catch (err) {
+      setError(`确认卡片草稿失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setPendingDraftActionId("");
+      setPendingDraftAction("");
+    }
+  }, [loadCards, loadPendingDrafts, pendingDraftActionId]);
+
+  const discardPendingDraft = useCallback(async (draft: KnowledgeGardenDraftItem) => {
+    if (pendingDraftActionId) return;
+    const title = draft.title || "未命名卡片草稿";
+    setPendingDraftActionId(draft.id);
+    setPendingDraftAction("discard");
+    setError("");
+    setNotice("");
+    try {
+      const result = await api.discardKnowledgeGardenDraft(draft.id);
+      if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
+        throw new Error(result.error || result.errors?.[0] || "舍弃卡片草稿失败。");
+      }
+      setNotice(`已舍弃卡片草稿：《${title}》。`);
+      await Promise.all([loadCards(), loadPendingDrafts()]);
+    } catch (err) {
+      setError(`舍弃卡片草稿失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setPendingDraftActionId("");
+      setPendingDraftAction("");
+    }
+  }, [loadCards, loadPendingDrafts, pendingDraftActionId]);
+
+  const refreshBoard = useCallback(() => {
+    void loadCards();
+    void loadPendingDrafts();
+  }, [loadCards, loadPendingDrafts]);
+
   const switchView = useCallback((view: "cards" | "graph") => {
     navigate(view === "graph" ? "/cards-board?view=graph" : "/cards-board", { replace: true });
   }, [navigate]);
@@ -306,10 +380,10 @@ export default function KnowledgeCardsBoardPage() {
             <Metric label="来源材料" value={cards.reduce((sum, card) => sum + card.sources.length, 0)} />
             <button
               type="button"
-              onClick={() => void loadCards()}
+              onClick={refreshBoard}
               className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
             >
-              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+              <RefreshCw className={cn("h-4 w-4", (loading || pendingDraftsLoading) && "animate-spin")} />
               刷新
             </button>
             <Link
@@ -321,6 +395,92 @@ export default function KnowledgeCardsBoardPage() {
           </div>
         </div>
       </header>
+
+      {(pendingDrafts.length > 0 || pendingDraftsError) && (
+        <section className="shrink-0 overflow-hidden rounded-lg border border-amber-300/70 bg-amber-50/70 text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-100">
+          <button
+            type="button"
+            onClick={() => setPendingDraftsExpanded((value) => !value)}
+            aria-expanded={pendingDraftsExpanded}
+            className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+          >
+            <span className="inline-flex min-w-0 items-center gap-2 text-sm font-medium">
+              <span>📝 待确认卡片草稿（{pendingDrafts.length} 张）</span>
+              {pendingDraftsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            </span>
+            <ChevronDown className={cn("h-4 w-4 shrink-0 transition", pendingDraftsExpanded && "rotate-180")} />
+          </button>
+
+          {pendingDraftsError ? (
+            <div className="flex items-start gap-2 border-t border-amber-300/60 px-3 py-2 text-xs text-destructive dark:border-amber-500/25">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5" />
+              <span>{pendingDraftsError}</span>
+            </div>
+          ) : null}
+
+          {pendingDraftsExpanded ? (
+            <div className="border-t border-amber-300/60 dark:border-amber-500/25">
+              {pendingDrafts.length ? (
+                <ul className="divide-y divide-amber-300/50 dark:divide-amber-500/20">
+                  {pendingDrafts.map((draft) => {
+                    const busy = pendingDraftActionId === draft.id;
+                    return (
+                      <li
+                        key={draft.id}
+                        className="flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium">
+                            {draft.title || "未命名卡片草稿"}
+                          </div>
+                          <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-amber-900/75 dark:text-amber-100/70">
+                            {draft.one_liner || "暂无一句话摘要"}
+                          </p>
+                          <span className="mt-1 inline-flex rounded border border-amber-400/60 bg-amber-100/70 px-1.5 py-0.5 text-[11px] text-amber-900 dark:border-amber-500/30 dark:bg-amber-900/30 dark:text-amber-100">
+                            {gardenDraftKindLabel(draft.card_kind)}
+                          </span>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void commitPendingDraft(draft)}
+                            disabled={Boolean(pendingDraftActionId)}
+                            className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-500/15 px-2.5 py-1 text-xs font-medium transition hover:bg-amber-500/25 disabled:opacity-45"
+                          >
+                            {busy && pendingDraftAction === "commit" ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Check className="h-3.5 w-3.5" />
+                            )}
+                            确认入库
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void discardPendingDraft(draft)}
+                            disabled={Boolean(pendingDraftActionId)}
+                            className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 px-2.5 py-1 text-xs transition hover:bg-amber-500/10 disabled:opacity-45"
+                          >
+                            {busy && pendingDraftAction === "discard" ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-3.5 w-3.5" />
+                            )}
+                            舍弃
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <p className="px-3 py-2 text-xs text-amber-900/75 dark:text-amber-100/70">
+                  {pendingDraftsLoading ? "正在读取待确认草稿..." : "暂无待确认草稿。"}
+                </p>
+              )}
+            </div>
+          ) : null}
+        </section>
+      )}
 
       {error && (
         <div className="flex shrink-0 items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -1801,6 +1961,10 @@ function sourceLabel(sources: KnowledgeSource[], sourceId: string): string {
 function knowledgeFileLink(filePath: string, title: string): string {
   const stem = filePath.replace(/\.md$/, "");
   return `[[${stem}|${title}]]`;
+}
+
+function gardenDraftKindLabel(kind: string): string {
+  return KIND_META[kind as KnowledgeCardKind]?.label || kind || "未分类";
 }
 
 function themeTitle(themePath: string): string {

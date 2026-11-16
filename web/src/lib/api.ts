@@ -620,6 +620,29 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }, options)),
+  previewKnowledgeGardenDraft: (body: KnowledgeGardenDraftRequest, options?: AiOperationOptions) =>
+    fetchJSON<KnowledgeGardenDraftResponse>("/api/knowledge/garden-drafts/preview", withAiOperation({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }, options)),
+  listKnowledgeGardenDrafts: (limit = 50, status = "draft_ready") => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (status) qs.set("status", status);
+    return fetchJSON<KnowledgeGardenDraftsResponse>(
+      `/api/knowledge/garden-drafts?${qs.toString()}`,
+    );
+  },
+  commitKnowledgeGardenDraft: (draftId: string, options?: AiOperationOptions) =>
+    fetchJSON<KnowledgeGardenDraftActionResult>(
+      `/api/knowledge/garden-drafts/${encodeURIComponent(draftId)}/commit`,
+      withAiOperation({ method: "POST" }, options),
+    ),
+  discardKnowledgeGardenDraft: (draftId: string) =>
+    fetchJSON<KnowledgeGardenDraftActionResult>(
+      `/api/knowledge/garden-drafts/${encodeURIComponent(draftId)}`,
+      { method: "DELETE" },
+    ),
   getKnowledgeReadingDraft: (draftId: string) =>
     fetchJSON<KnowledgeReadingDraftResponse>(
       `/api/knowledge/reading-drafts/${encodeURIComponent(draftId)}`,
@@ -908,13 +931,13 @@ export interface KnowledgeLibraryPermanentDeleteResponse {
   };
 }
 
-export type KnowledgeResearchMode = "current_article_only" | "local_only" | "local_web" | "web_only";
+export type KnowledgeResearchMode = "current_article_only" | "local_only" | "local_web" | "web_only" | "theme_scan";
 
 export interface KnowledgeResearchSource {
   ref?: string;
   type?: string;
   id?: string;
-  item_kind?: KnowledgeLibraryItemKind;
+  item_kind?: KnowledgeLibraryItemKind | "garden_card" | "knowledge_card";
   item_id?: string;
   title?: string;
   path?: string;
@@ -1016,6 +1039,7 @@ export interface KnowledgeLibrarySelectionChatResponse {
     research_trace?: KnowledgeResearchTrace;
     reasoning_trace?: KnowledgeReasoningTrace;
     web_search_attempted?: boolean;
+    search_backend?: string;
     updated_history_summary?: string;
     updated_history_summary_version?: number;
     history_summary_failed?: boolean;
@@ -1189,6 +1213,7 @@ export interface KnowledgeAnswerDraftRequest {
   sources: KnowledgeAnswerDraftSource[];
   target_capture_id?: string;
   answer_source?: "auto" | "provided" | "latest_rag_full_answer";
+  folder_path?: string;
 }
 
 export interface KnowledgeGardenDraftRequest {
@@ -1208,6 +1233,36 @@ export interface KnowledgeGardenDraftResponse {
   meta?: Record<string, unknown>;
   durable_artifacts?: Array<Record<string, unknown>>;
   warnings?: string[];
+}
+
+export interface KnowledgeGardenDraftItem {
+  id: string;
+  title: string;
+  one_liner: string;
+  card_kind: string;
+  status: string;
+  markdown: string;
+  capture_ids: string[] | string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeGardenDraftsResponse {
+  items: KnowledgeGardenDraftItem[];
+  total: number;
+}
+
+export interface KnowledgeGardenDraftActionResult {
+  ok?: boolean;
+  status?: string;
+  draft_id?: string;
+  card_id?: string;
+  error?: string;
+  errors?: string[];
+  meta?: Record<string, unknown>;
+  durable_artifacts?: Array<Record<string, unknown>>;
+  warnings?: string[];
+  [key: string]: unknown;
 }
 
 export type KnowledgeObjectEventType = "conversation" | "reading_draft" | "capture_draft" | "capture" | "garden_draft" | "garden_card";

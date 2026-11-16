@@ -273,11 +273,13 @@ class TestDefaultPlatformWebSearchCoverage:
 
 
 class TestKnowledgeProductToolsets:
-    def test_personal_assistant_hides_theme_and_canvas_main_path(self):
+    def test_personal_assistant_exposes_theme_scan_but_hides_canvas_main_path(self):
         tools = set(resolve_toolset("personal-assistant"))
 
+        # The supervisor path deliberately exposes theme_scan for the
+        # "scan across notes" intent; canvas rendering stays advanced-only.
         assert "generate_canvas" not in tools
-        assert "theme_scan" not in tools
+        assert "theme_scan" in tools
         assert "theme_candidates" not in tools
         assert "start_reading_session" in tools
         assert "save_answer_to_knowledge" in tools

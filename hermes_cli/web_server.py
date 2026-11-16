@@ -4932,6 +4932,7 @@ class _KnowledgeAnswerDraftBody(BaseModel):
     sources: list[dict[str, Any]] = []
     target_capture_id: str = ""
     answer_source: str = "auto"
+    folder_path: str = ""
 
 
 class _KnowledgeGardenDraftBody(BaseModel):
@@ -4939,6 +4940,7 @@ class _KnowledgeGardenDraftBody(BaseModel):
     title: str = ""
     card_kind: str = ""
     instruction: str = ""
+    auto_commit: bool = True
 
 
 class _KnowledgeLibraryCreateBody(BaseModel):
@@ -6630,53 +6632,12 @@ def _enrich_knowledge_source(
     vault_path: Path,
     source: dict[str, Any],
 ) -> dict[str, Any]:
-    enriched = dict(source)
-    enriched["type"] = enriched.get("type") or "knowledge"
-    source_id = str(enriched.get("id") or "").strip()
-    source_path = str(enriched.get("file_path") or enriched.get("path") or "").strip()
-    row = None
-    if source_id:
-        row = conn.execute("SELECT id, file_path FROM captures WHERE id = ?", (source_id,)).fetchone()
-    if row is None and source_path:
-        row = conn.execute(
-            "SELECT id, file_path FROM captures WHERE file_path = ? OR raw_path = ?",
-            (source_path, source_path),
-        ).fetchone()
-    if row is None and source_id and len(source_id) >= 6:
-        rows = conn.execute(
-            "SELECT id, file_path FROM captures WHERE id LIKE ? ORDER BY updated_at DESC LIMIT 2",
-            (f"{source_id}%",),
-        ).fetchall()
-        if len(rows) == 1:
-            row = rows[0]
-    if row is not None:
-        item_id = str(row["id"] or "")
-        file_path = str(row["file_path"] or source_path)
-        enriched.update(
-            {
-                "item_kind": "capture",
-                "item_id": item_id,
-                "file_path": file_path,
-                "path": source_path or file_path,
-                "open_url": _knowledge_source_open_url("capture", item_id),
-            }
-        )
-        if file_path:
-            enriched["file_url"] = _knowledge_file_url(vault_path, file_path)
-        return enriched
+    # Keep capture/draft/card routing in one place.  The dashboard and the TUI
+    # gateway share the same source map contract; a local copy here silently
+    # omitted garden cards and made [K] card links unopenable.
+    from integrations.hermes_knowledge.sources import enrich_source
 
-    if source_id:
-        draft = conn.execute("SELECT id FROM capture_drafts WHERE id = ?", (source_id,)).fetchone()
-        if draft is not None:
-            item_id = str(draft["id"] or "")
-            enriched.update(
-                {
-                    "item_kind": "capture_draft",
-                    "item_id": item_id,
-                    "open_url": _knowledge_source_open_url("capture_draft", item_id),
-                }
-            )
-    return enriched
+    return enrich_source(conn, vault_path, source)
 
 
 def _enrich_knowledge_sources(sources: Any) -> list[dict[str, Any]]:
@@ -7795,6 +7756,7 @@ async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDr
             "sources": body.sources,
             "target_capture_id": body.target_capture_id,
             "answer_source": body.answer_source,
+            "folder_path": body.folder_path,
         }
         try:
             return client.create_answer_draft(payload)
@@ -7818,6 +7780,7 @@ async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDr
             sources=body.sources,
             target_capture_id=body.target_capture_id,
             answer_source=body.answer_source,
+            folder_path=body.folder_path,
         ),
     )
 
@@ -7837,11 +7800,19 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
+            if body.auto_commit:
+                return client.create_garden_draft(
+                    capture_ids=body.capture_ids,
+                    title=body.title,
+                    card_kind=body.card_kind,
+                    instruction=body.instruction,
+                )
             return client.create_garden_draft(
                 capture_ids=body.capture_ids,
                 title=body.title,
                 card_kind=body.card_kind,
                 instruction=body.instruction,
+                auto_commit=False,
             )
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
@@ -7874,6 +7845,8 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
                 break
     if not draft_id:
         return result
+    if not body.auto_commit:
+        return result
     return await _run_cancellable_ai_operation(
         request,
         "garden.commit",
@@ -7884,6 +7857,107 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
             token_verified=True,
         ),
     )
+
+
+@app.post("/api/knowledge/garden-drafts/preview")
+async def post_knowledge_garden_draft_preview(request: Request, body: _KnowledgeGardenDraftBody):
+    return await post_knowledge_garden_draft(
+        request, body.model_copy(update={"auto_commit": False})
+    )
+
+
+@app.get("/api/knowledge/garden-drafts")
+async def get_knowledge_garden_drafts(
+    request: Request,
+    limit: int = 50,
+    status: str = "draft_ready",
+):
+    _require_token(request)
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.list_garden_drafts(limit=limit, status=status)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+    with _knowledge_conn() as conn:
+        if status:
+            rows = conn.execute(
+                """SELECT id, title, one_liner, card_kind, status, markdown,
+                          capture_ids, created_at, updated_at
+                   FROM garden_drafts WHERE status = ?
+                   ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                            id DESC LIMIT ?""",
+                (status, max(1, min(int(limit), 200))),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT id, title, one_liner, card_kind, status, markdown,
+                          capture_ids, created_at, updated_at
+                   FROM garden_drafts
+                   ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                            id DESC LIMIT ?""",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        items = [dict(row) for row in rows]
+        return {"items": items, "total": len(items)}
+
+
+@app.post("/api/knowledge/garden-drafts/{draft_id}/commit")
+async def post_knowledge_garden_draft_commit(request: Request, draft_id: str):
+    _require_token(request)
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.commit_garden_draft(draft_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+    garden_bridge = _knowledge_custom_module("bridge.garden_bridge", "Garden bridge")
+    return garden_bridge.commit_garden_draft(
+        draft_id=draft_id,
+        confirmation_source="dashboard",
+        token_verified=True,
+    )
+
+
+@app.delete("/api/knowledge/garden-drafts/{draft_id}")
+async def delete_knowledge_garden_draft(request: Request, draft_id: str):
+    _require_token(request)
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.discard_garden_draft(draft_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+    with _knowledge_conn() as conn:
+        cur = conn.execute(
+            "UPDATE garden_drafts SET status = 'discarded', updated_at = datetime('now') WHERE id = ?",
+            (draft_id,),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="garden draft not found")
+        return {"ok": True, "draft_id": draft_id, "status": "discarded"}
 
 
 @app.get("/api/knowledge/reading-drafts")

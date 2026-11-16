@@ -135,6 +135,10 @@ export function GatewayChat({
       ? "正在停止"
       : "停止生成"
     : "发送";
+  const startThemeScan = (prompt: string = SCAN_TOPIC_PROMPT) => {
+    onResearchModeChange("theme_scan");
+    onPickPrompt(prompt);
+  };
 
   return (
     <>
@@ -143,12 +147,13 @@ export function GatewayChat({
         className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6"
       >
         {messages.length === 0 && !draftAssistant ? (
-          <EmptyState onPick={onPickPrompt} />
+          <EmptyState onPick={onPickPrompt} onScan={startThemeScan} />
         ) : (
           <div className="space-y-5">
             <TopicInspirationRadar
               collapsed
               onPick={onPickPrompt}
+              onScan={startThemeScan}
             />
             {messages.map((message) => (
               <TranscriptMessage
@@ -191,7 +196,7 @@ export function GatewayChat({
           <ComposerQuickActions
             disabled={inputDisabled}
             mode={researchMode}
-            onScan={() => onPickPrompt(SCAN_TOPIC_PROMPT)}
+            onScan={() => startThemeScan()}
             onChange={onResearchModeChange}
           />
           <div className="flex gap-2">
@@ -326,7 +331,13 @@ function ComposerQuickActions({
   );
 }
 
-function EmptyState({ onPick }: { onPick: (text: string) => void }) {
+function EmptyState({
+  onPick,
+  onScan,
+}: {
+  onPick: (text: string) => void;
+  onScan: (prompt?: string) => void;
+}) {
   return (
     <div className="flex min-h-full items-start justify-center py-4">
       <div className="w-full max-w-5xl">
@@ -352,7 +363,7 @@ function EmptyState({ onPick }: { onPick: (text: string) => void }) {
           </div>
 
           <div className="mt-4">
-            <TopicInspirationRadar onPick={onPick} />
+            <TopicInspirationRadar onPick={onPick} onScan={onScan} />
           </div>
         </div>
 
@@ -366,7 +377,7 @@ function EmptyState({ onPick }: { onPick: (text: string) => void }) {
               <button
                 key={starter}
                 type="button"
-                onClick={() => onPick(starter)}
+                onClick={() => (starter === SCAN_TOPIC_PROMPT ? onScan(starter) : onPick(starter))}
                 className="rounded-md border border-current/10 bg-background/60 px-3 py-2 text-left text-sm leading-5 text-foreground transition hover:border-primary/40 hover:bg-primary/10"
               >
                 {starter}
@@ -382,9 +393,11 @@ function EmptyState({ onPick }: { onPick: (text: string) => void }) {
 function TopicInspirationRadar({
   collapsed = false,
   onPick,
+  onScan,
 }: {
   collapsed?: boolean;
   onPick: (text: string) => void;
+  onScan: (prompt?: string) => void;
 }) {
   const [topic, setTopic] = React.useState<TopicKey>("all");
   const visible = TOPIC_INSPIRATIONS.filter((item) => topic === "all" || item.key === topic);
@@ -413,7 +426,7 @@ function TopicInspirationRadar({
         ))}
         <button
           type="button"
-          onClick={() => onPick(SCAN_TOPIC_PROMPT)}
+          onClick={() => onScan()}
           className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-border bg-background/60 px-2.5 py-1 text-xs font-medium text-foreground transition hover:border-primary/40 hover:bg-primary/10"
         >
           🔄 扫描跨篇新灵感
@@ -436,7 +449,7 @@ function TopicInspirationRadar({
             </p>
             <button
               type="button"
-              onClick={() => onPick(TOPIC_FALLBACK_PROMPT)}
+              onClick={() => onScan(TOPIC_FALLBACK_PROMPT)}
               className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-primary/35 bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:border-primary/55 hover:bg-primary/15"
             >
               <Sparkles className="h-3.5 w-3.5 text-primary/80" />
@@ -596,6 +609,7 @@ function TranscriptMessage({
             onSourceOpen={onSourceOpen}
             sources={answerSources}
             streaming={streaming}
+            searchBackend={message.searchBackend}
           />
         )}
       </div>
@@ -664,18 +678,28 @@ function inferredItemKind(sourceType: string): string {
   const normalized = sourceType.toLowerCase();
   if (normalized === "capture" || normalized === "capture_note" || normalized === "capture_section") return "capture";
   if (normalized === "capture_draft") return "capture_draft";
+  if (normalized === "garden_card" || normalized === "knowledge_card") return "garden_card";
   return "";
 }
 
 function inferredOpenUrl(itemKind: string, itemId: string): string | undefined {
-  return itemKind && itemId
-    ? `/knowledge-library?kind=${encodeURIComponent(itemKind)}&item=${encodeURIComponent(itemId)}`
-    : undefined;
+  if (!itemKind || !itemId) return undefined;
+  if (itemKind === "garden_card" || itemKind === "knowledge_card") {
+    return `/cards-board/${encodeURIComponent(itemId)}`;
+  }
+  return `/knowledge-library?kind=${encodeURIComponent(itemKind)}&item=${encodeURIComponent(itemId)}`;
 }
 
 function inferredRef(sourceType: string, index: number): string | undefined {
   const normalized = sourceType.toLowerCase();
   if (normalized === "web") return `W${index + 1}`;
-  if (normalized === "knowledge" || normalized.startsWith("capture")) return `${index + 1}`;
+  if (
+    normalized === "knowledge" ||
+    normalized === "garden_card" ||
+    normalized === "knowledge_card" ||
+    normalized.startsWith("capture")
+  ) {
+    return `${index + 1}`;
+  }
   return undefined;
 }

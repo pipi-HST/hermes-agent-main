@@ -522,17 +522,61 @@ class KnowledgeClient:
         title: str = "",
         card_kind: str = "",
         instruction: str = "",
+        auto_commit: bool = True,
     ) -> dict[str, Any]:
-        """Run garden synthesis (and its implicit commit) through the service."""
+        """Run garden synthesis through the service.
+
+        ``auto_commit=True`` preserves the legacy dashboard behavior.  Review
+        clients send ``False`` (or call ``preview_garden_draft``) to get a
+        draft that must be confirmed explicitly.
+        """
+        payload = {
+            "capture_ids": [str(item) for item in (capture_ids or [])],
+            "title": title,
+            "card_kind": card_kind,
+            "instruction": instruction,
+        }
+        # Omit the legacy default to keep older fake clients/tests and
+        # third-party callers byte-compatible.
+        if not auto_commit:
+            payload["auto_commit"] = False
+        return self.request("POST", "/api/garden/drafts", json=payload)
+
+    def preview_garden_draft(
+        self,
+        *,
+        capture_ids: list[str] | None = None,
+        title: str = "",
+        card_kind: str = "",
+        instruction: str = "",
+    ) -> dict[str, Any]:
         return self.request(
             "POST",
-            "/api/garden/drafts",
+            "/api/garden/drafts/preview",
             json={
                 "capture_ids": [str(item) for item in (capture_ids or [])],
                 "title": title,
                 "card_kind": card_kind,
                 "instruction": instruction,
             },
+        )
+
+    def list_garden_drafts(self, *, limit: int = 50, status: str = "draft_ready") -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        return self.request("GET", "/api/garden/drafts", params=params)
+
+    def commit_garden_draft(self, draft_id: str) -> dict[str, Any]:
+        return self.request(
+            "POST",
+            f"/api/garden/drafts/{quote(str(draft_id), safe='')}/commit",
+        )
+
+    def discard_garden_draft(self, draft_id: str) -> dict[str, Any]:
+        return self.request(
+            "DELETE",
+            f"/api/garden/drafts/{quote(str(draft_id), safe='')}",
         )
 
     def list_garden_cards(self, *, limit: int = 100, status: str = "") -> dict[str, Any]:

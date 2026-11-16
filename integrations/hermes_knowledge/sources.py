@@ -8,10 +8,15 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
+
+_CARD_SOURCE_KINDS = {"garden_card", "knowledge_card"}
 
 
 def source_open_url(kind: str, item_id: str) -> str:
+    normalized = (kind or "").strip()
+    if normalized in _CARD_SOURCE_KINDS:
+        return f"/cards-board/{quote(str(item_id), safe='')}"
     return "/knowledge-library?" + urlencode({"kind": kind, "item": item_id})
 
 
@@ -32,7 +37,7 @@ def file_url(vault_path: Path | str, file_path: str) -> str:
 
 
 def enrich_source(conn: Any, vault_path: Path | str, source: dict) -> dict:
-    """Attach capture/draft routing fields to a knowledge source."""
+    """Attach capture/draft/card routing fields to a knowledge source."""
     enriched = dict(source)
     enriched["type"] = enriched.get("type") or "knowledge"
     source_id = str(enriched.get("id") or enriched.get("item_id") or "").strip()
@@ -71,6 +76,30 @@ def enrich_source(conn: Any, vault_path: Path | str, source: dict) -> dict:
         if path:
             enriched["file_url"] = file_url(vault_path, path)
         return enriched
+
+    if source_id and conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'garden_cards'"
+    ).fetchone() is not None:
+        card = conn.execute(
+            "SELECT id FROM garden_cards WHERE id = ?", (source_id,)
+        ).fetchone()
+        if card is None and len(source_id) >= 6:
+            cards = conn.execute(
+                "SELECT id FROM garden_cards WHERE id LIKE ? LIMIT 2",
+                (f"{source_id}%",),
+            ).fetchall()
+            if len(cards) == 1:
+                card = cards[0]
+        if card is not None:
+            item_id = str(card["id"] or "")
+            enriched.update(
+                {
+                    "item_kind": "garden_card",
+                    "item_id": item_id,
+                    "open_url": source_open_url("garden_card", item_id),
+                }
+            )
+            return enriched
 
     if source_id:
         draft = conn.execute(

@@ -315,9 +315,11 @@ function canOpenKnowledgeSourceLocal(
 }
 
 function inferredOpenUrl(source: KnowledgeAnswerSource): string | undefined {
-  return source.item_kind && source.item_id
-    ? `/knowledge-library?kind=${encodeURIComponent(source.item_kind)}&item=${encodeURIComponent(source.item_id)}`
-    : undefined;
+  if (!source.item_kind || !source.item_id) return undefined;
+  if (source.item_kind === "garden_card" || source.item_kind === "knowledge_card") {
+    return `/cards-board/${encodeURIComponent(source.item_id)}`;
+  }
+  return `/knowledge-library?kind=${encodeURIComponent(source.item_kind)}&item=${encodeURIComponent(source.item_id)}`;
 }
 
 function orderSources(

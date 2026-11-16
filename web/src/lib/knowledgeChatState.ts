@@ -11,6 +11,7 @@ export interface KnowledgeMessage {
   status?: "streaming" | "complete" | "error";
   warning?: string;
   sourceHints?: KnowledgeSourceHint[];
+  searchBackend?: string;
 }
 
 export interface KnowledgeSourceHint {
@@ -46,6 +47,7 @@ export interface KnowledgeChatState {
   error: string | null;
   currentToolName: string | null;
   turnIndex: number;
+  toolSearchBackend: string | null;
 }
 
 export type KnowledgeChatAction =
@@ -76,6 +78,7 @@ export type KnowledgeChatAction =
       sourceMap?: Array<Record<string, unknown>>;
       webSources?: Array<Record<string, unknown>>;
       retrievedWebSources?: Array<Record<string, unknown>>;
+      searchBackend?: string;
     }
   | {
       type: "hydrate_messages";
@@ -106,6 +109,7 @@ export const initialKnowledgeChatState: KnowledgeChatState = {
   error: null,
   currentToolName: null,
   turnIndex: 0,
+  toolSearchBackend: null,
 };
 
 export function knowledgeChatReducer(
@@ -129,6 +133,7 @@ export function knowledgeChatReducer(
         toolCandidateSourceHints: [],
         sourceHints: [],
         toolAnswerText: "",
+        toolSearchBackend: null,
         turnIndex: state.turnIndex + 1,
         messages: [
           ...state.messages,
@@ -196,6 +201,7 @@ export function knowledgeChatReducer(
         status: "complete",
         warning: action.warning,
         sourceHints: messageSourceHints,
+        searchBackend: state.toolSearchBackend || undefined,
       };
 
       return {
@@ -297,6 +303,7 @@ export function knowledgeChatReducer(
         sourceHints: parsedToolHints,
         toolCandidateSourceHints: parsedCandidateHints,
         toolAnswerText: action.answerText || state.toolAnswerText,
+        toolSearchBackend: action.searchBackend ?? state.toolSearchBackend,
       };
     }
 
@@ -329,6 +336,7 @@ export function knowledgeChatReducer(
         toolSourceHints: [],
         toolCandidateSourceHints: [],
         toolAnswerText: "",
+        toolSearchBackend: null,
       };
     }
 
@@ -343,6 +351,7 @@ export function knowledgeChatReducer(
         toolSourceHints: [],
         toolCandidateSourceHints: [],
         toolAnswerText: "",
+        toolSearchBackend: null,
         tools: [],
         currentToolName: null,
         turnIndex: 0,
@@ -458,6 +467,30 @@ export function extractFullAnswerText(
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return "";
+}
+
+export function searchBackendFromTrace(trace: unknown): string | undefined {
+  const record = objectRecord(trace);
+  const direct = stringField(record.search_backend);
+  if (direct) return direct;
+  const providerStatus = objectRecord(record.provider_status);
+  const nested = stringField(providerStatus.search_backend);
+  return nested || undefined;
+}
+
+export function searchBackendFromToolSummaries(
+  summaries: string[] = [],
+): string | undefined {
+  for (const summary of summaries) {
+    for (const payload of extractStructuredPayloads(summary)) {
+      const meta = objectRecord(payload.meta);
+      const backend = searchBackendFromTrace(meta.research_trace)
+        ?? searchBackendFromTrace(meta.provider_status)
+        ?? searchBackendFromTrace(payload);
+      if (backend) return backend;
+    }
+  }
+  return undefined;
 }
 
 export function toolProgressEventsFromSummary(
@@ -732,20 +765,31 @@ function inferredItemKind(sourceType?: string): string {
     ? "capture"
     : normalized === "capture_draft"
       ? "capture_draft"
-      : "";
+      : normalized === "garden_card" || normalized === "knowledge_card"
+        ? "garden_card"
+        : "";
 }
 
 function inferredOpenUrl(itemKind: string, itemId: string): string | undefined {
-  return itemKind && itemId
-    ? `/knowledge-library?kind=${encodeURIComponent(itemKind)}&item=${encodeURIComponent(itemId)}`
-    : undefined;
+  if (!itemKind || !itemId) return undefined;
+  if (itemKind === "garden_card" || itemKind === "knowledge_card") {
+    return `/cards-board/${encodeURIComponent(itemId)}`;
+  }
+  return `/knowledge-library?kind=${encodeURIComponent(itemKind)}&item=${encodeURIComponent(itemId)}`;
 }
 
 function inferredRef(sourceType: string | undefined, index: number): string | undefined {
   if (!sourceType) return undefined;
   const normalized = sourceType.toLowerCase();
   if (normalized === "web") return `W${index + 1}`;
-  if (normalized === "knowledge" || normalized.startsWith("capture")) return `${index + 1}`;
+  if (
+    normalized === "knowledge" ||
+    normalized === "garden_card" ||
+    normalized === "knowledge_card" ||
+    normalized.startsWith("capture")
+  ) {
+    return `${index + 1}`;
+  }
   return undefined;
 }
 

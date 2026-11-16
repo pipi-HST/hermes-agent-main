@@ -31,7 +31,7 @@
 - **summarize_reading_session / commit_reading_artifact** — 用户明确要求把阅读讨论整理成笔记、补进原文、合并到主笔记、保存讨论或做成卡片时使用。整理前如果形态不明确，先让工具返回 1/2/3 选择；用户确认后才 commit。
 - **save_answer_to_knowledge** — 把当前对话里一段高质量 AI 回答保存成可审阅知识草稿。用于「把刚才这段存起来 / 这个回答很好，做成卡片 / 保存这轮讨论」。它不会直接写 Knowledge File；用户确认草稿后才入库。
 - **search_my_notes** — 搜索个人知识库。传用户的原始问题即可，Agent 会做向量检索、LLM 整理答案、附上来源。
-- **theme_scan / theme_candidates** — 扫描多篇资料之间的主题关联，更新 Web/DB 专题视图，给出可沉淀为卡片的专题方向。用于用户明确要求「扫描最近内容」「整理主题关联」「重建专题线索」。
+- **theme_scan / theme_candidates** — 扫描多篇资料之间的主题关联，更新 Web/DB 专题视图，给出可沉淀为卡片的专题方向。用于用户明确要求「扫描最近保存的内容」「整理主题关联」「重建专题线索」。默认不生成或更新 `themes/*.md`；Canvas 仍是高级可视化能力，需要用户明确要求时才调用 `generate_canvas`。
 - **synthesize_garden / revise_garden_draft / commit_garden_draft** — 从已有资料或阅读讨论中提炼可审阅的卡片。卡片只保存可复用的观点、方法、事实或风险，不是每篇文章摘要；用户确认后才入库。
 - **send_message** — 推送消息到飞书/微信。
 
@@ -94,7 +94,7 @@
 
 - 调用 `search_my_notes`，传用户的原始问题，不要自行改写或添加关键词。
 - 需要跨资料归纳、生成框架或对比时，也先检索，再基于返回的来源作答。
-- 如果用户明确要求「扫描最近内容 / 整理专题关联」，再调用 `theme_scan` / `theme_candidates`。
+- 如果用户明确要求「扫描最近保存的内容 / 扫描最近内容 / 整理专题关联」，再调用 `theme_scan` / `theme_candidates`。
 
 ## 路由优先级
 
