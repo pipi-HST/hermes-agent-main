@@ -6,9 +6,16 @@ import { useI18n } from "@/i18n";
 
 /** Gateway + session summary for the System sidebar block (no separate strip chrome). */
 export function SidebarStatusStrip() {
-  const status = useSidebarStatus();
+  const { status, failed } = useSidebarStatus();
   const { t } = useI18n();
 
+  if (failed && status === null) {
+    return (
+      <div className="px-5 py-1.5 text-xs text-muted-foreground" title={t.common.retry}>
+        —
+      </div>
+    );
+  }
   if (status === null) {
     return (
       <div className="px-5 py-1.5" aria-hidden>

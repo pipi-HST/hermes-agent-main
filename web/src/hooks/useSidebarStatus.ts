@@ -10,18 +10,29 @@ const POLL_MS = 10_000;
  */
 export function useSidebarStatus() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     const load = () => {
       api
         .getStatus()
-        .then(setStatus)
-        .catch(() => {});
+        .then((next) => {
+          if (cancelled) return;
+          setStatus(next);
+          setFailed(false);
+        })
+        .catch(() => {
+          if (!cancelled) setFailed(true);
+        });
     };
     load();
     const id = setInterval(load, POLL_MS);
-    return () => clearInterval(id);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, []);
 
-  return status;
+  return { status, failed };
 }

@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 
 export function SidebarFooter() {
-  const status = useSidebarStatus();
+  const { status } = useSidebarStatus();
   const { t } = useI18n();
 
   return (
