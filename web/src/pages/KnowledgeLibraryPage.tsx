@@ -1860,181 +1860,47 @@ export default function KnowledgeLibraryPage() {
             : "lg:grid-cols-[var(--knowledge-left-width)_8px_minmax(0,1fr)]",
         )}
       >
-        {leftPaneCollapsed ? (
-          <CollapsedKnowledgeLeftRail
-            onExpand={() => setLeftPaneCollapsed(false)}
-          />
-        ) : (
-          <>
-            <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
-              <div className="shrink-0 border-b border-border p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <h2 className="text-sm font-semibold">资料与专题</h2>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setLeftPaneCollapsed(true)}
-                      className="rounded p-1 text-muted-foreground transition hover:bg-background/80 hover:text-foreground"
-                      title="收起侧栏"
-                      aria-label="收起侧栏"
-                    >
-                      <PanelLeftClose className="h-4 w-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void refreshAll()}
-                      className="rounded p-1 text-muted-foreground transition hover:bg-background/80 hover:text-foreground"
-                      title="刷新"
-                      aria-label="刷新"
-                    >
-                      <RefreshCw className={cn("h-4 w-4", (loadingFolders || loadingItems) && "animate-spin")} />
-                    </button>
-                  </div>
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <Metric label="全部" value={stats.all} />
-                  <Metric label="草稿" value={stats.drafts} />
-                  <Metric label="已入库" value={stats.inLibrary} />
-                  <Metric label="有卡片" value={stats.cards} />
-                </div>
-                <label className="mt-3 flex h-9 items-center gap-2 rounded-md border border-border bg-background/70 px-3">
-                  <Search className="h-4 w-4 text-muted-foreground" />
-                  <input
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="搜索文件"
-                    className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-                  />
-                </label>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {STATUS_FILTERS.map((filter) => (
-                    <FilterButton
-                      key={filter.key}
-                      active={statusFilter === filter.key}
-                      label={filter.label}
-                      onClick={() => setStatusFilter(filter.key)}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            {query.trim() || statusFilter !== "all" ? (
-              <div>
-                <div className="mb-2 flex items-start justify-between gap-3 px-2">
-                  <div className="min-w-0">
-                    <h3 className="truncate text-[0.68rem] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                      {query.trim() ? "搜索结果" : selectionTitle}
-                    </h3>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      {visibleItems.length} 个文件
-                    </p>
-                  </div>
-                </div>
-                {loadingItems ? (
-                  <LoadingState text="读取文件..." />
-                ) : visibleItems.length ? (
-                  <div className="space-y-1.5">
-                    {visibleItems.map((item) => (
-                      <FileListItem
-                        key={itemKey(item)}
-                        active={selectedKey === itemKey(item)}
-	                        item={item}
-	                        onClick={() => openItemFromSidebar(item)}
-	                      />
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState
-                    text="当前知识库范围没有文件。"
-                    onCreate={createKnowledgeFile}
-                    onImport={importContent}
-                  />
-                )}
-              </div>
-            ) : (
-              <>
-                <NavSection title="处理队列">
-                  <SidebarButton
-                    active={selection.type === "all"}
-                    count={stats.all}
-                    icon={Layers3}
-                    label="所有文件"
-                    onClick={selectAllFiles}
-                  />
-                  <SidebarButton
-                    active={selection.type === "view" && selection.value === "review"}
-                    count={stats.drafts}
-                    icon={Archive}
-                    label="草稿箱"
-                    onClick={() => selectView("review", "draft")}
-                  />
-                  <SidebarButton
-                    active={selection.type === "view" && selection.value === "recent"}
-                    count={viewCount(views, "recent", allItems.length)}
-                    icon={Clock3}
-                    label="最近更新"
-                    onClick={() => selectView("recent")}
-                  />
-                </NavSection>
-
-                <NavSection title="文件夹">
-                  <div className="mb-2 flex gap-2 px-1">
-                    <input
-                      value={newFolderName}
-                      onChange={(event) => setNewFolderName(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") void createFolder();
-                      }}
-                      placeholder="新建文件夹"
-                      className="min-w-0 flex-1 rounded-md border border-border bg-background/70 px-2 py-1.5 text-sm outline-none focus:border-primary/40"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void createFolder()}
-                      disabled={creatingFolder || !newFolderName.trim()}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:opacity-40"
-                    >
-                      {creatingFolder ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderPlus className="h-4 w-4" />}
-                      创建
-                    </button>
-                  </div>
-                  {folders.map((folder) => (
-                    <FolderNode
-                      key={folder.path}
-                      active={selection.type === "folder" && selection.value === folder.path}
-                      expanded={expandedFolders.has(folder.path)}
-                      folder={folder}
-                      editing={renamingFolder === folder.path}
-                      editValue={renameFolderName}
-                      renaming={folderRenaming && renamingFolder === folder.path}
-                      items={itemsByFolder.get(folder.path) ?? []}
-                      selectedKey={selectedKey}
-                      onCancelRename={cancelRenameFolder}
-                      onEditValueChange={setRenameFolderName}
-                      onOpenItem={openItemFromSidebar}
-                      onRename={() => void renameFolder()}
-                      onSelectFolder={selectFolder}
-                      onStartRename={startRenameFolder}
-                      onToggleFolder={toggleFolder}
-                    />
-                  ))}
-                </NavSection>
-              </>
-            )}
-              </div>
-            </aside>
-            <ResizableRail
-              containerRef={libraryLayoutRef}
-              defaultWidth={DEFAULT_KNOWLEDGE_LEFT_WIDTH}
-              maxWidth={460}
-              minWidth={260}
-              onCommit={setLeftPaneWidth}
-              storageKey={KNOWLEDGE_LEFT_WIDTH_KEY}
-              variableName="--knowledge-left-width"
-            />
-          </>
-        )}
+        <KnowledgeLibrarySidebar
+          leftPaneCollapsed={leftPaneCollapsed}
+          setLeftPaneCollapsed={setLeftPaneCollapsed}
+          refreshAll={refreshAll}
+          loadingFolders={loadingFolders}
+          loadingItems={loadingItems}
+          stats={stats}
+          query={query}
+          setQuery={setQuery}
+          statusFilter={statusFilter}
+          setStatusFilter={setStatusFilter}
+          visibleItems={visibleItems}
+          selectionTitle={selectionTitle}
+          selectedKey={selectedKey}
+          openItemFromSidebar={openItemFromSidebar}
+          createKnowledgeFile={createKnowledgeFile}
+          importContent={importContent}
+          selection={selection}
+          selectAllFiles={selectAllFiles}
+          selectView={selectView}
+          views={views}
+          allItemsCount={allItems.length}
+          folders={folders}
+          newFolderName={newFolderName}
+          setNewFolderName={setNewFolderName}
+          createFolder={createFolder}
+          creatingFolder={creatingFolder}
+          expandedFolders={expandedFolders}
+          toggleFolder={toggleFolder}
+          selectFolder={selectFolder}
+          startRenameFolder={startRenameFolder}
+          cancelRenameFolder={cancelRenameFolder}
+          renamingFolder={renamingFolder}
+          renameFolderName={renameFolderName}
+          setRenameFolderName={setRenameFolderName}
+          folderRenaming={folderRenaming}
+          renameFolder={renameFolder}
+          itemsByFolder={itemsByFolder}
+          libraryLayoutRef={libraryLayoutRef}
+          setLeftPaneWidth={setLeftPaneWidth}
+        />
 
 	        {mode === "paste" ? (
 	          <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
@@ -2186,6 +2052,264 @@ export default function KnowledgeLibraryPage() {
 	  );
 	}
 
+interface KnowledgeLibrarySidebarProps {
+  leftPaneCollapsed: boolean;
+  setLeftPaneCollapsed: (value: boolean) => void;
+  refreshAll: () => void | Promise<void>;
+  loadingFolders: boolean;
+  loadingItems: boolean;
+  stats: { all: number; drafts: number; inLibrary: number; cards: number };
+  query: string;
+  setQuery: (value: string) => void;
+  statusFilter: StatusFilter;
+  setStatusFilter: (value: StatusFilter) => void;
+  visibleItems: KnowledgeLibraryItem[];
+  selectionTitle: string;
+  selectedKey: string;
+  openItemFromSidebar: (item: KnowledgeLibraryItem) => void;
+  createKnowledgeFile: () => void;
+  importContent: () => void;
+  selection: LibrarySelection;
+  selectAllFiles: () => void;
+  selectView: (view: string, filter?: StatusFilter) => void;
+  views: KnowledgeLibrarySmartView[];
+  allItemsCount: number;
+  folders: KnowledgeLibraryFolder[];
+  newFolderName: string;
+  setNewFolderName: (value: string) => void;
+  createFolder: () => void | Promise<void>;
+  creatingFolder: boolean;
+  expandedFolders: Set<string>;
+  toggleFolder: (folder: string) => void;
+  selectFolder: (folder: string) => void;
+  startRenameFolder: (folder: KnowledgeLibraryFolder) => void;
+  cancelRenameFolder: () => void;
+  renamingFolder: string;
+  renameFolderName: string;
+  setRenameFolderName: (value: string) => void;
+  folderRenaming: boolean;
+  renameFolder: () => void | Promise<void>;
+  itemsByFolder: Map<string, KnowledgeLibraryItem[]>;
+  libraryLayoutRef: React.RefObject<HTMLDivElement | null>;
+  setLeftPaneWidth: (width: number) => void;
+}
+
+function KnowledgeLibrarySidebar({
+  leftPaneCollapsed,
+  setLeftPaneCollapsed,
+  refreshAll,
+  loadingFolders,
+  loadingItems,
+  stats,
+  query,
+  setQuery,
+  statusFilter,
+  setStatusFilter,
+  visibleItems,
+  selectionTitle,
+  selectedKey,
+  openItemFromSidebar,
+  createKnowledgeFile,
+  importContent,
+  selection,
+  selectAllFiles,
+  selectView,
+  views,
+  allItemsCount,
+  folders,
+  newFolderName,
+  setNewFolderName,
+  createFolder,
+  creatingFolder,
+  expandedFolders,
+  toggleFolder,
+  selectFolder,
+  startRenameFolder,
+  cancelRenameFolder,
+  renamingFolder,
+  renameFolderName,
+  setRenameFolderName,
+  folderRenaming,
+  renameFolder,
+  itemsByFolder,
+  libraryLayoutRef,
+  setLeftPaneWidth,
+}: KnowledgeLibrarySidebarProps) {
+  if (leftPaneCollapsed) {
+    return <CollapsedKnowledgeLeftRail onExpand={() => setLeftPaneCollapsed(false)} />;
+  }
+  return (
+    <>
+            <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
+              <div className="shrink-0 border-b border-border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold">资料与专题</h2>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setLeftPaneCollapsed(true)}
+                      className="rounded p-1 text-muted-foreground transition hover:bg-background/80 hover:text-foreground"
+                      title="收起侧栏"
+                      aria-label="收起侧栏"
+                    >
+                      <PanelLeftClose className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void refreshAll()}
+                      className="rounded p-1 text-muted-foreground transition hover:bg-background/80 hover:text-foreground"
+                      title="刷新"
+                      aria-label="刷新"
+                    >
+                      <RefreshCw className={cn("h-4 w-4", (loadingFolders || loadingItems) && "animate-spin")} />
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <Metric label="全部" value={stats.all} />
+                  <Metric label="草稿" value={stats.drafts} />
+                  <Metric label="已入库" value={stats.inLibrary} />
+                  <Metric label="有卡片" value={stats.cards} />
+                </div>
+                <label className="mt-3 flex h-9 items-center gap-2 rounded-md border border-border bg-background/70 px-3">
+                  <Search className="h-4 w-4 text-muted-foreground" />
+                  <input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="搜索文件"
+                    className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                  />
+                </label>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {STATUS_FILTERS.map((filter) => (
+                    <FilterButton
+                      key={filter.key}
+                      active={statusFilter === filter.key}
+                      label={filter.label}
+                      onClick={() => setStatusFilter(filter.key)}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            {query.trim() || statusFilter !== "all" ? (
+              <div>
+                <div className="mb-2 flex items-start justify-between gap-3 px-2">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-[0.68rem] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                      {query.trim() ? "搜索结果" : selectionTitle}
+                    </h3>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {visibleItems.length} 个文件
+                    </p>
+                  </div>
+                </div>
+                {loadingItems ? (
+                  <LoadingState text="读取文件..." />
+                ) : visibleItems.length ? (
+                  <div className="space-y-1.5">
+                    {visibleItems.map((item) => (
+                      <FileListItem
+                        key={itemKey(item)}
+                        active={selectedKey === itemKey(item)}
+	                        item={item}
+	                        onClick={() => openItemFromSidebar(item)}
+	                      />
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState
+                    text="当前知识库范围没有文件。"
+                    onCreate={createKnowledgeFile}
+                    onImport={importContent}
+                  />
+                )}
+              </div>
+            ) : (
+              <>
+                <NavSection title="处理队列">
+                  <SidebarButton
+                    active={selection.type === "all"}
+                    count={stats.all}
+                    icon={Layers3}
+                    label="所有文件"
+                    onClick={selectAllFiles}
+                  />
+                  <SidebarButton
+                    active={selection.type === "view" && selection.value === "review"}
+                    count={stats.drafts}
+                    icon={Archive}
+                    label="草稿箱"
+                    onClick={() => selectView("review", "draft")}
+                  />
+                  <SidebarButton
+                    active={selection.type === "view" && selection.value === "recent"}
+                    count={viewCount(views, "recent", allItemsCount)}
+                    icon={Clock3}
+                    label="最近更新"
+                    onClick={() => selectView("recent")}
+                  />
+                </NavSection>
+
+                <NavSection title="文件夹">
+                  <div className="mb-2 flex gap-2 px-1">
+                    <input
+                      value={newFolderName}
+                      onChange={(event) => setNewFolderName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void createFolder();
+                      }}
+                      placeholder="新建文件夹"
+                      className="min-w-0 flex-1 rounded-md border border-border bg-background/70 px-2 py-1.5 text-sm outline-none focus:border-primary/40"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void createFolder()}
+                      disabled={creatingFolder || !newFolderName.trim()}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:opacity-40"
+                    >
+                      {creatingFolder ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderPlus className="h-4 w-4" />}
+                      创建
+                    </button>
+                  </div>
+                  {folders.map((folder) => (
+                    <FolderNode
+                      key={folder.path}
+                      active={selection.type === "folder" && selection.value === folder.path}
+                      expanded={expandedFolders.has(folder.path)}
+                      folder={folder}
+                      editing={renamingFolder === folder.path}
+                      editValue={renameFolderName}
+                      renaming={folderRenaming && renamingFolder === folder.path}
+                      items={itemsByFolder.get(folder.path) ?? []}
+                      selectedKey={selectedKey}
+                      onCancelRename={cancelRenameFolder}
+                      onEditValueChange={setRenameFolderName}
+                      onOpenItem={openItemFromSidebar}
+                      onRename={() => void renameFolder()}
+                      onSelectFolder={selectFolder}
+                      onStartRename={startRenameFolder}
+                      onToggleFolder={toggleFolder}
+                    />
+                  ))}
+                </NavSection>
+              </>
+            )}
+              </div>
+            </aside>
+            <ResizableRail
+              containerRef={libraryLayoutRef}
+              defaultWidth={DEFAULT_KNOWLEDGE_LEFT_WIDTH}
+              maxWidth={460}
+              minWidth={260}
+              onCommit={setLeftPaneWidth}
+              storageKey={KNOWLEDGE_LEFT_WIDTH_KEY}
+              variableName="--knowledge-left-width"
+            />
+    </>
+  );
+}
 function itemKey(item: KnowledgeLibraryItem): string {
   return `${item.kind}:${item.id}`;
 }
@@ -2227,6 +2351,7 @@ function editableFolderSuggestion(intent: Record<string, unknown> | undefined): 
     mode,
     folder_path: folderPath,
     reason: stringValue(suggestion.reason) || "AI 未返回明确文件夹建议，先放入 Inbox 等待人工确认。",
+
   };
 }
 
