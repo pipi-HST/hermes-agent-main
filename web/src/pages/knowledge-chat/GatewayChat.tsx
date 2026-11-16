@@ -19,7 +19,7 @@ import {
 import { KnowledgeAnswerView, type KnowledgeAnswerSource } from "@/components/KnowledgeAnswerView";
 import type { ConnectionState } from "@/lib/gatewayClient";
 import { isKnowledgeSourceHint, type KnowledgeMessage, type KnowledgeSourceHint } from "@/lib/knowledgeChatState";
-import type { KnowledgeResearchMode } from "@/lib/api";
+import type { KnowledgeChatResearchMode } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { AnswerOutputType, ComposerAttachment } from "./shared";
 
@@ -114,14 +114,14 @@ export function GatewayChat({
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   input: string;
   messages: KnowledgeMessage[];
-  researchMode: KnowledgeResearchMode;
+  researchMode: KnowledgeChatResearchMode;
   interruptRequested: boolean;
   running: boolean;
   transcriptRef: React.RefObject<HTMLDivElement | null>;
   uploading: boolean;
   onInputChange: (value: string) => void;
   onPickPrompt: (value: string) => void;
-  onResearchModeChange: (mode: KnowledgeResearchMode) => void;
+  onResearchModeChange: (mode: KnowledgeChatResearchMode) => void;
   onRemoveAttachment: (id: string) => void;
   onSaveAnswer: (message: KnowledgeMessage, outputType: AnswerOutputType) => void;
   onSourceOpen?: (source: KnowledgeAnswerSource) => void;
@@ -284,11 +284,11 @@ function ComposerQuickActions({
   onScan,
 }: {
   disabled: boolean;
-  mode: KnowledgeResearchMode;
-  onChange: (mode: KnowledgeResearchMode) => void;
+  mode: KnowledgeChatResearchMode;
+  onChange: (mode: KnowledgeChatResearchMode) => void;
   onScan: () => void;
 }) {
-  const webEnabled = mode === "local_web" || mode === "web_only";
+  const webEnabled = mode === "local_web";
   return (
     <div className="mb-2 flex flex-wrap items-center gap-2">
       <button

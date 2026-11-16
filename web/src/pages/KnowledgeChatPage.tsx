@@ -17,6 +17,7 @@ import {
   type KnowledgeLibraryFolder,
   type KnowledgeObjectEvent,
   type KnowledgeReadingDraft,
+  type KnowledgeChatResearchMode,
   type KnowledgeResearchMode,
   type SessionInfo,
 } from "@/lib/api";
@@ -164,11 +165,9 @@ const HISTORY_RECONCILE_INTERVAL_MS = 2_000;
 const HISTORY_RECONCILE_MAX_MS = 90_000;
 const HISTORY_RECONCILE_IDLE_MS = 3_000;
 const KNOWLEDGE_TOOLSETS = ["knowledge-web-research"];
-const KNOWLEDGE_TOOLSETS_BY_MODE: Record<KnowledgeResearchMode, string[]> = {
-  current_article_only: ["knowledge-local"],
+const KNOWLEDGE_TOOLSETS_BY_MODE: Record<KnowledgeChatResearchMode, string[]> = {
   local_only: ["knowledge-local"],
   local_web: ["knowledge-web-research"],
-  web_only: ["knowledge-web-research"],
   // toolsets.py exposes theme_scan/theme_candidates/generate_canvas as "knowledge-advanced".
   theme_scan: ["knowledge-local", "knowledge-advanced"],
 };
@@ -289,7 +288,7 @@ export default function KnowledgeChatPage() {
     "--knowledge-chat-sidebar-width": `${sidebarWidth}px`,
     "--knowledge-chat-inspector-width": `${inspectorWidth}px`,
   } as CSSProperties;
-  const [researchMode, setResearchMode] = useState<KnowledgeResearchMode>("local_web");
+  const [researchMode, setResearchMode] = useState<KnowledgeChatResearchMode>("local_web");
   const initialResearchModeRef = useRef(researchMode);
 
   useEffect(() => {
@@ -2107,16 +2106,14 @@ function buildPromptText(text: string, attachments: ComposerAttachment[]): strin
   return [text, ...fileRefs].filter(Boolean).join("\n\n");
 }
 
-function withResearchModeInstruction(text: string, mode: KnowledgeResearchMode): string {
-  const label: Record<KnowledgeResearchMode, string> = {
-    current_article_only: "当前文章",
+function withResearchModeInstruction(text: string, mode: KnowledgeChatResearchMode): string {
+  const label: Record<KnowledgeChatResearchMode, string> = {
     local_only: "仅知识库",
     local_web: "知识库 + 联网搜索",
-    web_only: "联网搜索",
     theme_scan: "跨篇灵感扫描",
   };
   const citationInstruction =
-    mode === "local_web" || mode === "web_only"
+    mode === "local_web"
       ? "使用联网搜索结果回答时，请尽量在关键结论后标注对应来源编号，如 [W1]。"
       : "";
   const toolInstruction =
@@ -2124,11 +2121,7 @@ function withResearchModeInstruction(text: string, mode: KnowledgeResearchMode):
       ? "请调用 research_with_web 统一完成知识库与联网检索，并传入 force_web=true；不要调用未提供的独立知识库搜索工具。"
       : mode === "theme_scan"
         ? "请调用 theme_scan 扫描知识卡片之间的跨篇关联；已有候选组用 theme_candidates 查看，需要关系画布时调用 generate_canvas。不要用 search_my_notes 临时拼组。"
-        : mode === "web_only"
-          ? "请调用 research_with_web 完成联网检索；不要调用未提供的独立网页抽取或知识库搜索工具。"
-          : mode === "local_only"
-            ? "请只使用当前可用的知识库检索工具，不要调用联网搜索工具。"
-            : "";
+        : "请只使用当前可用的知识库检索工具，不要调用联网搜索工具。";
   return [
     `【Hermes Knowledge 检索模式：${label[mode]}（mode=${mode}）】`,
     toolInstruction,
@@ -2297,7 +2290,15 @@ function buildGardenDraftInstruction(reason: string, suggestionsText: string): s
 }
 
 function knowledgeToolsetsForMode(mode: KnowledgeResearchMode): string[] {
-  return KNOWLEDGE_TOOLSETS_BY_MODE[mode] ?? KNOWLEDGE_TOOLSETS;
+  // Historical answers may carry `web_only`; it uses the same web research
+  // toolset as local_web. Current article scope maps to the local toolset.
+  if (mode === "local_web" || mode === "web_only") {
+    return KNOWLEDGE_TOOLSETS_BY_MODE.local_web;
+  }
+  if (mode === "theme_scan") {
+    return KNOWLEDGE_TOOLSETS_BY_MODE.theme_scan;
+  }
+  return KNOWLEDGE_TOOLSETS_BY_MODE.local_only ?? KNOWLEDGE_TOOLSETS;
 }
 
 function gatewayMessagesToWorkbench(messages: GatewayResumeMessage[]): {

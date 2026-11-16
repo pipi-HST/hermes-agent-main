@@ -26,16 +26,18 @@ import { ResizableRail } from "@/components/ResizableRail";
 import { cn } from "@/lib/utils";
 import {
   DEFAULT_KNOWLEDGE_LEFT_WIDTH,
-  EmptyState,
   KNOWLEDGE_LEFT_WIDTH_KEY,
-  type LibrarySelection,
-  LoadingState,
   STATUS_FILTERS,
-  StatusBadge,
+  type LibrarySelection,
   type StatusFilter,
-  TinyPill,
   formatIso,
   itemKey,
+} from "@/pages/knowledge-library/model";
+import {
+  EmptyState,
+  LoadingState,
+  StatusBadge,
+  TinyPill,
 } from "@/pages/knowledge-library/shared";
 
 interface KnowledgeLibrarySidebarProps {

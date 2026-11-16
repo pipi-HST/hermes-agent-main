@@ -14,16 +14,13 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
   CircleAlert,
   Copy,
   Eye,
   ExternalLink,
-  FilePlus2,
   FileText,
   Layers3,
   Loader2,
-  Minimize2,
   MoreHorizontal,
   NotebookPen,
   PanelRightClose,
@@ -35,7 +32,6 @@ import {
   Send,
   SquareStop,
   Trash2,
-  UploadCloud,
   XCircle,
 } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -43,9 +39,6 @@ import {
   api,
   createAiOperationId,
   type KnowledgeCaptureDraft,
-  type KnowledgeGardenDraftResponse,
-  type KnowledgeLibraryDependencies,
-  type KnowledgeLibraryDeleteResponse,
   type KnowledgeLibraryFolder,
   type KnowledgeLibraryItem,
   type KnowledgeLibrarySelectionChatResponse,
@@ -60,49 +53,66 @@ import { cn } from "@/lib/utils";
 import { ResizableRail, readStoredWidth } from "@/components/ResizableRail";
 import { KnowledgeLibraryHeader } from "@/pages/KnowledgeLibraryHeader";
 import { KnowledgeLibrarySidebar } from "@/pages/knowledge-library/KnowledgeLibrarySidebar";
+import {
+  bridgeMetaString,
+  buildGardenDraftInstruction,
+  editableAiSuggestionsStatus,
+  editableCardSuggestion,
+  editableDraftTitleSource,
+  editableFolderSuggestion,
+  firstGardenCardHint,
+  formatEditableCardSuggestions,
+  gardenDraftError,
+  gardenDraftNotice,
+  groupItemsByFolder,
+  isAbortError,
+  isAiCancelledResult,
+  isLibraryNotFoundError,
+  libraryDeleteConfirmMessage,
+  libraryDeleteNotice,
+  libraryHasBlockingDependencies,
+  libraryPermanentDeleteBlockedMessage,
+  libraryPermanentDeleteConfirmMessage,
+  libraryPermanentDeleteNotice,
+  matchesStatusFilter,
+  parseCardSuggestionsText,
+  parseTagsText,
+  selectionLabel,
+  stringValue,
+} from "@/pages/knowledge-library/helpers";
+import {
+  EmptyState,
+  LoadingState,
+  StatusBadge,
+  TinyPill,
+} from "@/pages/knowledge-library/shared";
+import {
+  type LibrarySelection,
+  type StatusFilter,
+  itemKey,
+} from "@/pages/knowledge-library/model";
+import { CollapsedAIPanelRail } from "@/pages/knowledge-library/CollapsedAIPanelRail";
+import { type ArticleSelectionContext } from "@/pages/knowledge-library/selection";
+import {
+  ImmersiveReadingOverlay,
+  ReadonlyMarkdownDocument,
+} from "@/pages/knowledge-library/ReadingOverlay";
 import { useWorkspaceChrome } from "@/contexts/WorkspaceChromeContext";
 import {
   EditableCaptureWorkbench,
   type EditableCardCommitStatus,
   type EditableCaptureStatus,
 } from "@/pages/knowledge-chat/EditableCaptureWorkbench";
-import { Markdown } from "@/components/Markdown";
 import { KnowledgeAnswerView } from "@/components/KnowledgeAnswerView";
 import {
   analyzeKnowledgeOutlineMarkdown,
   repairKnowledgeOutlineMarkdown,
 } from "@/lib/markdownNavigation";
 
-type LibrarySelection =
-  | { type: "all"; value: "all" }
-  | { type: "folder"; value: string }
-  | { type: "view"; value: string };
-
 type LibraryMode = "files" | "paste";
 type LibraryWorkbenchMode = "browse" | "edit";
-type StatusFilter = "all" | "draft" | "in_library" | "searchable" | "cards";
 type ArticleAIPanelMode = "collapsed" | "assist" | "focus";
 type AiOperationState = { id: string; label: string; controller: AbortController; stopping: boolean } | null;
-
-function isAiCancelledResult(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return record.cancelled === true || record.status === "cancelled";
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
-}
-
-interface ArticleSelectionContext {
-  selectedText: string;
-  surroundingBefore: string;
-  surroundingAfter: string;
-  headingPath: string[];
-  selectionStart?: number;
-  selectionEnd?: number;
-  selectionConfidence: "offset" | "text_only" | "none";
-}
 
 interface ArticleAiRequestContext {
   question: string;
@@ -158,6 +168,9 @@ interface ArticleChatMessage {
 
 type ArticleChatMessagesByMode = Record<"current_article_only" | "local_web", ArticleChatMessage[]>;
 
+/** Modes the article companion exposes; `web_only` only appears in history. */
+type ArticleResearchMode = "current_article_only" | "local_web";
+
 const EMPTY_ARTICLE_CHAT_MESSAGES: ArticleChatMessagesByMode = {
   current_article_only: [],
   local_web: [],
@@ -180,23 +193,11 @@ const DEFAULT_KNOWLEDGE_AI_FOCUS_WIDTH = 520;
 const MAX_SELECTION_SEARCH_CHARS = 1000;
 const ARTICLE_AI_STREAM_TIMEOUT_MS = 100_000;
 const SELECTION_TOO_LONG_MESSAGE = "选区超过 1000 字，当前不支持基于超长选区检索。请缩短选区后再试。";
-const LIBRARY_NOT_FOUND_PATTERNS = [
-  "Library capture not found",
-  "Library draft not found",
-  "Capture not found",
-  "Capture draft not found",
-];
-
 const ARTICLE_AI_STARTERS: Array<{ label: string; prompt: string }> = [
   { label: "总结核心结论", prompt: "请用三句话总结这篇资料的核心结论，并指出它回答了什么真问题。" },
   { label: "讲懂不懂的段落", prompt: "请用通俗的语言讲懂这篇资料里最难理解的概念，并举一个实际例子。" },
   { label: "提炼 3 张卡片", prompt: "请把这篇资料提炼成 3 张可复用的知识卡片，每张都说明适用场景与边界。" },
 ];
-
-function isLibraryNotFoundError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return message.startsWith("404:") && LIBRARY_NOT_FOUND_PATTERNS.some((pattern) => message.includes(pattern));
-}
 
 export default function KnowledgeLibraryPage() {
   const navigate = useNavigate();
@@ -260,7 +261,7 @@ export default function KnowledgeLibraryPage() {
   const [selectionContext, setSelectionContext] = useState<ArticleSelectionContext | null>(null);
   const [chatMessagesByMode, setChatMessagesByMode] = useState<ArticleChatMessagesByMode>(EMPTY_ARTICLE_CHAT_MESSAGES);
   const [chatQuestion, setChatQuestion] = useState("");
-  const [articleResearchMode, setArticleResearchMode] = useState<KnowledgeResearchMode>("current_article_only");
+  const [articleResearchMode, setArticleResearchMode] = useState<ArticleResearchMode>("current_article_only");
   const [historySummary, setHistorySummary] = useState("");
   const [historySummaryVersion, setHistorySummaryVersion] = useState(0);
   const [chatLoading, setChatLoading] = useState(false);
@@ -1465,11 +1466,17 @@ export default function KnowledgeLibraryPage() {
     });
   }, []);
 
-  const askArticleAi = useCallback(async (override?: { question?: string; mode?: KnowledgeResearchMode; requestContext?: ArticleAiRequestContext }) => {
+  const askArticleAi = useCallback(async (override?: { question?: string; mode?: ArticleResearchMode; requestContext?: ArticleAiRequestContext }) => {
     if (!detail || chatLoading) return;
     const requestContext = override?.requestContext;
     const question = (requestContext?.question ?? override?.question ?? chatQuestion).trim();
-    const requestMode = requestContext?.mode ?? override?.mode ?? articleResearchMode;
+    const rawMode: KnowledgeResearchMode =
+      requestContext?.mode ?? override?.mode ?? articleResearchMode;
+    // web_only is API/eval-only. Historical answers may still carry it; rerun
+    // as local_web with force_web so the "must search the web" intent survives.
+    const requestMode: ArticleResearchMode =
+      rawMode === "local_web" || rawMode === "web_only" ? "local_web" : "current_article_only";
+    const requestForceWeb = rawMode === "web_only" || requestMode === "local_web";
     if (!question) return;
     const context = selectionContext;
     const modeMessages = chatMessagesByMode[articleChatModeKey(requestMode)] || [];
@@ -1487,13 +1494,14 @@ export default function KnowledgeLibraryPage() {
       history_summary: historySummary,
       history_summary_version: historySummaryVersion,
       history_overflow: selectionChatHistoryOverflow(chatMessagesByMode),
-      force_web: requestMode === "local_web" || requestMode === "web_only",
+      force_web: requestForceWeb,
     };
     requestBody.history = selectionChatHistory(modeMessages);
     requestBody.history_summary = historySummary;
     requestBody.history_summary_version = historySummaryVersion;
     requestBody.history_overflow = selectionChatHistoryOverflow(chatMessagesByMode);
-    requestBody.force_web = requestBody.mode === "local_web" || requestBody.mode === "web_only";
+    requestBody.mode = requestMode;
+    requestBody.force_web = requestForceWeb;
     if ((requestBody.selected_text || "").trim().length > MAX_SELECTION_SEARCH_CHARS) {
       setChatError(SELECTION_TOO_LONG_MESSAGE);
       return;
@@ -1678,11 +1686,13 @@ export default function KnowledgeLibraryPage() {
   const rerunArticleAi = useCallback((message: ArticleChatMessage, mode: KnowledgeResearchMode, forceWeb = false) => {
     const baseContext = message.requestContext;
     if (!baseContext?.question.trim()) return;
+    const requestMode: ArticleResearchMode =
+      mode === "local_web" || mode === "web_only" ? "local_web" : "current_article_only";
     void askArticleAi({
       requestContext: {
         ...baseContext,
-        mode,
-        force_web: forceWeb,
+        mode: requestMode,
+        force_web: forceWeb || mode === "web_only" || requestMode === "local_web",
       },
     });
   }, [askArticleAi]);
@@ -2038,149 +2048,6 @@ export default function KnowledgeLibraryPage() {
 	  );
 	}
 
-function itemKey(item: KnowledgeLibraryItem): string {
-  return `${item.kind}:${item.id}`;
-}
-
-function bridgeMetaString(result: Record<string, unknown>, key: string): string {
-  const direct = result[key];
-  if (typeof direct === "string" && direct.trim()) return direct.trim();
-  const meta = result.meta;
-  if (meta && typeof meta === "object") {
-    const value = (meta as Record<string, unknown>)[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return "";
-}
-
-function parseTagsText(value: string): string[] {
-  return value
-    .split(/[,，\n]/)
-    .map((tag) => tag.trim())
-    .filter(Boolean)
-    .slice(0, 12);
-}
-
-function editableFolderSuggestion(intent: Record<string, unknown> | undefined): {
-  mode: "existing" | "new";
-  folder_path: string;
-  reason: string;
-} {
-  const raw = intent?.folder_suggestion;
-  const suggestion = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
-  const mode = suggestion.mode === "new" ? "new" : "existing";
-  const folderPath = stringValue(suggestion.folder_path) || stringValue(intent?.folder_path) || "Inbox";
-  return {
-    mode,
-    folder_path: folderPath,
-    reason: stringValue(suggestion.reason) || "AI 未返回明确文件夹建议，先放入 Inbox 等待人工确认。",
-
-  };
-}
-
-function editableCardSuggestion(intent: Record<string, unknown> | undefined): {
-  should_generate: boolean;
-  reason: string;
-  cards: Array<{ title: string; card_kind: string; reason: string }>;
-} {
-  const raw = intent?.card_suggestion;
-  const suggestion = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
-  const reason = stringValue(suggestion.reason);
-  return {
-    should_generate: suggestion.should_generate === true && Boolean(reason),
-    reason: reason || "AI 未返回有效卡片建议，默认暂不生成 Garden Card。",
-    cards: normalizeCardSuggestions(suggestion.cards),
-  };
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function normalizeCardSuggestions(value: unknown): Array<{ title: string; card_kind: string; reason: string }> {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => {
-      const card = item && typeof item === "object" ? item as Record<string, unknown> : {};
-      return {
-        title: stringValue(card.title),
-        card_kind: normalizeGardenCardKind(stringValue(card.card_kind)),
-        reason: stringValue(card.reason),
-      };
-    })
-    .filter((card) => card.title || card.reason)
-    .slice(0, 8);
-}
-
-function formatEditableCardSuggestions(value: unknown): string {
-  return normalizeCardSuggestions(value)
-    .map((card) => [card.title, card.card_kind, card.reason].filter(Boolean).join(" | "))
-    .join("\n");
-}
-
-function editableAiSuggestionsStatus(draft: KnowledgeCaptureDraft): "generated" | "failed" | "not_generated" {
-  const value = String(draft.capture_intent?.ai_suggestions_status || "");
-  if (value === "generated" || value === "failed") return value;
-  return "not_generated";
-}
-
-function editableDraftTitleSource(draft: KnowledgeCaptureDraft): "ai" | "user" {
-  const source = draft.capture_intent?.title_source === "user" ? "user" : "ai";
-  if (
-    source === "user" &&
-    editableAiSuggestionsStatus(draft) !== "generated" &&
-    isGenericEditableTitle(draft.title || "")
-  ) {
-    return "ai";
-  }
-  return source;
-}
-
-function isGenericEditableTitle(title: string): boolean {
-  return /^(?:整理稿|文字稿|未命名|无标题)(?:[ _-]?(?:副本|copy)|[（(]\d+[）)]|[ _-]?\d+)?$/i.test(title.trim());
-}
-
-function parseCardSuggestionsText(text: string): Array<{ title: string; card_kind: string; reason: string }> {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const parts = line.split("|").map((part) => part.trim());
-      return {
-        title: parts[0] || "",
-        card_kind: normalizeGardenCardKind(parts[1] || ""),
-        reason: parts.slice(2).join(" | ") || parts[1] || "",
-      };
-    })
-    .filter((card) => card.title || card.reason)
-    .slice(0, 8);
-}
-
-function normalizeGardenCardKind(value: string): string {
-  const kind = value.trim().toLowerCase();
-  if (["viewpoint", "method", "fact", "risk"].includes(kind)) return kind;
-  if (kind.includes("方法")) return "method";
-  if (kind.includes("事实")) return "fact";
-  if (kind.includes("风险")) return "risk";
-  return kind ? "viewpoint" : "";
-}
-
-function firstGardenCardHint(text: string): { title?: string; card_kind?: string } {
-  const [first] = parseCardSuggestionsText(text);
-  return {
-    title: first?.title || undefined,
-    card_kind: first?.card_kind || undefined,
-  };
-}
-
-function buildGardenDraftInstruction(reason: string, suggestionsText: string): string {
-  const parts = [];
-  if (reason.trim()) parts.push(`生成理由：${reason.trim()}`);
-  if (suggestionsText.trim()) parts.push(`建议生成哪些卡：\n${suggestionsText.trim()}`);
-  return parts.join("\n\n");
-}
-
 function articleSourcesForSave(
   sources: ArticleChatMessage["sources"],
   detail: KnowledgeLibraryItem,
@@ -2210,157 +2077,6 @@ function articleSourcesForSave(
   }));
   return [articleSource, ...knowledgeSources, ...webSources];
 }
-
-function gardenDraftNotice(result: KnowledgeGardenDraftResponse): string {
-  const title = result.meta?.title;
-  if (typeof title === "string" && title.trim()) {
-    return `已生成知识卡片：《${title.trim()}》。`;
-  }
-  const previewLine = (result.chat_preview || result.USER_VISIBLE_REPLY || "")
-    .split("\n")
-    .map((line) => line.trim())
-    .find(Boolean);
-  return previewLine || "已生成知识卡片。";
-}
-
-function gardenDraftError(result: KnowledgeGardenDraftResponse): string {
-  return result.error || result.errors?.[0] || result.USER_VISIBLE_REPLY || result.chat_preview || "生成知识卡片失败。";
-}
-
-function libraryDeleteNotice(result: KnowledgeLibraryDeleteResponse): string {
-  const dependencies = result.dependencies;
-  if (!dependencies) return result.message || "已归档入库文件。";
-  const { cardCount, gardenDraftCount, backlinkCount, draftCount, eventCount } = libraryDependencyCounts(dependencies);
-  const parts = [
-    cardCount ? `${cardCount} 张卡片` : "",
-    gardenDraftCount ? `${gardenDraftCount} 条卡片草稿` : "",
-    backlinkCount ? `${backlinkCount} 个引用` : "",
-    draftCount ? `${draftCount} 条历史草稿` : "",
-    eventCount ? `${eventCount} 条运行记录` : "",
-  ].filter(Boolean);
-  if (!parts.length) return "已归档入库文件，保留源文件和数据库记录。";
-  return `已归档入库文件，保留源文件、数据库记录、${parts.join("、")}。`;
-}
-
-function libraryDeleteConfirmMessage(
-  item: KnowledgeLibraryItem,
-  dependencies?: KnowledgeLibraryDependencies,
-): string {
-  if (item.kind !== "capture") {
-    return `确定删除草稿《${item.title || "未命名草稿"}》吗？`;
-  }
-  const counts = libraryDependencyCounts(dependencies);
-  return [
-    `确定从知识库移除《${item.title || "未命名文件"}》吗？`,
-    "",
-    "这不是物理删除：文件会标记为归档并从知识库列表隐藏。",
-    "",
-    "将保留：",
-    "- 本地正文和来源记录",
-    `- Knowledge Card：${counts.cardCount} 张`,
-    `- 卡片草稿：${counts.gardenDraftCount} 条`,
-    `- 历史草稿：${counts.draftCount} 条`,
-    `- 其他文件引用：${counts.backlinkCount} 个`,
-    `- 运行记录：${counts.eventCount} 条`,
-    "- 数据库 capture 行：保留，状态改为 archived",
-  ].join("\n");
-}
-
-function libraryHasBlockingDependencies(dependencies?: KnowledgeLibraryDependencies): boolean {
-  const counts = libraryDependencyCounts(dependencies);
-  return counts.cardCount > 0 ||
-    counts.gardenDraftCount > 0 ||
-    counts.backlinkCount > 0;
-}
-
-function libraryPermanentDeleteBlockedMessage(
-  item: KnowledgeLibraryItem,
-  dependencies?: KnowledgeLibraryDependencies,
-): string {
-  const counts = libraryDependencyCounts(dependencies);
-  const parts = [
-    counts.cardCount ? `${counts.cardCount} 张知识卡片` : "",
-    counts.gardenDraftCount ? `${counts.gardenDraftCount} 条卡片草稿` : "",
-    counts.backlinkCount ? `${counts.backlinkCount} 个文件引用` : "",
-  ].filter(Boolean);
-  const reason = parts.length ? parts.join("、") : "其他知识对象";
-  return `无法彻底删除《${item.title || "未命名文件"}》：仍被 ${reason} 引用。请先解除引用，或使用“归档”。`;
-}
-
-function libraryPermanentDeleteConfirmMessage(
-  item: KnowledgeLibraryItem,
-  dependencies?: KnowledgeLibraryDependencies,
-): string {
-  const counts = libraryDependencyCounts(dependencies);
-  const traceLines = [
-    counts.draftCount ? `- 历史草稿指针：${counts.draftCount} 条，将解绑` : "",
-    counts.eventCount ? `- 运行对象索引：${counts.eventCount} 条，将删除` : "",
-  ].filter(Boolean);
-  return [
-    `确定彻底删除《${item.title || "未命名文件"}》吗？`,
-    "",
-    "这会删除本地 Markdown 正文、raw 来源文件、数据库 capture 行和本地索引记录。",
-    "只有在没有活跃知识卡片、待提交卡片草稿和其他文件引用时才允许执行。",
-    ...(traceLines.length ? ["", "历史草稿和运行记录不是硬阻断，会同步清理：", ...traceLines] : []),
-    "",
-    "此操作不可从 Hermes UI 恢复。",
-  ].join("\n");
-}
-
-function libraryPermanentDeleteNotice(result: { message?: string }): string {
-  return result.message || "已彻底删除入库文件。";
-}
-
-function libraryDependencyCounts(dependencies?: KnowledgeLibraryDependencies): {
-  cardCount: number;
-  gardenDraftCount: number;
-  draftCount: number;
-  backlinkCount: number;
-  eventCount: number;
-} {
-  return {
-    cardCount: dependencies?.garden_cards?.length ?? 0,
-    gardenDraftCount: dependencies?.garden_drafts?.length ?? 0,
-    draftCount: dependencies?.committed_drafts?.length ?? 0,
-    backlinkCount: dependencies?.backlinks?.length ?? 0,
-    eventCount: dependencies?.event_count ?? 0,
-  };
-}
-
-function groupItemsByFolder(items: KnowledgeLibraryItem[]): Map<string, KnowledgeLibraryItem[]> {
-  const grouped = new Map<string, KnowledgeLibraryItem[]>();
-  for (const item of items) {
-    const folder = item.folder_path || "Inbox";
-    grouped.set(folder, [...(grouped.get(folder) ?? []), item]);
-  }
-  for (const [folder, folderItems] of grouped.entries()) {
-    grouped.set(folder, [...folderItems].sort(compareItemsByUpdatedAt));
-  }
-  return grouped;
-}
-
-function compareItemsByUpdatedAt(a: KnowledgeLibraryItem, b: KnowledgeLibraryItem): number {
-  return Date.parse(b.updated_at || b.created_at || "0") - Date.parse(a.updated_at || a.created_at || "0");
-}
-
-function matchesStatusFilter(item: KnowledgeLibraryItem, filter: StatusFilter): boolean {
-  if (filter === "draft") return item.kind === "capture_draft";
-  if (filter === "in_library") return item.kind === "capture";
-  if (filter === "searchable") return item.indexed;
-  if (filter === "cards") return item.garden_card_count > 0;
-  return true;
-}
-
-function selectionLabel(selection: LibrarySelection, views: KnowledgeLibrarySmartView[]): string {
-  if (selection.type === "all") return "所有文件";
-  if (selection.type === "folder") return selection.value;
-  return views.find((view) => view.key === selection.value)?.label ?? "处理队列";
-}
-
-
-
-
-
 
 function FileWorkbench({
   body,
@@ -2665,172 +2381,6 @@ function MetadataRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ImmersiveReadingOverlay({
-  body,
-  title,
-  onExit,
-}: {
-  body: string;
-  title: string;
-  onExit: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-[80] flex min-h-0 flex-col bg-background text-foreground">
-      <div className="flex h-14 shrink-0 items-center justify-between border-b border-border/70 px-5">
-        <h1 className="min-w-0 truncate text-base font-semibold tracking-normal">{title}</h1>
-        <button
-          type="button"
-          onClick={onExit}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background/70 px-3 text-sm text-muted-foreground transition hover:border-primary/35 hover:text-foreground"
-          title="退出沉浸阅读"
-          aria-label="退出沉浸阅读"
-        >
-          <Minimize2 className="h-4 w-4" />
-          退出沉浸阅读
-        </button>
-      </div>
-      <main className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-        <article className="mx-auto max-w-4xl rounded-md border border-border bg-background/70 px-5 py-5 text-base leading-8">
-          {body.trim() ? (
-            <Markdown content={body} enableKnowledgeOutlineLinks />
-          ) : (
-            <p className="text-sm text-muted-foreground">暂无正文</p>
-          )}
-        </article>
-      </main>
-    </div>
-  );
-}
-
-function ReadonlyMarkdownDocument({
-  body,
-  onSelectionContextChange,
-}: {
-  body: string;
-  onSelectionContextChange: (context: ArticleSelectionContext | null) => void;
-}) {
-  const articleRef = useRef<HTMLElement | null>(null);
-  const updateSelection = useCallback(() => {
-    const context = selectionContextFromDomSelection(articleRef.current);
-    if (context) {
-      onSelectionContextChange(context);
-      return;
-    }
-    const selectedText = window.getSelection()?.toString().trim() ?? "";
-    onSelectionContextChange(selectionContextFromSelectedText(body, selectedText));
-  }, [body, onSelectionContextChange]);
-
-  return (
-    <article
-      ref={articleRef}
-      className="h-full min-h-[360px] overflow-y-auto rounded-md border border-border bg-background/70 px-5 py-4"
-      onKeyUpCapture={updateSelection}
-      onMouseUpCapture={updateSelection}
-    >
-      {body.trim() ? (
-        <Markdown content={body} enableKnowledgeOutlineLinks />
-      ) : (
-        <p className="text-sm text-muted-foreground">暂无正文</p>
-      )}
-    </article>
-  );
-}
-
-function selectionContextFromDomSelection(root: HTMLElement | null): ArticleSelectionContext | null {
-  if (!root) return null;
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0) return null;
-  const selectedText = selection.toString().trim();
-  if (!selectedText) return null;
-  const range = selection.getRangeAt(0);
-  if (!root.contains(range.commonAncestorContainer)) return null;
-  const beforeRange = document.createRange();
-  beforeRange.selectNodeContents(root);
-  beforeRange.setEnd(range.startContainer, range.startOffset);
-  const beforeText = beforeRange.toString();
-  const fullText = root.innerText || root.textContent || "";
-  const selectionStart = beforeText.length;
-  const selectionEnd = selectionStart + selectedText.length;
-  return {
-    selectedText,
-    surroundingBefore: fullText.slice(Math.max(0, selectionStart - 1200), selectionStart),
-    surroundingAfter: fullText.slice(selectionEnd, Math.min(fullText.length, selectionEnd + 1200)),
-    headingPath: headingPathBeforeDomSelection(root, range),
-    selectionStart,
-    selectionEnd,
-    selectionConfidence: "offset",
-  };
-}
-
-function headingPathBeforeDomSelection(root: HTMLElement, range: Range): string[] {
-  const headings = Array.from(root.querySelectorAll("h1, h2, h3, h4, h5, h6"));
-  let stack: Array<{ level: number; text: string }> = [];
-  for (const heading of headings) {
-    const position = heading.compareDocumentPosition(range.startContainer);
-    const isBeforeSelection = Boolean(position & Node.DOCUMENT_POSITION_FOLLOWING);
-    if (!isBeforeSelection) continue;
-    const level = Number(heading.tagName.slice(1)) || 1;
-    const text = (heading.textContent || "").trim();
-    if (!text) continue;
-    stack = stack.filter((item) => item.level < level);
-    stack.push({ level, text });
-  }
-  return stack.map((item) => item.text).slice(-4);
-}
-
-function selectionContextFromOffsets(
-  body: string,
-  start: number,
-  end: number,
-): ArticleSelectionContext | null {
-  if (start === end) return null;
-  const selectionStart = Math.max(0, Math.min(start, end));
-  const selectionEnd = Math.min(body.length, Math.max(start, end));
-  const selectedText = body.slice(selectionStart, selectionEnd).trim();
-  if (!selectedText) return null;
-  return {
-    selectedText,
-    surroundingBefore: body.slice(Math.max(0, selectionStart - 1200), selectionStart),
-    surroundingAfter: body.slice(selectionEnd, Math.min(body.length, selectionEnd + 1200)),
-    headingPath: headingPathBefore(body.slice(0, selectionStart)),
-    selectionStart,
-    selectionEnd,
-    selectionConfidence: "offset",
-  };
-}
-
-function selectionContextFromSelectedText(
-  body: string,
-  selectedText: string,
-): ArticleSelectionContext | null {
-  selectedText = selectedText.trim();
-  if (!selectedText) return null;
-  const exactStart = body.indexOf(selectedText);
-  if (exactStart >= 0) {
-    return selectionContextFromOffsets(body, exactStart, exactStart + selectedText.length);
-  }
-  return {
-    selectedText,
-    surroundingBefore: "",
-    surroundingAfter: "",
-    headingPath: [],
-    selectionConfidence: "text_only",
-  };
-}
-
-function headingPathBefore(markdown: string): string[] {
-  let stack: Array<{ level: number; text: string }> = [];
-  for (const line of markdown.split("\n")) {
-    const match = /^(#{1,3})\s+(.+?)\s*$/.exec(line.trim());
-    if (!match) continue;
-    const level = match[1].length;
-    const text = match[2].trim();
-    stack = stack.filter((item) => item.level < level);
-    stack.push({ level, text });
-  }
-  return stack.slice(-3).map((item) => item.text);
-}
-
 function ModeButton({
   active,
   icon: Icon,
@@ -2880,14 +2430,14 @@ function ArticleAIPanel({
   detail: KnowledgeLibraryItem;
   loading: boolean;
   messages: ArticleChatMessage[];
-  researchMode: KnowledgeResearchMode;
+  researchMode: ArticleResearchMode;
   question: string;
   savingAnswerId: string;
   onAsk: () => void;
   onAskPrompt: (prompt: string) => void;
   onClose: () => void;
   onQuestionChange: (value: string) => void;
-  onResearchModeChange: (mode: KnowledgeResearchMode) => void;
+  onResearchModeChange: (mode: ArticleResearchMode) => void;
   onRerun: (message: ArticleChatMessage, mode: KnowledgeResearchMode, forceWeb?: boolean) => void;
   onOpenSource: (source: KnowledgeResearchSource) => void;
   onOpenSourceLocal: (source: KnowledgeResearchSource) => void;
@@ -2960,11 +2510,7 @@ function ArticleAIPanel({
               </div>
             ))}
             {loading && !hasPendingAssistant ? (
-              <LoadingState
-                text={researchMode === "web_only"
-                  ? "正在搜索并读取网页..."
-                  : "AI 正在回答..."}
-              />
+              <LoadingState text="AI 正在回答..." />
             ) : null}
           </div>
         ) : (
@@ -3021,35 +2567,6 @@ function ArticleAIPanel({
           </button>
         </div>
       </div>
-    </aside>
-  );
-}
-
-function CollapsedAIPanelRail({
-  className,
-  loading,
-  onOpen,
-}: {
-  className?: string;
-  loading: boolean;
-  onOpen: () => void;
-}) {
-  return (
-    <aside
-      className={cn(
-        "group relative hidden min-h-0 overflow-visible border-r border-border/70 bg-transparent xl:block",
-        className,
-      )}
-    >
-      <button
-        type="button"
-        onClick={onOpen}
-        className="absolute right-0 top-3 z-10 inline-flex h-8 w-8 translate-x-1 items-center justify-center rounded-md border border-border bg-background text-muted-foreground opacity-0 shadow-sm transition hover:border-primary/35 hover:text-foreground group-hover:translate-x-0 group-hover:opacity-100 focus:translate-x-0 focus:opacity-100"
-      title="展开 AI 面板"
-      aria-label="展开 AI 面板"
-    >
-        {loading ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : <ChevronLeft className="h-4 w-4" />}
-      </button>
     </aside>
   );
 }
@@ -3141,10 +2658,10 @@ function ResearchModeControl({
   onChange,
 }: {
   disabled: boolean;
-  mode: KnowledgeResearchMode;
-  onChange: (mode: KnowledgeResearchMode) => void;
+  mode: ArticleResearchMode;
+  onChange: (mode: ArticleResearchMode) => void;
 }) {
-  const webEnabled = mode === "local_web" || mode === "web_only";
+  const webEnabled = mode === "local_web";
   return (
     <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/60 pt-2">
       <button
@@ -4263,85 +3780,4 @@ function stageTimingLabel(timings: Record<string, unknown>): string {
     })
     .filter(Boolean)
     .join(" · ") || "已记录";
-}
-
-function StatusBadge({ item }: { item: KnowledgeLibraryItem }) {
-  const label = item.kind === "capture" ? "已入库" : "草稿";
-  return (
-    <span
-      className={cn(
-        "inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[0.68rem] font-medium",
-        item.kind === "capture"
-          ? "bg-emerald-500/10 text-emerald-700"
-          : "bg-amber-500/10 text-amber-700",
-      )}
-    >
-      {label}
-    </span>
-  );
-}
-
-function TinyPill({ children }: { children: ReactNode }) {
-  return (
-    <span className="inline-flex items-center rounded border border-border bg-background/70 px-1.5 py-0.5 text-[0.68rem] text-muted-foreground">
-      {children}
-    </span>
-  );
-}
-
-function LoadingState({ text }: { text: string }) {
-  return (
-    <div className="flex min-h-[220px] items-center justify-center gap-2 text-sm text-muted-foreground">
-      <Loader2 className="h-4 w-4 animate-spin" />
-      {text}
-    </div>
-  );
-}
-
-function EmptyState({
-  text,
-  onCreate,
-  onImport,
-}: {
-  text: string;
-  onCreate?: () => void;
-  onImport?: () => void;
-}) {
-  return (
-    <div className="flex min-h-[260px] items-center justify-center px-4 text-center">
-      <div className="max-w-sm">
-        <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
-        <p className="mt-3 text-sm font-medium leading-6 text-foreground">{text}</p>
-        {(onCreate || onImport) ? (
-          <p className="mt-1 text-sm leading-6 text-muted-foreground">
-            可以从粘贴材料、空白文件或本地 Markdown 导入开始。
-          </p>
-        ) : null}
-        {(onCreate || onImport) ? (
-          <div className="mt-4 flex flex-wrap justify-center gap-2">
-            {onCreate ? (
-              <button
-                type="button"
-                onClick={onCreate}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground transition hover:bg-muted"
-              >
-                <FilePlus2 className="h-3.5 w-3.5" />
-                新建知识文件
-              </button>
-            ) : null}
-            {onImport ? (
-              <button
-                type="button"
-                onClick={onImport}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground transition hover:bg-muted"
-              >
-                <UploadCloud className="h-3.5 w-3.5" />
-                导入文件
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
 }

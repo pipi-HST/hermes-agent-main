@@ -933,6 +933,25 @@ export interface KnowledgeLibraryPermanentDeleteResponse {
 
 export type KnowledgeResearchMode = "current_article_only" | "local_only" | "local_web" | "web_only" | "theme_scan";
 
+/**
+ * Modes a user can select in the workbench.
+ *
+ * `web_only` is intentionally excluded: it remains a valid API/eval/persisted
+ * mode (see `KnowledgeResearchMode`) but the product exposes a two-state web
+ * toggle (`local_only` / `local_web`) plus the explicit theme-scan action.
+ */
+export type KnowledgeSelectableResearchMode =
+  | "current_article_only"
+  | "local_only"
+  | "local_web"
+  | "theme_scan";
+
+/** Selectable modes in the main knowledge chat (no selected-article scope). */
+export type KnowledgeChatResearchMode = Exclude<
+  KnowledgeSelectableResearchMode,
+  "current_article_only"
+>;
+
 export interface KnowledgeResearchSource {
   ref?: string;
   type?: string;
