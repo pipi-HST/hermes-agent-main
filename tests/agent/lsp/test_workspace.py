@@ -137,3 +137,5 @@ def test_normalize_path_expands_tilde(monkeypatch):
     monkeypatch.setenv("HOME", "/home/user")
     p = normalize_path("~/x.py")
     assert p == os.path.abspath("/home/user/x.py")
+
+pytestmark = pytest.mark.skipif(os.name == 'nt', reason='HOME-based workspace resolution differs on Windows')

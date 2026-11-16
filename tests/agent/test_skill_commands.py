@@ -629,6 +629,7 @@ class TestSkillDirectoryHeader:
         assert f"[Skill directory: {skill_dir}]" in msg
         assert "Resolve any relative paths" in msg
 
+    @pytest.mark.skipif(os.name == "nt", reason="uses Unix shell path conventions")
     def test_supporting_files_shown_with_absolute_paths(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "scripted-skill")
@@ -715,6 +716,7 @@ class TestTemplateVarSubstitution:
         assert "${HERMES_SKILL_DIR}/scripts/foo.js" in msg
 
 
+@pytest.mark.skipif(os.name == "nt", reason="inline shell uses Unix bash syntax")
 class TestInlineShellExpansion:
     """Inline ``!`cmd`` snippets in SKILL.md run before the agent sees the
     content — but only when the user has opted in via config."""
@@ -734,6 +736,7 @@ class TestInlineShellExpansion:
         assert "!`echo INLINE_RAN`" in msg
         assert "Today is INLINE_RAN." not in msg
 
+    @pytest.mark.skipif(os.name == "nt", reason="inline shell uses Unix bash syntax")
     def test_inline_shell_runs_when_enabled(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

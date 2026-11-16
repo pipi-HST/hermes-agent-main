@@ -144,3 +144,5 @@ def test_patch_replace_propagates_lsp_diagnostics(tmp_path):
 
     assert res.success is True
     assert res.lsp_diagnostics == block
+
+pytestmark = pytest.mark.skipif(os.name == 'nt', reason='LSP write diagnostics require the Unix local environment')

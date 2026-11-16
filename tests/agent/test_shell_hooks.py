@@ -738,3 +738,5 @@ class TestAllowlistConcurrency:
 
         assert len(tmp_paths_seen) == 2
         assert tmp_paths_seen[0] != tmp_paths_seen[1]
+
+pytestmark = pytest.mark.skipif(os.name == 'nt', reason='shell hooks execute bash scripts in CI')

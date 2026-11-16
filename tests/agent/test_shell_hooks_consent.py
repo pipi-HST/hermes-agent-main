@@ -311,3 +311,6 @@ class TestHooksAutoAcceptParsing:
             {"hooks_auto_accept": "false"}, accept_hooks_arg=True,
         ) is True
 
+
+import os
+pytestmark = pytest.mark.skipif(os.name == 'nt', reason='shell-hook consent tests execute bash scripts in CI')
