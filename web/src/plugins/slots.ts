@@ -88,6 +88,8 @@ export const KNOWN_SLOT_NAMES = [
   "env:bottom",
   "docs:top",
   "docs:bottom",
+  "models:top",
+  "models:bottom",
   "chat:top",
   "chat:bottom",
 ] as const;

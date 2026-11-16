@@ -271,6 +271,27 @@ def test_web_search_tool_source_payload_extracts_clickable_sources():
     assert payload["source_map"][1]["url"] == "https://example.com/ai-pm"
 
 
+def test_research_tool_source_payload_forwards_provider_status():
+    import tui_gateway.server as server
+
+    result = json.dumps(
+        {
+            "status": "success",
+            "chat_preview": "答案",
+            "meta": {
+                "provider_status": {"search_backend": "fallback"},
+                "research_trace": {"path": "web_context", "search_backend": "fallback"},
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    payload = server._tool_source_payload("research_with_web", result)
+
+    assert payload["provider_status"]["search_backend"] == "fallback"
+    assert payload["research_trace"]["search_backend"] == "fallback"
+
+
 def test_research_tool_source_payload_falls_back_to_retrieved_web_sources():
     import tui_gateway.server as server
 

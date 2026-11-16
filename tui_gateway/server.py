@@ -1603,6 +1603,9 @@ def _tool_source_payload(name: str, result: str) -> dict[str, object]:
         payload["retrieved_web_sources"] = retrieved_web_sources
     if research_trace:
         payload["research_trace"] = research_trace
+    provider_status = meta.get("provider_status")
+    if isinstance(provider_status, dict) and provider_status:
+        payload["provider_status"] = provider_status
     if answer_text:
         payload["answer_text"] = answer_text
     return payload

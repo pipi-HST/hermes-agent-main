@@ -29,7 +29,11 @@ import { Card } from "@/components/ui/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
-import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
+import {
+  acquireGatewayClient,
+  releaseGatewayClient,
+  type ConnectionState,
+} from "@/lib/gatewayClient";
 import { HERMES_BASE_PATH } from "@/lib/api";
 
 import { cn } from "@/lib/utils";
@@ -80,8 +84,8 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   // counter is the dependency on purpose — it's not read in the memo body,
   // it's the signal that says "rebuild the client".
   const [version, setVersion] = useState(0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const gw = useMemo(() => new GatewayClient(), [version]);
+  const gw = useMemo(() => acquireGatewayClient(), []);
+  useEffect(() => () => releaseGatewayClient(gw), [gw]);
 
   const [state, setState] = useState<ConnectionState>("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -92,6 +96,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
   useEffect(() => {
     let cancelled = false;
+    if (version > 0) gw.close();
     const offState = gw.onState(setState);
 
     const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
@@ -139,9 +144,8 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       offState();
       offSessionInfo();
       offError();
-      gw.close();
     };
-  }, [gw]);
+  }, [gw, version]);
 
   // Event subscriber WebSocket — receives the rebroadcast of every
   // dispatcher emit from the PTY child's gateway.  See /api/pub +

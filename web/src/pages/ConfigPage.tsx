@@ -121,6 +121,8 @@ export default function ConfigPage() {
   const [configPath, setConfigPath] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>("");
   const [confirmReset, setConfirmReset] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
@@ -163,26 +165,37 @@ export default function ConfigPage() {
   }
 
   useEffect(() => {
+    let cancelled = false;
+    setLoadError(null);
+    setConfig(null);
+    setSchema(null);
+    Promise.all([api.getConfig(), api.getSchema()])
+      .then(([nextConfig, nextSchema]) => {
+        if (cancelled) return;
+        setConfig(nextConfig);
+        setSchema(nextSchema.fields as Record<string, Record<string, unknown>>);
+        setCategoryOrder(nextSchema.category_order ?? []);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setLoadError(err instanceof Error ? err.message : String(err));
+      });
     api
-      .getConfig()
-      .then(setConfig)
-      .catch(() => {});
-    api
-      .getSchema()
-      .then((resp) => {
-        setSchema(resp.fields as Record<string, Record<string, unknown>>);
-        setCategoryOrder(resp.category_order ?? []);
+      .getDefaults()
+      .then((value) => {
+        if (!cancelled) setDefaults(value);
       })
       .catch(() => {});
     api
-      .getDefaults()
-      .then(setDefaults)
-      .catch(() => {});
-    api
       .getStatus()
-      .then((resp) => setConfigPath(resp.config_path))
+      .then((resp) => {
+        if (!cancelled) setConfigPath(resp.config_path);
+      })
       .catch(() => {});
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAttempt]);
 
   // Set active category when categories load
   useEffect(() => {
@@ -348,7 +361,18 @@ export default function ConfigPage() {
     reader.readAsText(file);
   };
 
-  /* ---- Loading ---- */
+  /* ---- Loading / error ---- */
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
+        <h2 className="text-lg font-medium">{t.config.failedToLoadRaw}</h2>
+        <p className="max-w-lg text-sm text-muted-foreground">{loadError}</p>
+        <Button size="sm" onClick={() => setLoadAttempt((value) => value + 1)}>
+          {t.common.retry}
+        </Button>
+      </div>
+    );
+  }
   if (!config || !schema) {
     return (
       <div className="flex items-center justify-center py-24">

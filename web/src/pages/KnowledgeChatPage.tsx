@@ -20,7 +20,11 @@ import {
   type KnowledgeResearchMode,
   type SessionInfo,
 } from "@/lib/api";
-import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
+import {
+  acquireGatewayClient,
+  releaseGatewayClient,
+  type ConnectionState,
+} from "@/lib/gatewayClient";
 import {
   extractFullAnswerText,
   extractSourceHints,
@@ -203,8 +207,8 @@ export default function KnowledgeChatPage() {
   const { pathname } = useLocation();
   const isCaptureReviewRoute = (pathname.replace(/\/$/, "") || "/") === "/capture-review";
   const [version, setVersion] = useState(0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const gw = useMemo(() => new GatewayClient(), [version]);
+  const gw = useMemo(() => acquireGatewayClient(), []);
+  useEffect(() => () => releaseGatewayClient(gw), [gw]);
   const [state, dispatch] = useReducer(
     knowledgeChatReducer,
     initialKnowledgeChatState,
@@ -572,6 +576,7 @@ export default function KnowledgeChatPage() {
   }, [loadAnswerDrafts, loadDraftDetail, loadDrafts, loadLibraryFolders, loadSessions, scheduleHistoryReconcile, selectedDraftId]);
 
   useEffect(() => {
+    if (version > 0) gw.close();
     const offState = gw.onState((connection) => {
       dispatch({ type: "connection", connection });
       if (connection === "open" && (stateRef.current.running || stateRef.current.draftAssistant)) {
@@ -724,9 +729,8 @@ export default function KnowledgeChatPage() {
       offToolProgress();
       offToolComplete();
       offError();
-      gw.close();
     };
-  }, [gw, loadAnswerDrafts, loadDrafts, loadSessions, nextId, reconcileCurrentSession, scheduleHistoryReconcile]);
+  }, [gw, version, loadAnswerDrafts, loadDrafts, loadSessions, nextId, reconcileCurrentSession, scheduleHistoryReconcile]);
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({
@@ -2117,7 +2121,7 @@ function withResearchModeInstruction(text: string, mode: KnowledgeResearchMode):
       : "";
   const toolInstruction =
     mode === "local_web"
-      ? "请调用 research_with_web 统一完成知识库与联网检索；不要调用未提供的独立知识库搜索工具。"
+      ? "请调用 research_with_web 统一完成知识库与联网检索，并传入 force_web=true；不要调用未提供的独立知识库搜索工具。"
       : mode === "theme_scan"
         ? "请调用 theme_scan 扫描知识卡片之间的跨篇关联；已有候选组用 theme_candidates 查看，需要关系画布时调用 generate_canvas。不要用 search_my_notes 临时拼组。"
         : mode === "web_only"

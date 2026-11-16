@@ -230,6 +230,27 @@ export class GatewayClient {
   }
 }
 
+let sharedClient: GatewayClient | null = null;
+let sharedUsers = 0;
+
+/** Share one WebSocket between ChatSidebar and the knowledge workbench. */
+export function acquireGatewayClient(): GatewayClient {
+  if (!sharedClient) {
+    sharedClient = new GatewayClient();
+  }
+  sharedUsers += 1;
+  return sharedClient;
+}
+
+export function releaseGatewayClient(client?: GatewayClient): void {
+  if (!sharedClient || (client && client !== sharedClient)) return;
+  sharedUsers = Math.max(0, sharedUsers - 1);
+  if (sharedUsers === 0) {
+    sharedClient.close();
+    sharedClient = null;
+  }
+}
+
 declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
