@@ -97,7 +97,7 @@ run `python scripts/fork_delta.py --write` after rebasing/merging.
 | `tests/cron/test_file_permissions.py` | modified | +4 / -0 |
 | `tests/cron/test_jobs.py` | modified | +18 / -4 |
 | `tests/cron/test_scheduler.py` | modified | +47 / -0 |
-| `tests/gateway/conftest.py` | modified | +12 / -1 |
+| `tests/gateway/conftest.py` | modified | +23 / -2 |
 | `tests/gateway/test_config_env_bridge_authority.py` | modified | +2 / -0 |
 | `tests/gateway/test_runner_fatal_adapter.py` | modified | +8 / -0 |
 | `tests/gateway/test_runner_startup_failures.py` | modified | +22 / -3 |

@@ -97,12 +97,15 @@ def _ensure_discord_mock() -> None:
     maintaining their own mock setup.
     """
     existing = sys.modules.get("discord")
-    if (
-        existing is not None
-        and not isinstance(existing, MagicMock)
-        and getattr(existing, "__file__", None)
-    ):
-        return  # Real library is installed — nothing to mock
+    if existing is not None:
+        # Real library, or a mock installed by an earlier call/fixture. Keep
+        # the SAME object: modules that already did ``import discord`` hold a
+        # reference to it, and swapping sys.modules would leave them on a
+        # stale mock (isinstance checks and monkeypatches then miss).
+        if isinstance(existing, MagicMock):
+            return
+        if getattr(existing, "__file__", None):
+            return  # Real library is installed — nothing to mock
 
     from types import SimpleNamespace
 
@@ -115,6 +118,12 @@ def _ensure_discord_mock() -> None:
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Interaction = object
     discord_mod.Message = type("Message", (), {})
+
+    class _FakePermissions:
+        def __init__(self, value=0, **_):
+            self.value = value
+
+    discord_mod.Permissions = _FakePermissions
 
     # Embed: accept the kwargs production code / tests use
     # (title, description, color). MagicMock auto-attributes work too,
@@ -212,6 +221,7 @@ def _ensure_discord_mock() -> None:
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
+        autocomplete=lambda **kwargs: (lambda fn: fn),
         Choice=lambda **kwargs: SimpleNamespace(**kwargs),
         Group=_FakeGroup,
         Command=_FakeCommand,
