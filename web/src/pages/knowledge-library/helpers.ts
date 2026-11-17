@@ -171,13 +171,13 @@ export function buildGardenDraftInstruction(reason: string, suggestionsText: str
 export function gardenDraftNotice(result: KnowledgeGardenDraftResponse): string {
   const title = result.meta?.title;
   if (typeof title === "string" && title.trim()) {
-    return `已生成知识卡片：《${title.trim()}》。`;
+    return `已生成知识卡片草稿：《${title.trim()}》。请到知识卡片板确认保存。`;
   }
   const previewLine = (result.chat_preview || result.USER_VISIBLE_REPLY || "")
     .split("\n")
     .map((line) => line.trim())
     .find(Boolean);
-  return previewLine || "已生成知识卡片。";
+  return previewLine || "已生成知识卡片草稿。请到知识卡片板确认保存。";
 }
 
 export function gardenDraftError(result: KnowledgeGardenDraftResponse): string {

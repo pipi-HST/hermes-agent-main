@@ -13,7 +13,7 @@ export type EditableCaptureStatus =
   | "committed"
   | "error";
 
-export type EditableCardCommitStatus = "idle" | "generating" | "generated" | "skipped" | "failed";
+export type EditableCardCommitStatus = "idle" | "generating" | "drafted" | "generated" | "skipped" | "failed";
 
 export function EditableCaptureWorkbench({
   content,
@@ -313,7 +313,7 @@ export function EditableCaptureWorkbench({
               </section>
               <section>
                 <label className="flex items-center justify-between gap-3 rounded-md border border-current/10 bg-background/45 px-3 py-2">
-                  <span className="text-sm font-semibold tracking-normal text-foreground">保存后自动生成知识卡片</span>
+                  <span className="text-sm font-semibold tracking-normal text-foreground">保存后自动生成知识卡片草稿</span>
                   <input
                     type="checkbox"
                     checked={generateCard}
@@ -397,11 +397,13 @@ function editableStatusSteps(
   const aiFailed = aiSuggestionsStatus === "failed";
   const cardLabel = generateCard
     ? cardCommitStatus === "failed"
-      ? "知识卡片生成失败"
-      : cardCommitStatus === "generated"
-        ? "知识卡片已生成"
-        : "等待生成知识卡片"
-    : "未生成知识卡片/已跳过";
+      ? "知识卡片草稿生成失败"
+      : cardCommitStatus === "drafted"
+        ? "知识卡片草稿待确认"
+        : cardCommitStatus === "generated"
+          ? "知识卡片已生成"
+          : "等待生成知识卡片草稿"
+    : "未生成知识卡片草稿/已跳过";
   const aiLabel = organizing
     ? "正在生成 AI 建议..."
     : aiFailed
@@ -420,7 +422,7 @@ function editableStatusSteps(
   }
   if (aiGenerated || committing || committed) {
     steps.push({ label: committing ? "正在保存到资料库..." : "保存到资料库", active: committing, done: committed, loading: committing });
-    steps.push({ label: cardLabel, done: cardCommitStatus === "generated" || cardCommitStatus === "skipped", active: cardCommitStatus === "generating", loading: cardCommitStatus === "generating" });
+    steps.push({ label: cardLabel, done: cardCommitStatus === "generated" || cardCommitStatus === "skipped", active: cardCommitStatus === "generating" || cardCommitStatus === "drafted", loading: cardCommitStatus === "generating" });
     steps.push({ label: "保存完成", done: committed });
   }
   return steps;

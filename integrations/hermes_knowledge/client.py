@@ -593,31 +593,20 @@ class KnowledgeClient:
         title: str = "",
         card_kind: str = "",
         instruction: str = "",
-        auto_commit: bool = False,
-        confirmation_token: str = "",
     ) -> dict[str, Any]:
         """Run garden synthesis through the service.
 
-        The service creates a draft unless ``auto_commit=True`` is explicitly
-        sent together with a confirmation token.  Dashboard flows create the
-        draft first, then call :meth:`issue_garden_confirmation` and
-        :meth:`commit_garden_draft`; ``auto_commit=True`` remains available for
-        callers that already hold a token.
+        The service always creates a draft; it never commits a card here.
+        Callers that want to save it must first call
+        :meth:`issue_garden_confirmation` for the returned draft id, then
+        :meth:`commit_garden_draft` with the one-time token.
         """
         payload = {
             "capture_ids": [str(item) for item in (capture_ids or [])],
             "title": title,
             "card_kind": card_kind,
             "instruction": instruction,
-            "auto_commit": bool(auto_commit),
         }
-        if auto_commit:
-            token = str(confirmation_token or "").strip()
-            if not token:
-                raise KnowledgeUnavailable(
-                    "garden auto_commit requires a confirmation token"
-                )
-            payload["confirmation_token"] = token
         return self.request("POST", "/api/garden/drafts", json=payload)
 
     def preview_garden_draft(

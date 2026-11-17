@@ -42,11 +42,11 @@ assert(
   "Committed capture edit route should request knowledge library edit mode",
 );
 assert(
-  draftReviewSource.includes("去知识库编辑"),
+  draftReviewSource.includes("去资料库编辑"),
   "Committed draft UI should expose a knowledge-library edit action",
 );
 assert(
-  draftReviewSource.includes("这份材料已保存。需要调整内容时，请进入知识库编辑页。"),
+  draftReviewSource.includes("这份材料已保存。需要调整内容时，请进入资料库编辑页。"),
   "Committed draft UI should explain that edits now happen in the library",
 );
 assert(

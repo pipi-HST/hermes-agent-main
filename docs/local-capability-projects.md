@@ -27,6 +27,10 @@ HTTP 模式下大多数 Knowledge 读写已经委托给 service，但仍有少�
 
 它们不是 HTTP 模式的必需配置。未设置时，这些读路径使用 `~/Hermes/knowledge` 下的约定路径；文件不存在时对应路由返回 404，不会因此关闭整个 Knowledge 功能。只有在命中这些读路由、且需要读取 service 之外的真实数据时，才需要显式设置。
 
+### Garden 卡片草稿确认
+
+`POST /api/garden/drafts` 只生成卡片草稿，不会保存卡片，也不提供 `auto_commit` 一次落卡的语义。用户在 Dashboard 确认后，Runtime 才为该 draft 申请一次性的 confirmation token，再调用 commit；合成和保存始终是两个步骤。
+
 ## 规则
 
 不要把 Life 实现重新塞回 `hermes-custom`。

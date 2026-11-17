@@ -122,24 +122,13 @@ class _FakeKnowledgeServiceClient:
     def get_library_item(self, kind, item_id):
         return self._respond("get_library_item", kind, item_id)
 
-    def create_garden_draft(
-        self,
-        *,
-        capture_ids=None,
-        title="",
-        card_kind="",
-        instruction="",
-        auto_commit=False,
-        confirmation_token="",
-    ):
+    def create_garden_draft(self, *, capture_ids=None, title="", card_kind="", instruction=""):
         return self._respond(
             "create_garden_draft",
             capture_ids=capture_ids,
             title=title,
             card_kind=card_kind,
             instruction=instruction,
-            auto_commit=auto_commit,
-            confirmation_token=confirmation_token,
         )
 
     def issue_garden_confirmation(self, draft_id):
@@ -2875,57 +2864,10 @@ class TestWebServerEndpoints:
             "title": "T",
             "card_kind": "viewpoint",
             "instruction": "I",
-            "auto_commit": False,
-            "confirmation_token": "",
         }
         assert fake.closed is True
 
-    def test_garden_draft_auto_commit_issues_token_then_commits(self, monkeypatch):
-        created = {
-            "status": "ok",
-            "agent": "garden",
-            "intent": "garden.synthesize",
-            "durable_artifacts": [{"type": "garden_draft", "id": "gd-1"}],
-            "meta": {},
-        }
-        committed = {
-            "status": "ok",
-            "agent": "garden",
-            "intent": "commit_garden_draft",
-            "durable_artifacts": [{"type": "garden_card", "id": "k1"}],
-            "meta": {},
-        }
-        fake = _FakeKnowledgeServiceClient(
-            responses={
-                "create_garden_draft": created,
-                "issue_garden_confirmation": {
-                    "token": "gtok",
-                    "expires_at": "soon",
-                    "intent": "commit_garden_draft",
-                },
-                "commit_garden_draft": committed,
-            }
-        )
-        self._patch_knowledge_client(monkeypatch, fake)
-
-        resp = self.client.post(
-            "/api/knowledge/garden-drafts",
-            json={"capture_ids": ["cap-1"], "auto_commit": True},
-        )
-
-        assert resp.status_code == 200
-        assert resp.json() == committed
-        assert [call["method"] for call in fake.calls] == [
-            "create_garden_draft",
-            "issue_garden_confirmation",
-            "commit_garden_draft",
-        ]
-        assert fake.calls[0]["kwargs"]["auto_commit"] is False
-        assert fake.calls[1]["args"] == ("gd-1",)
-        assert fake.calls[2]["args"] == ("gd-1", "gtok")
-        assert fake.closed is True
-
-    def test_garden_draft_without_auto_commit_skips_confirmation(self, monkeypatch):
+    def test_garden_draft_create_ignores_auto_commit(self, monkeypatch):
         created = {
             "status": "ok",
             "agent": "garden",
@@ -2938,7 +2880,28 @@ class TestWebServerEndpoints:
 
         resp = self.client.post(
             "/api/knowledge/garden-drafts",
-            json={"capture_ids": ["cap-1"], "auto_commit": False},
+            json={"capture_ids": ["cap-1"], "auto_commit": True},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == created
+        assert [call["method"] for call in fake.calls] == ["create_garden_draft"]
+        assert fake.closed is True
+
+    def test_garden_draft_preview_does_not_commit(self, monkeypatch):
+        created = {
+            "status": "ok",
+            "agent": "garden",
+            "intent": "garden.synthesize",
+            "durable_artifacts": [{"type": "garden_draft", "id": "gd-1"}],
+            "meta": {},
+        }
+        fake = _FakeKnowledgeServiceClient(responses={"create_garden_draft": created})
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post(
+            "/api/knowledge/garden-drafts/preview",
+            json={"capture_ids": ["cap-1"]},
         )
 
         assert resp.status_code == 200
