@@ -206,6 +206,9 @@ class TestDeepseekVSeriesPassThrough:
     """
 
     @pytest.mark.parametrize("model", [
+        "deepseek-flash",
+        "deepseek/deepseek-flash",           # vendor-prefixed
+        "DeepSeek-Flash",                    # case-insensitive
         "deepseek-v4-pro",
         "deepseek-v4-flash",
         "deepseek/deepseek-v4-pro",          # vendor-prefixed

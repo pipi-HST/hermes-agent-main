@@ -215,6 +215,7 @@ class TestDefaultContextLengths:
         from unittest.mock import patch as mock_patch
 
         expected_keys = {
+            "deepseek-flash": 1_000_000,
             "deepseek-v4-pro": 1_000_000,
             "deepseek-v4-flash": 1_000_000,
             "deepseek-chat": 1_000_000,

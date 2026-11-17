@@ -130,8 +130,9 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
 })
 
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-chat",       # V3 on DeepSeek direct and most aggregators
-    "deepseek-reasoner",   # R1-family reasoning model
+    "deepseek-chat",       # legacy alias (non-thinking), still accepted
+    "deepseek-reasoner",   # legacy alias (thinking), still accepted
+    "deepseek-flash",      # current name for V4.1 Flash
     "deepseek-v4-pro",     # V4 Pro — first-class model ID
     "deepseek-v4-flash",   # V4 Flash — first-class model ID
 })
