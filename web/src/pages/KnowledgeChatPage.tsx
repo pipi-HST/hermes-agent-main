@@ -2108,8 +2108,8 @@ function buildPromptText(text: string, attachments: ComposerAttachment[]): strin
 
 function withResearchModeInstruction(text: string, mode: KnowledgeChatResearchMode): string {
   const label: Record<KnowledgeChatResearchMode, string> = {
-    local_only: "仅知识库",
-    local_web: "知识库 + 联网搜索",
+    local_only: "仅资料库",
+    local_web: "资料库 + 联网搜索",
     theme_scan: "跨篇灵感扫描",
   };
   const citationInstruction =
@@ -2118,10 +2118,10 @@ function withResearchModeInstruction(text: string, mode: KnowledgeChatResearchMo
       : "";
   const toolInstruction =
     mode === "local_web"
-      ? "请调用 research_with_web 统一完成知识库与联网检索，并传入 force_web=true；不要调用未提供的独立知识库搜索工具。"
+      ? "请调用 research_with_web 统一完成资料库与联网检索，并传入 force_web=true；不要调用未提供的独立资料库搜索工具。"
       : mode === "theme_scan"
         ? "请调用 theme_scan 扫描知识卡片之间的跨篇关联；已有候选组用 theme_candidates 查看，需要关系画布时调用 generate_canvas。不要用 search_my_notes 临时拼组。"
-        : "请只使用当前可用的知识库检索工具，不要调用联网搜索工具。";
+        : "请只使用当前可用的资料库检索工具，不要调用联网搜索工具。";
   return [
     `【Hermes Knowledge 检索模式：${label[mode]}（mode=${mode}）】`,
     toolInstruction,
