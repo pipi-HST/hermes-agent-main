@@ -1,4 +1,4 @@
-"""Hermes tool: commit_garden_draft — 确认 Knowledge Card 草稿入库."""
+"""Hermes tool: commit_garden_draft — 确认 Knowledge Card 草稿保存."""
 from __future__ import annotations
 
 from tools.hermes_custom_envelope import (
@@ -12,14 +12,14 @@ COMMIT_GARDEN_DRAFT_SCHEMA = {
     "description": (
         "在用户明确确认后，把 Knowledge Card 草稿写入知识卡片库。"
         "会创建 garden_cards 结构化记录；默认不写常驻 Markdown 卡片文件。"
-        "只有用户说“确认卡片/存入知识卡片/可以入库”这类确认语义时才调用。"
+        "只有用户说“确认卡片/存入知识卡片/可以保存”这类确认语义时才调用。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "draft_id": {
                 "type": "string",
-                "description": "Knowledge Card 草稿 ID；为空时默认最近一个未入库知识卡片草稿。",
+                "description": "Knowledge Card 草稿 ID；为空时默认最近一个未保存知识卡片草稿。",
             },
         },
         "required": [],

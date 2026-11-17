@@ -19,7 +19,7 @@ REVISE_GARDEN_DRAFT_SCHEMA = {
         "properties": {
             "draft_id": {
                 "type": "string",
-                "description": "Knowledge Card 草稿 ID；为空时默认最近一个未入库知识卡片草稿。",
+                "description": "Knowledge Card 草稿 ID；为空时默认最近一个未保存知识卡片草稿。",
             },
             "instruction": {
                 "type": "string",

@@ -14,7 +14,7 @@ SEARCH_SCHEMA = {
         "不要重新调用本工具检索。用户提出新问题或新角度时才调用本工具。"
         "用户在上一条 RAG 回答后说“导出文档”“发文件”“保存成 Markdown”“完整引用报告”时，"
         "调用 continue_rag_answer(export_file=true)，不要重新调用本工具。"
-        "不要调用 show_capture_draft，除非用户明确说要看未入库 Capture 草稿。"
+        "不要调用 show_capture_draft，除非用户明确说要看未保存 Capture 草稿。"
         "如果用户追问“刚刚查了什么/用了哪些材料/工具有没有跑通”，调用 agent_run_status。"
     ),
     "parameters": {

@@ -1,0 +1,30 @@
+name: Dispatch Knowledge contract E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'integrations/hermes_knowledge/**'
+      - 'tools/hermes_custom_envelope.py'
+      - 'tools/research_with_web_tool.py'
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger hermes-custom E2E
+        env:
+          TOKEN: ${{ secrets.HERMES_CI_REPO_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "HERMES_CI_REPO_TOKEN not configured; skipping dispatch"
+            exit 0
+          fi
+          curl --fail -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/pipi-HST/hermes-custom/dispatches \
+            -d '{"event_type":"runtime-knowledge-change"}'

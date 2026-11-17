@@ -934,7 +934,7 @@ export default function KnowledgeLibraryPage() {
       || draft.committed_capture_id
     );
     if (!captureId) {
-      return { generated: false, error: "入库成功，但没有拿到 Capture ID。" };
+      return { generated: false, error: "保存成功，但没有拿到 Capture ID。" };
     }
     try {
       onStage?.("正在生成知识卡片...");
@@ -974,7 +974,7 @@ export default function KnowledgeLibraryPage() {
       setNotice("正在写入知识库文件...");
       const commitResult = await api.commitKnowledgeCaptureDraft(detail.id, { operationId: operation.operationId });
       if (isAiCancelledResult(commitResult)) {
-        setNotice("已停止。草稿仍保留，可继续编辑或重试入库。");
+        setNotice("已停止。草稿仍保留，可继续编辑或重试保存。");
         return;
       }
       setNotice("正在重建索引和大纲...");
@@ -990,11 +990,11 @@ export default function KnowledgeLibraryPage() {
       });
       await refreshAll();
       if (cardResult.generated) {
-        setNotice("已入库并生成知识卡片。");
+        setNotice("已保存并生成知识卡片。");
       } else if (cardResult.error) {
-        setNotice(`已入库，但知识卡片生成失败：${cardResult.error}`);
+        setNotice(`已保存，但知识卡片生成失败：${cardResult.error}`);
       } else {
-        setNotice("入库完成。");
+        setNotice("保存完成。");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1251,9 +1251,9 @@ export default function KnowledgeLibraryPage() {
         return payload.draft;
       }
       setEditableStatus("ready_to_commit");
-      setEditableProgressMessage("整理完成，可以入库");
+      setEditableProgressMessage("整理完成，可以保存");
       await refreshAll();
-      setNotice("已生成 AI 建议，可以继续编辑或入库。");
+      setNotice("已生成 AI 建议，可以继续编辑或保存。");
       return payload.draft;
     } catch (err) {
       if (operation.isCancelled() || isAbortError(err)) {
@@ -1359,7 +1359,7 @@ export default function KnowledgeLibraryPage() {
       if (operation.isCancelled() || isAiCancelledResult(commitResult)) {
         setEditableStatus("ready_to_commit");
         setEditableProgressMessage("已停止，草稿仍保留");
-        setNotice("已停止。草稿仍保留，可继续编辑或重试入库。");
+        setNotice("已停止。草稿仍保留，可继续编辑或重试保存。");
         return;
       }
       setEditableProgressMessage("正在重建索引和大纲...");
@@ -1385,20 +1385,20 @@ export default function KnowledgeLibraryPage() {
       if (operation.isCancelled()) return;
       setEditableStatus("committed");
       setEditableCardCommitStatus(cardResult.generated ? "generated" : cardResult.error ? "failed" : "skipped");
-      setEditableProgressMessage("入库完成");
+      setEditableProgressMessage("保存完成");
       await refreshAll();
       if (cardResult.generated) {
-        setNotice(`已入库并生成知识卡片：《${payload.draft.title || "未命名草稿"}》。`);
+        setNotice(`已保存并生成知识卡片：《${payload.draft.title || "未命名草稿"}》。`);
       } else if (cardResult.error) {
-        setNotice(`已入库，但知识卡片生成失败：${cardResult.error}`);
+        setNotice(`已保存，但知识卡片生成失败：${cardResult.error}`);
       } else {
-        setNotice(`已入库到知识库：《${payload.draft.title || "未命名草稿"}》。`);
+        setNotice(`已保存到资料库：《${payload.draft.title || "未命名草稿"}》。`);
       }
     } catch (err) {
       if (operation.isCancelled() || isAbortError(err)) {
         setEditableStatus("ready_to_commit");
         setEditableProgressMessage("已请求停止，可继续编辑或重试");
-        setNotice("已请求停止。草稿仍保留，可继续编辑或重试入库。");
+        setNotice("已请求停止。草稿仍保留，可继续编辑或重试保存。");
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
@@ -2214,7 +2214,7 @@ function FileWorkbench({
             {!isPublished ? (
               <MenuButton
                 icon={Send}
-                label={committing ? "正在入库" : "入库到知识库"}
+                label={committing ? "正在保存" : "保存到资料库"}
                 disabled={!canPublish}
                 onClick={() => { setMoreOpen(false); onPublish(); }}
               />
@@ -2271,7 +2271,7 @@ function FileWorkbench({
         {metadataOpen ? (
           <div className="mt-3 grid gap-2 rounded-md border border-border bg-background/55 p-3 text-sm md:grid-cols-2">
             <MetadataRow label="所在文件夹" value={folder || "Inbox"} />
-            <MetadataRow label="本地文件" value={detail.file_path || "入库后写入 Knowledge File"} />
+            <MetadataRow label="本地文件" value={detail.file_path || "保存后写入 Knowledge File"} />
             <MetadataRow label="AI 检索" value={detail.indexed ? "可被检索" : "尚未检索"} />
             <MetadataRow label="知识卡片" value={detail.garden_card_count > 0 ? `${detail.garden_card_count} 张` : "尚未生成"} />
             <div className="md:col-span-2">
@@ -2321,7 +2321,7 @@ function FileWorkbench({
               className="inline-flex h-9 items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 text-sm font-medium text-foreground transition hover:bg-primary/15 disabled:opacity-45"
             >
               {committing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              入库到知识库
+              保存到资料库
             </button>
           ) : null}
           {canStop ? (

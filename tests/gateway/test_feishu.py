@@ -2576,7 +2576,7 @@ class TestAdapterBehavior(unittest.TestCase):
             return func(*args, **kwargs)
 
         content = (
-            "确认已入库 ✓\n"
+            "确认已保存 ✓\n"
             "文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n"
             "**解码后的内容：**\n"
             "```json\n"
@@ -2603,7 +2603,7 @@ class TestAdapterBehavior(unittest.TestCase):
                 [
                     {
                         "tag": "md",
-                        "text": "确认已入库 ✓\n文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n**解码后的内容：**",
+                        "text": "确认已保存 ✓\n文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n**解码后的内容：**",
                     }
                 ],
                 [{"tag": "md", "text": "```json\n{\"cron\": \"list\"}\n```"}],

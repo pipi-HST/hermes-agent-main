@@ -495,7 +495,7 @@ TOOLSETS = {
         "tools": [
             # 1. 伴读解惑与整理闭环 (3)
             "start_reading_session", "discuss_reading", "summarize_reading_session",
-            # 2. 好文收集与入库闭环 (3)
+            # 2. 好文收集与保存闭环 (3)
             "capture_content", "commit_capture_draft", "refine_capture",
             # 3. 卡片沉淀与确认闭环 (4)
             "save_answer_to_knowledge", "commit_reading_artifact",

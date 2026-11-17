@@ -35,26 +35,26 @@ assert(
   "Editable paste/import commit path should trigger the same automatic card generation helper",
 );
 assert(
-  libraryPageSource.includes("已入库并生成知识卡片"),
+  libraryPageSource.includes("已保存并生成知识卡片"),
   "Successful auto card generation should be visible to the user",
 );
 assert(
-  libraryPageSource.includes("已入库，但知识卡片生成失败"),
+  libraryPageSource.includes("已保存，但知识卡片生成失败"),
   "Auto card generation failure should not rollback the committed note and should show a clear message",
 );
 
 [
   "正在生成 AI 建议...",
   "AI 建议生成失败，可手动填写或重试",
-  "整理完成，可以入库",
+  "整理完成，可以保存",
   "正在保存草稿...",
   "正在写入知识库文件...",
   "正在重建索引和大纲...",
   "正在生成知识卡片...",
   "未生成知识卡片/已跳过",
   "知识卡片生成失败",
-  "入库完成",
-  "入库后自动生成知识卡片",
+  "保存完成",
+  "保存后自动生成知识卡片",
 ].forEach((label) => {
   assert(
     libraryPageSource.includes(label) || workbenchSource.includes(label),

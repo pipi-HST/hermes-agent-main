@@ -148,7 +148,7 @@ export function EditableCaptureWorkbench({
               disabled={!canCommit}
               loading={committing}
             >
-              {status === "committed" ? "已入库" : "入库到知识库"}
+              {status === "committed" ? "已保存" : "保存到资料库"}
             </ActionButton>
           </div>
         </div>
@@ -226,7 +226,7 @@ export function EditableCaptureWorkbench({
             value={content}
             onChange={(event) => onContentChange(event.target.value)}
             disabled={locked}
-            placeholder="粘贴或写下要入库到知识库的内容"
+            placeholder="粘贴或写下要保存到资料库的内容"
             className="min-h-[420px] flex-1 resize-none bg-background/72 p-4 text-sm leading-7 text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-70"
           />
         </section>
@@ -313,7 +313,7 @@ export function EditableCaptureWorkbench({
               </section>
               <section>
                 <label className="flex items-center justify-between gap-3 rounded-md border border-current/10 bg-background/45 px-3 py-2">
-                  <span className="text-sm font-semibold tracking-normal text-foreground">入库后自动生成知识卡片</span>
+                  <span className="text-sm font-semibold tracking-normal text-foreground">保存后自动生成知识卡片</span>
                   <input
                     type="checkbox"
                     checked={generateCard}
@@ -413,15 +413,15 @@ function editableStatusSteps(
     { label: aiLabel, active: organizing || aiFailed, done: aiGenerated || committing || committed, loading: organizing },
   ];
   if (aiGenerated || committing || committed) {
-    steps.push({ label: "整理完成，可以入库", done: aiGenerated || committing || committed });
+    steps.push({ label: "整理完成，可以保存", done: aiGenerated || committing || committed });
   }
   if (saving) {
     steps.push({ label: "正在保存当前修改...", active: true, loading: true });
   }
   if (aiGenerated || committing || committed) {
-    steps.push({ label: committing ? "正在入库到知识库..." : "入库到知识库", active: committing, done: committed, loading: committing });
+    steps.push({ label: committing ? "正在保存到资料库..." : "保存到资料库", active: committing, done: committed, loading: committing });
     steps.push({ label: cardLabel, done: cardCommitStatus === "generated" || cardCommitStatus === "skipped", active: cardCommitStatus === "generating", loading: cardCommitStatus === "generating" });
-    steps.push({ label: "入库完成", done: committed });
+    steps.push({ label: "保存完成", done: committed });
   }
   return steps;
 }

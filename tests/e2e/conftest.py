@@ -26,66 +26,19 @@ E2E_MESSAGE_SETTLE_DELAY = 0.3
 
 # Platform library mocks
 
-# Ensure telegram module is available (mock it if not installed)
+# Telegram and Discord stand-ins are shared with tests/gateway via
+# tests/_platform_mocks.py. Delegating keeps one module object per worker, so
+# isinstance checks and monkeypatches stay on the object adapter modules hold.
 def _ensure_telegram_mock():
-    """Install mock telegram modules so TelegramAdapter can be imported."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return # Real library installed
+    from tests._platform_mocks import ensure_telegram_mock
 
-    telegram_mod = MagicMock()
-    telegram_mod.Update = MagicMock()
-    telegram_mod.Update.ALL_TYPES = []
-    telegram_mod.Bot = MagicMock
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.ext.Application = MagicMock()
-    telegram_mod.ext.Application.builder = MagicMock
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.ext.MessageHandler = MagicMock
-    telegram_mod.ext.CommandHandler = MagicMock
-    telegram_mod.ext.filters = MagicMock()
-    telegram_mod.request.HTTPXRequest = MagicMock
-
-    for name in (
-        "telegram",
-        "telegram.constants",
-        "telegram.ext",
-        "telegram.ext.filters",
-        "telegram.request",
-    ):
-        sys.modules.setdefault(name, telegram_mod)
+    ensure_telegram_mock()
 
 
-# Ensure discord module is available (mock it if not installed)
 def _ensure_discord_mock():
-    """Install mock discord modules so DiscordAdapter can be imported."""
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return # Real library installed
+    from tests._platform_mocks import ensure_discord_mock
 
-    discord_mod = MagicMock()
-    discord_mod.Intents.default.return_value = MagicMock()
-    discord_mod.DMChannel = type("DMChannel", (), {})
-    discord_mod.Thread = type("Thread", (), {})
-    discord_mod.ForumChannel = type("ForumChannel", (), {})
-    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
-    discord_mod.MessageType = SimpleNamespace(default=0, reply=19)
-    discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
-    discord_mod.Interaction = object
-    discord_mod.app_commands = SimpleNamespace(
-        describe=lambda **kwargs: (lambda fn: fn),
-        choices=lambda **kwargs: (lambda fn: fn),
-        Choice=lambda **kwargs: SimpleNamespace(**kwargs),
-    )
-    discord_mod.opus.is_loaded.return_value = True
-
-    ext_mod = MagicMock()
-    commands_mod = MagicMock()
-    commands_mod.Bot = MagicMock
-    ext_mod.commands = commands_mod
-
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
-    sys.modules.setdefault("discord.opus", discord_mod.opus)
+    ensure_discord_mock()
 
 
 def _ensure_slack_mock():

@@ -27,7 +27,7 @@ export const HIDDEN_DRAFT_STATUSES = new Set(["abandoned", "discarded"]);
 export const DRAFT_FILTERS = [
   { key: "open", label: "待审" },
   { key: "all", label: "全部" },
-  { key: "committed", label: "已入库" },
+  { key: "committed", label: "已保存" },
 ] as const;
 
 export type DraftFilterKey = (typeof DRAFT_FILTERS)[number]["key"];
@@ -242,7 +242,7 @@ export function statusLabel(status: string): string {
     draft_ready: "待审阅",
     revision_requested: "修改中",
     draft_incomplete: "未完成",
-    committed: "已入库",
+    committed: "已保存",
     abandoned: "已删除",
     discarded: "已删除",
   } as Record<string, string>)[status] ?? (status || "未知");
@@ -293,6 +293,6 @@ export function draftMetaRows(draft: KnowledgeCaptureDraft): Array<[string, stri
     ["来源", draft.source || "未记录"],
     ["创建时间", draft.created_at || "未记录"],
     ["更新时间", draft.updated_at || "未记录"],
-    ["已入库知识文件", draft.committed_capture_id || "尚未入库"],
+    ["已保存知识文件", draft.committed_capture_id || "尚未保存"],
   ];
 }

@@ -107,11 +107,11 @@ function DraftReviewLoaded({
       detail.capture_intent.output_shape.includes("full_text"));
   const commitLabel = needsFinalization
     ? isFullTextIntent
-      ? "全文高保真入库"
-      : "整理并入库"
+      ? "全文高保真保存"
+      : "整理并保存"
     : isFullTextIntent
-      ? "生成整理稿并入库"
-      : "确认入库";
+      ? "生成整理稿并保存"
+      : "确认保存";
   const canStop = Boolean(onStopAiOperation) && ["commit", "revise", "card"].includes(actionLoading || "");
 
   return (
@@ -222,12 +222,12 @@ function DraftReviewLoaded({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {isCommitted && (
           <div className="mb-3 rounded-md border border-success/25 bg-success/10 px-3 py-2 text-sm leading-6 text-success">
-            这份材料已入库。需要调整内容时，请进入知识库编辑页。
+            这份材料已保存。需要调整内容时，请进入知识库编辑页。
           </div>
         )}
         {needsFinalization && (
           <div className="mb-3 rounded-md border border-primary/20 bg-primary/10 px-3 py-2 text-sm leading-6 text-foreground">
-            原文已提取，正在等待确认。确认后再生成高保真 Markdown 正文并入库。
+            原文已提取，正在等待确认。确认后再生成高保真 Markdown 正文并保存。
           </div>
         )}
         {view === "draft" && (

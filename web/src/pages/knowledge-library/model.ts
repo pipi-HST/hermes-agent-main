@@ -11,7 +11,7 @@ export type StatusFilter = "all" | "draft" | "in_library" | "searchable" | "card
 export const STATUS_FILTERS: Array<{ key: StatusFilter; label: string }> = [
   { key: "all", label: "全部" },
   { key: "draft", label: "草稿" },
-  { key: "in_library", label: "已入库" },
+  { key: "in_library", label: "已保存" },
   { key: "searchable", label: "可检索" },
   { key: "cards", label: "有卡片" },
 ];

@@ -7,7 +7,7 @@ import {
 
 function assistantDraftMessage(id: string, label = "草稿编号") {
   return [
-    { role: "user", text: "请把这篇文章入库" },
+    { role: "user", text: "请把这篇文章保存" },
     { role: "assistant", text: `已生成待确认草稿。\n${label}：${id}` },
   ];
 }
@@ -56,7 +56,7 @@ test("恢复 Capture 历史会话时只加载 Capture detail", async ({ page }) 
   await page.goto(`/knowledge-chat?session=${state.sessionId}`);
 
   await expect(page.getByRole("heading", { name: "Capture 浏览器验收材料", level: 2 })).toBeVisible();
-  await expect(page.getByRole("button", { name: "确认入库" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "确认保存" })).toBeVisible();
   expect(probe.requests).toContainEqual({ method: "GET", path: `/api/knowledge/capture-drafts/${state.captureDrafts[0].id}` });
   expect(probe.requests).not.toContainEqual({ method: "GET", path: `/api/knowledge/reading-drafts/${state.captureDrafts[0].id}` });
   assertCleanBrowser(probe);
@@ -119,14 +119,14 @@ test("不存在的草稿编号不会请求任何 detail 接口", async ({ page }
   assertCleanBrowser(probe);
 });
 
-test("Capture 待审草稿可以从历史会话确认入库", async ({ page }) => {
+test("Capture 待审草稿可以从历史会话确认保存", async ({ page }) => {
   const state = captureState("capturecommit1");
   const probe = await installKnowledgeBrowserFixture(page, state);
 
   await page.goto(`/knowledge-chat?session=${state.sessionId}`);
-  await page.getByRole("button", { name: "确认入库" }).click();
+  await page.getByRole("button", { name: "确认保存" }).click();
 
-  await expect(page.getByText("这份材料已入库。需要调整内容时，请进入知识库编辑页。")).toBeVisible();
+  await expect(page.getByText("这份材料已保存。需要调整内容时，请进入知识库编辑页。")).toBeVisible();
   expect(state.captureDrafts[0].status).toBe("committed");
   expect(probe.requests).toContainEqual({ method: "POST", path: `/api/knowledge/capture-drafts/${state.captureDrafts[0].id}/commit` });
   assertCleanBrowser(probe);
@@ -162,17 +162,17 @@ test("用户从输入框触发 Capture 工具后进入待审草稿", async ({ pa
 
   await page.goto(`/knowledge-chat?session=${state.sessionId}`);
   const composer = page.getByRole("textbox", { name: /直接问知识库/ });
-  await composer.fill("请把这篇文章全文入库");
+  await composer.fill("请把这篇文章全文保存");
   await page.getByRole("button", { name: "发送" }).click();
 
   await expect(page.getByRole("heading", { name: "Capture 浏览器验收材料", level: 2 })).toBeVisible();
-  await expect(page.getByRole("button", { name: "确认入库" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "确认保存" })).toBeVisible();
   expect(probe.requests).toContainEqual({ method: "GET", path: `/api/knowledge/capture-drafts/${draft.id}` });
   expect(probe.requests).not.toContainEqual({ method: "GET", path: `/api/knowledge/reading-drafts/${draft.id}` });
   assertCleanBrowser(probe);
 });
 
-test("已入库文章在知识库展示目录并可跳转", async ({ page }) => {
+test("已保存文章在知识库展示目录并可跳转", async ({ page }) => {
   const itemId = "librarycapture1";
   const state: MockKnowledgeState = {
     sessionId: "library-e2e",

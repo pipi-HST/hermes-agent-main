@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 
 const apiPath = fileURLToPath(new URL("../src/lib/api.ts", import.meta.url));
 const libraryPagePath = fileURLToPath(new URL("../src/pages/KnowledgeLibraryPage.tsx", import.meta.url));
+const libraryHeaderPath = fileURLToPath(new URL("../src/pages/KnowledgeLibraryHeader.tsx", import.meta.url));
+const libraryHelpersPath = fileURLToPath(new URL("../src/pages/knowledge-library/helpers.ts", import.meta.url));
 const chatPagePath = fileURLToPath(new URL("../src/pages/KnowledgeChatPage.tsx", import.meta.url));
 const workbenchPath = fileURLToPath(new URL("../src/pages/knowledge-chat/EditableCaptureWorkbench.tsx", import.meta.url));
 
@@ -29,7 +31,10 @@ function componentBody(source, name) {
 }
 
 const apiSource = readFileSync(apiPath, "utf8");
-const librarySource = readFileSync(libraryPagePath, "utf8");
+const libraryHeaderSource = readFileSync(libraryHeaderPath, "utf8");
+const librarySource = readFileSync(libraryPagePath, "utf8")
+  + "\n" + libraryHeaderSource
+  + "\n" + readFileSync(libraryHelpersPath, "utf8");
 const chatSource = readFileSync(chatPagePath, "utf8");
 const workbenchSource = readFileSync(workbenchPath, "utf8");
 
@@ -99,7 +104,7 @@ for (const [label, source] of [
   );
 }
 
-const menuArea = librarySource.slice(librarySource.indexOf("newMenuOpen"), librarySource.indexOf("input", librarySource.indexOf("newMenuOpen")));
+const menuArea = libraryHeaderSource.slice(libraryHeaderSource.indexOf("newMenuOpen"), libraryHeaderSource.indexOf("input", libraryHeaderSource.indexOf("newMenuOpen")));
 assert(menuArea.includes("新建知识文件"), "New menu should expose one unified knowledge-file entry");
 assert(!menuArea.includes("粘贴整理"), "New menu should not expose a separate paste-organize entry");
 assert(!menuArea.includes("新建空白文件"), "New menu should not expose a separate blank-file entry");
@@ -112,7 +117,7 @@ assert(!workbenchSource.includes("正在生成标题摘要标签"), "Editable wo
 assert(!workbenchSource.includes("正在生成文件夹和卡片建议"), "Editable workbench should not show fake suggestion sub-stages");
 assert(
   workbenchSource.includes("if (aiGenerated || committing || committed)") &&
-    workbenchSource.includes('steps.push({ label: "整理完成，可以入库"'),
+    workbenchSource.includes('steps.push({ label: "整理完成，可以保存"'),
   "Editable workbench should only show ready-to-commit status after AI suggestions are generated",
 );
 assert(!workbenchSource.includes("整理成草稿"), "Editable workbench should not imply every save runs organization");

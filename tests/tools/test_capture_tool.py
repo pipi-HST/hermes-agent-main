@@ -25,10 +25,10 @@ def test_capture_schema_keeps_coverage_separate_from_presentation_contract():
         tool.CAPTURE_SCHEMA["parameters"]["properties"]["instruction"]["description"]
     )
 
-    assert "全文入库表示覆盖全文，不等于一字不改原样保存" in description
+    assert "全文保存表示覆盖全文，不等于一字不改原样保存" in description
     assert "正式 Capture 始终需要可读性整理、章节、目录和重点加粗" in description
     assert "只传用户原话" in instruction_description
-    assert "不要把“全文入库”扩写成“一字不改”" in instruction_description
+    assert "不要把“全文保存”扩写成“一字不改”" in instruction_description
 
 
 def test_capture_handler_uses_user_wording_as_instruction_contract(monkeypatch):
@@ -47,13 +47,13 @@ def test_capture_handler_uses_user_wording_as_instruction_contract(monkeypatch):
     payload = json.loads(tool._handler(
         {
             "content": "https://example.test/article",
-            "instruction": "全文原文入库，一字不改保存正文",
+            "instruction": "全文原文保存，一字不改保存正文",
         },
-        user_task="这个篇文章全文入库：https://example.test/article",
+        user_task="这个篇文章全文保存：https://example.test/article",
     ))
 
     assert payload["status"] == "success"
-    assert observed["instruction"] == "这个篇文章全文入库"
+    assert observed["instruction"] == "这个篇文章全文保存"
 
 
 def test_revise_tools_do_not_claim_new_documents():

@@ -92,6 +92,27 @@ class _FakeKnowledgeServiceClient:
     def delete_capture_draft(self, draft_id):
         return self._respond("delete_capture_draft", draft_id)
 
+    def list_capture_drafts(self, *, limit=50):
+        return self._respond("list_capture_drafts", limit=limit)
+
+    def get_capture_draft(self, draft_id):
+        return self._respond("get_capture_draft", draft_id)
+
+    def list_reading_drafts(self, *, limit=50):
+        return self._respond("list_reading_drafts", limit=limit)
+
+    def get_reading_draft(self, draft_id):
+        return self._respond("get_reading_draft", draft_id)
+
+    def object_events(self, object_type, object_id, *, limit=30):
+        return self._respond("object_events", object_type, object_id, limit=limit)
+
+    def get_card(self, card_id):
+        return self._respond("get_card", card_id)
+
+    def item_dependencies(self, kind, item_id):
+        return self._respond("item_dependencies", kind, item_id)
+
     def delete_reading_draft(self, draft_id):
         return self._respond("delete_reading_draft", draft_id)
 
@@ -375,10 +396,10 @@ class TestWebServerEndpoints:
         target.write_text("# Note\n", encoding="utf-8")
         db_path = tmp_path / "captures.db"
         conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE captures (id TEXT PRIMARY KEY, file_path TEXT, review_state TEXT)")
+        conn.execute("CREATE TABLE captures (id TEXT PRIMARY KEY, file_path TEXT, archived_at TEXT)")
         conn.execute(
-            "INSERT INTO captures (id, file_path, review_state) VALUES (?, ?, ?)",
-            ("cap-1", "captures/note.md", "captured"),
+            "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+            ("cap-1", "captures/note.md"),
         )
         conn.commit()
         conn.close()
@@ -436,11 +457,11 @@ class TestWebServerEndpoints:
         vault.mkdir()
         db_path = tmp_path / "captures.db"
         conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE captures (id TEXT PRIMARY KEY, file_path TEXT, review_state TEXT)")
+        conn.execute("CREATE TABLE captures (id TEXT PRIMARY KEY, file_path TEXT, archived_at TEXT)")
         conn.execute("CREATE TABLE capture_drafts (id TEXT PRIMARY KEY)")
         conn.execute(
-            "INSERT INTO captures (id, file_path, review_state) VALUES (?, ?, ?)",
-            ("cap-1", file_path, "captured"),
+            "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+            ("cap-1", file_path),
         )
         conn.execute("INSERT INTO capture_drafts (id) VALUES (?)", ("draft-1",))
         conn.commit()
@@ -499,7 +520,7 @@ class TestWebServerEndpoints:
                 "智能问数",
                 4,
                 "# 智能问数\n\n整理稿正文",
-                "全文入库",
+                "全文保存",
                 "这是一篇智能问数材料。",
                 '["ai","data"]',
                 "draft_ready",
@@ -558,7 +579,7 @@ class TestWebServerEndpoints:
                id TEXT PRIMARY KEY,
                file_path TEXT,
                raw_path TEXT,
-               review_state TEXT,
+               archived_at TEXT,
                created_at TEXT,
                updated_at TEXT
             )"""
@@ -573,7 +594,7 @@ class TestWebServerEndpoints:
         )
         conn.execute(
             "INSERT INTO captures VALUES (?, ?, ?, ?, ?, ?)",
-            ("cap-indexed", "captures/indexed.md", "", "captured", "", ""),
+            ("cap-indexed", "captures/indexed.md", "", None, "", ""),
         )
         conn.execute(
             "INSERT INTO capture_embeddings VALUES (?, ?, ?, ?)",
@@ -777,7 +798,7 @@ class TestWebServerEndpoints:
                 id TEXT PRIMARY KEY,
                 file_path TEXT NOT NULL DEFAULT '',
                 raw_path TEXT NOT NULL DEFAULT '',
-                review_state TEXT NOT NULL DEFAULT '',
+                archived_at TEXT,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT '',
                 embedding BLOB
@@ -801,8 +822,8 @@ class TestWebServerEndpoints:
             ),
         )
         conn.execute(
-            "INSERT INTO captures (id, file_path, review_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            ("cap-1", "captures/source.md", "captured", "2026-06-20T00:00:00+00:00", "2026-06-20T00:00:00+00:00"),
+            "INSERT INTO captures (id, file_path, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            ("cap-1", "captures/source.md", "2026-06-20T00:00:00+00:00", "2026-06-20T00:00:00+00:00"),
         )
         conn.commit()
         conn.close()
@@ -1498,7 +1519,7 @@ class TestWebServerEndpoints:
         data_dir.mkdir(parents=True)
         (vault / "captures").mkdir(parents=True)
         (vault / "captures" / "cap-1.md").write_text(
-            "---\ntitle: 入库标题\nword_count: 12\n---\n\n真实入库正文",
+            "---\ntitle: 保存标题\nword_count: 12\n---\n\n真实保存正文",
             encoding="utf-8",
         )
         (custom_root / "config.yaml").write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
@@ -1510,7 +1531,7 @@ class TestWebServerEndpoints:
                 id TEXT PRIMARY KEY,
                 file_path TEXT NOT NULL DEFAULT '',
                 raw_path TEXT NOT NULL DEFAULT '',
-                review_state TEXT NOT NULL DEFAULT '',
+                archived_at TEXT,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT ''
             );
@@ -1552,8 +1573,8 @@ class TestWebServerEndpoints:
 
         assert response.status_code == 200
         draft = response.json()["draft"]
-        assert draft["draft_text"] == "真实入库正文"
-        assert draft["title"] == "入库标题"
+        assert draft["draft_text"] == "真实保存正文"
+        assert draft["title"] == "保存标题"
         assert draft["historical_draft_text"] == "过期历史草稿正文"
 
     def test_revise_knowledge_capture_returns_preview_without_writing(self, monkeypatch, tmp_path):
@@ -1655,7 +1676,7 @@ class TestWebServerEndpoints:
         (vault / "notes").mkdir(parents=True)
         (vault / "notes" / "cap-1.md").write_text(
             "---\n"
-            "title: 入库文件\n"
+            "title: 保存文件\n"
             "folder_path: Inbox\n"
             "---\n\n"
             "正文",
@@ -1675,7 +1696,7 @@ class TestWebServerEndpoints:
                 id TEXT PRIMARY KEY,
                 file_path TEXT NOT NULL DEFAULT '',
                 raw_path TEXT NOT NULL DEFAULT '',
-                review_state TEXT NOT NULL DEFAULT '',
+                archived_at TEXT,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT '',
                 embedding BLOB
@@ -1716,8 +1737,8 @@ class TestWebServerEndpoints:
             """
         )
         conn.execute(
-            "INSERT INTO captures (id, file_path, review_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            ("cap-1", "notes/cap-1.md", "captured", "2026-06-19T00:00:00+00:00", "2026-06-19T00:00:00+00:00"),
+            "INSERT INTO captures (id, file_path, archived_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            ("cap-1", "notes/cap-1.md", None, "2026-06-19T00:00:00+00:00", "2026-06-19T00:00:00+00:00"),
         )
         conn.execute(
             "INSERT INTO garden_cards (id, title, status, capture_ids) VALUES (?, ?, ?, ?)",
@@ -1765,10 +1786,10 @@ class TestWebServerEndpoints:
         assert data["status"] == "archived"
         assert data["dependencies"]["garden_cards"][0]["id"] == "card-1"
         conn = sqlite3.connect(db_path)
-        review_state = conn.execute("SELECT review_state FROM captures WHERE id = ?", ("cap-1",)).fetchone()[0]
+        archived_at = conn.execute("SELECT archived_at FROM captures WHERE id = ?", ("cap-1",)).fetchone()[0]
         card_count = conn.execute("SELECT COUNT(*) FROM garden_cards WHERE id = ?", ("card-1",)).fetchone()[0]
         conn.close()
-        assert review_state == "archived"
+        assert archived_at is not None
         assert card_count == 1
 
     def test_knowledge_library_capture_permanent_delete_rejects_referenced_capture(self, monkeypatch, tmp_path):
@@ -1779,7 +1800,7 @@ class TestWebServerEndpoints:
         vault = tmp_path / "vault"
         data_dir.mkdir(parents=True)
         (vault / "notes").mkdir(parents=True)
-        (vault / "notes" / "cap-1.md").write_text("# 入库文件\n", encoding="utf-8")
+        (vault / "notes" / "cap-1.md").write_text("# 保存文件\n", encoding="utf-8")
         (vault / "notes" / "ref.md").write_text("这里引用 cap-1。", encoding="utf-8")
         (custom_root / "config.yaml").write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
         db_path = data_dir / "captures.db"
@@ -1790,7 +1811,7 @@ class TestWebServerEndpoints:
                 id TEXT PRIMARY KEY,
                 file_path TEXT NOT NULL DEFAULT '',
                 raw_path TEXT NOT NULL DEFAULT '',
-                review_state TEXT NOT NULL DEFAULT '',
+                archived_at TEXT,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT ''
             );
@@ -1815,8 +1836,8 @@ class TestWebServerEndpoints:
             """
         )
         conn.execute(
-            "INSERT INTO captures (id, file_path, review_state) VALUES (?, ?, ?)",
-            ("cap-1", "notes/cap-1.md", "captured"),
+            "INSERT INTO captures (id, file_path, archived_at) VALUES (?, ?, ?)",
+            ("cap-1", "notes/cap-1.md", None),
         )
         conn.execute(
             "INSERT INTO garden_cards (id, title, status, capture_ids) VALUES (?, ?, ?, ?)",
@@ -1846,7 +1867,7 @@ class TestWebServerEndpoints:
         vault = tmp_path / "vault"
         data_dir.mkdir(parents=True)
         (vault / "notes").mkdir(parents=True)
-        (vault / "notes" / "cap-1.md").write_text("# 入库文件\n", encoding="utf-8")
+        (vault / "notes" / "cap-1.md").write_text("# 保存文件\n", encoding="utf-8")
         (custom_root / "config.yaml").write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
         db_path = data_dir / "captures.db"
         conn = sqlite3.connect(db_path)
@@ -1856,7 +1877,7 @@ class TestWebServerEndpoints:
                 id TEXT PRIMARY KEY,
                 file_path TEXT NOT NULL DEFAULT '',
                 raw_path TEXT NOT NULL DEFAULT '',
-                review_state TEXT NOT NULL DEFAULT '',
+                archived_at TEXT,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT ''
             );
@@ -1885,8 +1906,8 @@ class TestWebServerEndpoints:
             """
         )
         conn.execute(
-            "INSERT INTO captures (id, file_path, review_state) VALUES (?, ?, ?)",
-            ("cap-1", "notes/cap-1.md", "captured"),
+            "INSERT INTO captures (id, file_path, archived_at) VALUES (?, ?, ?)",
+            ("cap-1", "notes/cap-1.md", None),
         )
         conn.execute(
             "INSERT INTO capture_drafts (id, title, status, committed_capture_id) VALUES (?, ?, ?, ?)",
@@ -1931,7 +1952,7 @@ class TestWebServerEndpoints:
         vault = tmp_path / "vault"
         data_dir.mkdir(parents=True)
         (vault / "notes").mkdir(parents=True)
-        (vault / "notes" / "cap-1.md").write_text("# 入库文件\n", encoding="utf-8")
+        (vault / "notes" / "cap-1.md").write_text("# 保存文件\n", encoding="utf-8")
         (custom_root / "config.yaml").write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
         db_path = data_dir / "captures.db"
         conn = sqlite3.connect(db_path)
@@ -1941,7 +1962,7 @@ class TestWebServerEndpoints:
                 id TEXT PRIMARY KEY,
                 file_path TEXT NOT NULL DEFAULT '',
                 raw_path TEXT NOT NULL DEFAULT '',
-                review_state TEXT NOT NULL DEFAULT '',
+                archived_at TEXT,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT ''
             );
@@ -1966,8 +1987,8 @@ class TestWebServerEndpoints:
             """
         )
         conn.execute(
-            "INSERT INTO captures (id, file_path, review_state) VALUES (?, ?, ?)",
-            ("cap-1", "notes/cap-1.md", "captured"),
+            "INSERT INTO captures (id, file_path, archived_at) VALUES (?, ?, ?)",
+            ("cap-1", "notes/cap-1.md", None),
         )
         conn.execute(
             "INSERT INTO garden_drafts (id, title, status, capture_ids) VALUES (?, ?, ?, ?)",
@@ -1995,7 +2016,7 @@ class TestWebServerEndpoints:
         data_dir.mkdir(parents=True)
         (vault / "notes").mkdir(parents=True)
         (vault / "_archive" / "raw").mkdir(parents=True)
-        (vault / "notes" / "cap-1.md").write_text("# 入库文件\n", encoding="utf-8")
+        (vault / "notes" / "cap-1.md").write_text("# 保存文件\n", encoding="utf-8")
         (vault / "_archive" / "raw" / "cap-1.md").write_text("raw", encoding="utf-8")
         (custom_root / "config.yaml").write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
         db_path = data_dir / "captures.db"
@@ -2006,7 +2027,7 @@ class TestWebServerEndpoints:
                 id TEXT PRIMARY KEY,
                 file_path TEXT NOT NULL DEFAULT '',
                 raw_path TEXT NOT NULL DEFAULT '',
-                review_state TEXT NOT NULL DEFAULT '',
+                archived_at TEXT,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT ''
             );
@@ -2049,8 +2070,8 @@ class TestWebServerEndpoints:
             """
         )
         conn.execute(
-            "INSERT INTO captures (id, file_path, raw_path, review_state) VALUES (?, ?, ?, ?)",
-            ("cap-1", "notes/cap-1.md", "_archive/raw/cap-1.md", "captured"),
+            "INSERT INTO captures (id, file_path, raw_path, archived_at) VALUES (?, ?, ?, ?)",
+            ("cap-1", "notes/cap-1.md", "_archive/raw/cap-1.md", None),
         )
         conn.execute("INSERT INTO capture_embeddings (id, capture_id) VALUES (?, ?)", ("emb-1", "cap-1"))
         conn.execute("INSERT INTO capture_metadata (capture_id, outline_json) VALUES (?, ?)", ("cap-1", "[]"))
@@ -2096,7 +2117,7 @@ class TestWebServerEndpoints:
         data_dir.mkdir(parents=True)
         (vault / "notes").mkdir(parents=True)
         (vault / "_archive" / "raw").mkdir(parents=True)
-        (vault / "notes" / "cap-1.md").write_text("# 入库文件\n", encoding="utf-8")
+        (vault / "notes" / "cap-1.md").write_text("# 保存文件\n", encoding="utf-8")
         (vault / "_archive" / "raw" / "cap-1.md").write_text("raw", encoding="utf-8")
         (custom_root / "config.yaml").write_text(f"vault:\n  path: {vault}\n", encoding="utf-8")
         db_path = data_dir / "captures.db"
@@ -2107,7 +2128,7 @@ class TestWebServerEndpoints:
                 id TEXT PRIMARY KEY,
                 file_path TEXT NOT NULL DEFAULT '',
                 raw_path TEXT NOT NULL DEFAULT '',
-                review_state TEXT NOT NULL DEFAULT '',
+                archived_at TEXT,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT ''
             );
@@ -2136,8 +2157,8 @@ class TestWebServerEndpoints:
             """
         )
         conn.execute(
-            "INSERT INTO captures (id, file_path, raw_path, review_state) VALUES (?, ?, ?, ?)",
-            ("cap-1", "notes/cap-1.md", "_archive/raw/cap-1.md", "captured"),
+            "INSERT INTO captures (id, file_path, raw_path, archived_at) VALUES (?, ?, ?, ?)",
+            ("cap-1", "notes/cap-1.md", "_archive/raw/cap-1.md", None),
         )
         conn.execute("INSERT INTO review_items (id, capture_id) VALUES (?, ?)", ("ri-legacy", "cap-1"))
         conn.commit()
@@ -2333,7 +2354,7 @@ class TestWebServerEndpoints:
             responses={
                 "list_library_folders": {
                     "folders": [{"path": "Inbox", "name": "Inbox", "count": 3}],
-                    "smart_views": [{"key": "recent", "label": "最近入库", "count": 3}],
+                    "smart_views": [{"key": "recent", "label": "最近保存", "count": 3}],
                 }
             }
         )
@@ -2385,6 +2406,43 @@ class TestWebServerEndpoints:
             {"method": "rename_library_folder", "args": ("Old", "New"), "kwargs": {}}
         ]
         assert fake.closed is True
+
+    def test_dashboard_reads_delegate_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "list_capture_drafts": {"drafts": [{"id": "d1"}], "open_count": 1},
+                "get_capture_draft": {"draft": {"id": "d1"}},
+                "list_reading_drafts": {"drafts": [{"id": "r1"}], "open_count": 1},
+                "get_reading_draft": {"draft": {"id": "r1"}},
+                "object_events": {"events": [], "related_ids": ["cap1"], "total": 0},
+                "get_card": {"card": {"id": "c1", "source_theme": "Topic"}},
+                "item_dependencies": {"ok": True, "id": "cap1", "dependencies": {}},
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        assert self.client.get("/api/knowledge/capture-drafts").json()["open_count"] == 1
+        assert self.client.get("/api/knowledge/capture-drafts/d1").json()["draft"]["id"] == "d1"
+        assert self.client.get("/api/knowledge/reading-drafts").json()["open_count"] == 1
+        assert self.client.get("/api/knowledge/reading-drafts/r1").json()["draft"]["id"] == "r1"
+        assert self.client.get(
+            "/api/knowledge/object-events",
+            params={"object_type": "capture", "object_id": "cap1"},
+        ).json()["related_ids"] == ["cap1"]
+        assert self.client.get("/api/knowledge/cards/c1").json()["card"]["source_theme"] == "Topic"
+        assert self.client.get(
+            "/api/knowledge/library/items/capture/cap1/dependencies"
+        ).json()["ok"] is True
+
+        assert [call["method"] for call in fake.calls] == [
+            "list_capture_drafts",
+            "get_capture_draft",
+            "list_reading_drafts",
+            "get_reading_draft",
+            "object_events",
+            "get_card",
+            "item_dependencies",
+        ]
 
     def test_library_item_create_delegates_to_service(self, monkeypatch):
         fake = _FakeKnowledgeServiceClient(
@@ -3093,7 +3151,7 @@ class TestWebServerEndpoints:
                 id TEXT PRIMARY KEY,
                 file_path TEXT NOT NULL DEFAULT '',
                 raw_path TEXT NOT NULL DEFAULT '',
-                review_state TEXT NOT NULL DEFAULT '',
+                archived_at TEXT,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT '',
                 embedding BLOB
@@ -3101,8 +3159,8 @@ class TestWebServerEndpoints:
             """
         )
         conn.execute(
-            "INSERT INTO captures (id, file_path, review_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            ("cap-1", "notes/cap-1.md", "captured", "2026-06-20T00:00:00+00:00", "2026-06-20T00:00:00+00:00"),
+            "INSERT INTO captures (id, file_path, archived_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            ("cap-1", "notes/cap-1.md", None, "2026-06-20T00:00:00+00:00", "2026-06-20T00:00:00+00:00"),
         )
         conn.commit()
         conn.close()
@@ -3202,7 +3260,7 @@ class TestWebServerEndpoints:
             (
                 "draft-1",
                 "草稿文件",
-                "# 草稿\n\n这是一篇还没有入库的材料。",
+                "# 草稿\n\n这是一篇还没有保存的材料。",
                 "草稿摘要",
                 '["draft"]',
                 "draft_ready",
@@ -3250,7 +3308,7 @@ class TestWebServerEndpoints:
         assert data["answer"] == "草稿整体回答。"
         assert data["used_selection"] is False
         assert calls["article_context"]["kind"] == "capture_draft"
-        assert calls["article_context"]["body"] == "这是一篇还没有入库的材料。"
+        assert calls["article_context"]["body"] == "这是一篇还没有保存的材料。"
         assert calls["query"] == "这篇文章的核心判断是什么？"
 
     def test_knowledge_cards_api_returns_grouped_cards_with_readable_sources(
@@ -3297,14 +3355,11 @@ class TestWebServerEndpoints:
             """CREATE TABLE garden_cards (
                id TEXT PRIMARY KEY,
                title TEXT NOT NULL DEFAULT '',
-               one_liner TEXT NOT NULL DEFAULT '',
                card_kind TEXT NOT NULL DEFAULT 'viewpoint',
-               core_arguments TEXT NOT NULL DEFAULT '[]',
-               knowledge_links TEXT NOT NULL DEFAULT '[]',
-               key_materials TEXT NOT NULL DEFAULT '[]',
-               my_view TEXT NOT NULL DEFAULT '',
+               payload_json TEXT NOT NULL DEFAULT '{}',
                status TEXT NOT NULL DEFAULT 'seed',
                capture_ids TEXT NOT NULL DEFAULT '[]',
+               source_theme TEXT NOT NULL DEFAULT '',
                created_at TEXT NOT NULL DEFAULT (datetime('now')),
                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )"""
@@ -3315,17 +3370,34 @@ class TestWebServerEndpoints:
         )
         conn.execute(
             """INSERT INTO garden_cards
-               (id, title, one_liner, card_kind, core_arguments, key_materials,
-                my_view, status, capture_ids, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, title, card_kind, payload_json, status, capture_ids, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 "card-1",
                 "Agent 工作流选型",
-                "先从增强型调用开始，再逐步引入工作流。",
                 "method",
-                '[{"claim":"复杂度应该服务于任务不确定性。"}]',
-                '["工具质量","上下文工程"]',
-                "适合评估 agent 产品架构。",
+                json.dumps(
+                    {
+                        "schema_version": "garden_card.v2",
+                        "title": "Agent 工作流选型",
+                        "claim": "先从增强型调用开始，再逐步引入工作流。",
+                        "card_kind": "method",
+                        "core_judgments": [
+                            {
+                                "id": "j1",
+                                "statement": "复杂度应该服务于任务不确定性。",
+                                "reasoning": "",
+                                "support": [
+                                    {"summary": "工具质量", "source_ids": []},
+                                    {"summary": "上下文工程", "source_ids": []},
+                                ],
+                            }
+                        ],
+                        "action_items": ["适合评估 agent 产品架构。"],
+                        "source_ids": ["cap-1"],
+                    },
+                    ensure_ascii=False,
+                ),
                 "seed",
                 '["cap-1"]',
                 "2026-06-15T00:00:00+00:00",
@@ -3347,9 +3419,14 @@ class TestWebServerEndpoints:
         assert card["file_path"] == ""
         assert card["source_theme"] == ""
         assert card["markdown"] == ""
-        assert card["core_arguments"] == [{"claim": "复杂度应该服务于任务不确定性。"}]
-        assert card["key_materials"] == ["工具质量", "上下文工程"]
-        assert card["my_view"] == "适合评估 agent 产品架构。"
+        assert card["core_arguments"] == [
+            {"claim": "复杂度应该服务于任务不确定性。", "consensus": True, "source_ids": []}
+        ]
+        assert card["key_materials"] == [
+            {"content": "工具质量", "capture_id": ""},
+            {"content": "上下文工程", "capture_id": ""},
+        ]
+        assert card["my_view"] == "- 适合评估 agent 产品架构。"
         assert card["sources"] == [
             {
                 "id": "cap-1",

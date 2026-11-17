@@ -202,7 +202,7 @@ export function libraryDependencyCounts(dependencies?: KnowledgeLibraryDependenc
 
 export function libraryDeleteNotice(result: KnowledgeLibraryDeleteResponse): string {
   const dependencies = result.dependencies;
-  if (!dependencies) return result.message || "已归档入库文件。";
+  if (!dependencies) return result.message || "已归档保存文件。";
   const { cardCount, gardenDraftCount, backlinkCount, draftCount, eventCount } = libraryDependencyCounts(dependencies);
   const parts = [
     cardCount ? `${cardCount} 张卡片` : "",
@@ -211,8 +211,8 @@ export function libraryDeleteNotice(result: KnowledgeLibraryDeleteResponse): str
     draftCount ? `${draftCount} 条历史草稿` : "",
     eventCount ? `${eventCount} 条运行记录` : "",
   ].filter(Boolean);
-  if (!parts.length) return "已归档入库文件，保留源文件和数据库记录。";
-  return `已归档入库文件，保留源文件、数据库记录、${parts.join("、")}。`;
+  if (!parts.length) return "已归档保存文件，保留源文件和数据库记录。";
+  return `已归档保存文件，保留源文件、数据库记录、${parts.join("、")}。`;
 }
 
 export function libraryDeleteConfirmMessage(
@@ -281,7 +281,7 @@ export function libraryPermanentDeleteConfirmMessage(
 }
 
 export function libraryPermanentDeleteNotice(result: { message?: string }): string {
-  return result.message || "已彻底删除入库文件。";
+  return result.message || "已彻底删除保存文件。";
 }
 
 export function groupItemsByFolder(items: KnowledgeLibraryItem[]): Map<string, KnowledgeLibraryItem[]> {

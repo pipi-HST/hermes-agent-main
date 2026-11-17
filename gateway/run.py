@@ -921,7 +921,7 @@ def _looks_like_document_followup_request(text: str) -> bool:
     has_document_ref = bool(re.search(r"(这篇|这份|这个|该|刚发|刚才|文件|文档|材料|文章|稿)", text))
     has_capture_action = bool(
         re.search(
-            r"(总结|整理|提取|概括|保存|入库|存库|归档|全文|核心内容|重点|改写|润色|发给我|展开)",
+            r"(总结|整理|提取|概括|保存|保存|存库|归档|全文|核心内容|重点|改写|润色|发给我|展开)",
             text,
         )
     )

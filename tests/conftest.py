@@ -36,6 +36,14 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# One mock object per platform module for the whole worker. Install here so a
+# subdirectory conftest (tests/e2e, tests/gateway) can only augment it, never
+# replace it after another module already imported it.
+from tests._platform_mocks import ensure_discord_mock, ensure_telegram_mock  # noqa: E402
+
+ensure_telegram_mock()
+ensure_discord_mock()
+
 
 # ── Credential env-var filter ──────────────────────────────────────────────
 #

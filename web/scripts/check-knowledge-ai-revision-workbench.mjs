@@ -46,11 +46,11 @@ assert(
   "Committed draft UI should expose a knowledge-library edit action",
 );
 assert(
-  draftReviewSource.includes("这份材料已入库。需要调整内容时，请进入知识库编辑页。"),
+  draftReviewSource.includes("这份材料已保存。需要调整内容时，请进入知识库编辑页。"),
   "Committed draft UI should explain that edits now happen in the library",
 );
 assert(
-  draftReviewSource.includes("原文已提取，正在等待确认。确认后再生成高保真 Markdown 正文并入库。"),
+  draftReviewSource.includes("原文已提取，正在等待确认。确认后再生成高保真 Markdown 正文并保存。"),
   "Raw extracted capture drafts should be shown as awaiting confirmation, not final drafts",
 );
 assert(

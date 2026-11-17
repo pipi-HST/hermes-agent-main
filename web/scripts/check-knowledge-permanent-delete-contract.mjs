@@ -5,6 +5,9 @@ const apiPath = fileURLToPath(new URL("../src/lib/api.ts", import.meta.url));
 const libraryPagePath = fileURLToPath(
   new URL("../src/pages/KnowledgeLibraryPage.tsx", import.meta.url),
 );
+const libraryHelpersPath = fileURLToPath(
+  new URL("../src/pages/knowledge-library/helpers.ts", import.meta.url),
+);
 
 function assert(condition, message) {
   if (!condition) {
@@ -14,6 +17,8 @@ function assert(condition, message) {
 
 const apiSource = readFileSync(apiPath, "utf8");
 const libraryPageSource = readFileSync(libraryPagePath, "utf8");
+const libraryHelpersSource = readFileSync(libraryHelpersPath, "utf8");
+const librarySource = `${libraryPageSource}\n${libraryHelpersSource}`;
 
 assert(
   apiSource.includes("deleteKnowledgeLibraryItemPermanent"),
@@ -24,26 +29,26 @@ assert(
   "API client should call the permanent delete endpoint",
 );
 assert(
-  libraryPageSource.includes("deleteDetailPermanent"),
+  librarySource.includes("deleteDetailPermanent"),
   "Knowledge library page should have a separate permanent delete handler",
 );
 assert(
-  libraryPageSource.includes("isLibraryNotFoundError"),
+  librarySource.includes("isLibraryNotFoundError"),
   "Knowledge library page should treat stale not-found responses after deletion as a cleared selection",
 );
 assert(
-  libraryPageSource.includes("文件已彻底删除。"),
+  librarySource.includes("文件已彻底删除。"),
   "Permanent delete should report an already-cleared state as a non-error notice",
 );
 assert(
-  libraryPageSource.includes("getKnowledgeLibraryItemDependencies"),
+  librarySource.includes("getKnowledgeLibraryItemDependencies"),
   "Permanent delete should preview dependencies before deleting",
 );
 assert(
-  libraryPageSource.includes("libraryHasBlockingDependencies"),
+  librarySource.includes("libraryHasBlockingDependencies"),
   "Permanent delete should block when dependencies exist",
 );
-const blockingFunction = libraryPageSource.match(
+const blockingFunction = librarySource.match(
   /function libraryHasBlockingDependencies\([\s\S]*?\n}/,
 )?.[0] ?? "";
 assert(
@@ -57,11 +62,11 @@ assert(
   "Permanent delete should not block on historical drafts or run records",
 );
 assert(
-  libraryPageSource.includes("彻底删除"),
+  librarySource.includes("彻底删除"),
   "UI should expose a clear permanent delete label",
 );
 assert(
-  libraryPageSource.includes("归档"),
+  librarySource.includes("归档"),
   "Committed captures should keep archive as the normal delete action",
 );
 

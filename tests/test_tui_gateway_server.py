@@ -3384,7 +3384,7 @@ def test_session_append_local_messages_persists_ui_only_actions(monkeypatch):
                     "session_id": "sid",
                     "messages": [
                         {"role": "user", "text": "存库"},
-                        {"role": "assistant", "text": "已确认入库：《A》。"},
+                        {"role": "assistant", "text": "已确认保存：《A》。"},
                     ],
                 },
             }
@@ -3393,12 +3393,12 @@ def test_session_append_local_messages_persists_ui_only_actions(monkeypatch):
         assert resp["result"] == {"appended": 2}
         assert session["history"] == [
             {"role": "user", "content": "存库"},
-            {"role": "assistant", "content": "已确认入库：《A》。"},
+            {"role": "assistant", "content": "已确认保存：《A》。"},
         ]
         assert session["history_version"] == 1
         assert appended == [
             ("session-key", "user", "存库"),
-            ("session-key", "assistant", "已确认入库：《A》。"),
+            ("session-key", "assistant", "已确认保存：《A》。"),
         ]
     finally:
         server._sessions.pop("sid", None)

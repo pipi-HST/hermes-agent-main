@@ -12,7 +12,7 @@ START_SCHEMA = {
     "description": (
         "开始一个临时阅读讨论会话。用于用户围绕当前文章/链接/Capture/文件/截图问"
         "“这段什么意思”“我没看懂”“解释一下”“怎么看”这类理解问题。"
-        "重要：本工具只建立临时 Reading Session，不生成 Capture 草稿、不入库。"
+        "重要：本工具只建立临时 Reading Session，不生成 Capture 草稿、不保存。"
         "如果用户明确要求总结、提取重点、保存、存库、全文保存，应调用 capture_content。"
     ),
     "parameters": {
@@ -20,7 +20,7 @@ START_SCHEMA = {
         "properties": {
             "message": {"type": "string", "description": "用户原始问题。"},
             "source_url": {"type": "string", "description": "当前材料链接，没有则为空。"},
-            "capture_id": {"type": "string", "description": "已入库 Capture id，没有则为空。"},
+            "capture_id": {"type": "string", "description": "已保存 Capture id，没有则为空。"},
             "draft_id": {"type": "string", "description": "Capture 草稿 id，没有则为空。"},
             "excerpt": {"type": "string", "description": "用户粘贴的原文摘录，没有则为空。"},
             "file_ref": {"type": "string", "description": "用户上传文件路径，没有则为空。"},

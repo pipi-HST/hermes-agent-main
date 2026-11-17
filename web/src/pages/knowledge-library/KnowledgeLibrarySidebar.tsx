@@ -156,7 +156,7 @@ export function KnowledgeLibrarySidebar({
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                   <Metric label="全部" value={stats.all} />
                   <Metric label="草稿" value={stats.drafts} />
-                  <Metric label="已入库" value={stats.inLibrary} />
+                  <Metric label="已保存" value={stats.inLibrary} />
                   <Metric label="有卡片" value={stats.cards} />
                 </div>
                 <label className="mt-3 flex h-9 items-center gap-2 rounded-md border border-border bg-background/70 px-3">

@@ -1,4 +1,4 @@
-"""Hermes tool: commit_capture_draft — 确认草稿入库."""
+"""Hermes tool: commit_capture_draft — 确认草稿保存."""
 from __future__ import annotations
 
 from tools.hermes_custom_envelope import call_custom_bridge, envelope_error_json, envelope_success_json
@@ -7,8 +7,8 @@ from tools.registry import registry
 COMMIT_CAPTURE_DRAFT_SCHEMA = {
     "name": "commit_capture_draft",
     "description": (
-        "只在用户已经看到待审草稿后，又用一条独立消息明确确认“确认存库/存库/入库/就这样”时调用。"
-        "如果用户在同一条消息里说“提取并入库/整理后存库”，仍应先调用 capture_content 生成待审草稿，"
+        "只在用户已经看到待审草稿后，又用一条独立消息明确确认“确认存库/存库/保存/就这样”时调用。"
+        "如果用户在同一条消息里说“提取并保存/整理后存库”，仍应先调用 capture_content 生成待审草稿，"
         "不要在同一轮继续调用本工具。把最近或指定草稿提交为知识库正式记录，并保留来源材料正文。"
     ),
     "parameters": {
@@ -16,7 +16,7 @@ COMMIT_CAPTURE_DRAFT_SCHEMA = {
         "properties": {
             "draft_id": {
                 "type": "string",
-                "description": "要入库的草稿编号（可选，不填则提交最近未入库草稿）",
+                "description": "要保存的草稿编号（可选，不填则提交最近未保存草稿）",
             },
         },
         "required": [],

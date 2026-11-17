@@ -26,7 +26,7 @@ test("真实浏览器提交的文章可展示目录并被纯知识库 RAG 引用
     "## 验收步骤",
     "",
     "1. 从页面创建草稿。",
-    "2. 点击入库。",
+    "2. 点击保存。",
     "3. 在知识库重新打开文章。",
     "4. 验证目录、索引和检索。",
   ].join("\n\n");
@@ -35,18 +35,18 @@ test("真实浏览器提交的文章可展示目录并被纯知识库 RAG 引用
   await page.getByRole("button", { name: "新建" }).click();
   await page.getByText("新建知识文件", { exact: true }).last().click();
 
-  const editor = page.getByPlaceholder("粘贴或写下要入库到知识库的内容");
+  const editor = page.getByPlaceholder("粘贴或写下要保存到资料库的内容");
   await editor.fill(content);
   await page.getByPlaceholder("可选，不填则 Hermes 自动生成").fill(title);
   await page.getByRole("button", { name: "生成 AI 建议" }).click();
-  await expect(page.getByText("整理完成，可以入库", { exact: true }).first()).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByText("整理完成，可以保存", { exact: true }).first()).toBeVisible({ timeout: 90_000 });
   const organizedContent = await editor.inputValue();
   if (!organizedContent.includes(signal)) {
     await editor.fill(`${organizedContent}\n\n**${signal}**`);
   }
 
-  await page.getByRole("button", { name: "入库到知识库" }).click();
-  await expect(page.getByText("入库完成", { exact: true }).first()).toBeVisible({ timeout: 90_000 });
+  await page.getByRole("button", { name: "保存到资料库" }).click();
+  await expect(page.getByText("保存完成", { exact: true }).first()).toBeVisible({ timeout: 90_000 });
 
   await page.getByPlaceholder("搜索文件").fill(title);
   const libraryItem = page.getByRole("button").filter({

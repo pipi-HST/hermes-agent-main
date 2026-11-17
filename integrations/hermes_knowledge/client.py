@@ -397,6 +397,51 @@ class KnowledgeClient:
     def search(self, query: str, *, limit: int = 10) -> dict[str, Any]:
         return self.request("GET", "/api/knowledge/search", params={"q": query, "limit": limit})
 
+    def list_capture_drafts(self, *, limit: int = 50) -> dict[str, Any]:
+        return self.request(
+            "GET", "/api/knowledge/capture-drafts", params={"limit": limit}
+        )
+
+    def get_capture_draft(self, draft_id: str) -> dict[str, Any]:
+        return self.request(
+            "GET", f"/api/knowledge/capture-drafts/{quote(str(draft_id), safe='')}"
+        )
+
+    def list_reading_drafts(self, *, limit: int = 50) -> dict[str, Any]:
+        return self.request(
+            "GET", "/api/knowledge/reading-drafts", params={"limit": limit}
+        )
+
+    def get_reading_draft(self, draft_id: str) -> dict[str, Any]:
+        return self.request(
+            "GET", f"/api/knowledge/reading-drafts/{quote(str(draft_id), safe='')}"
+        )
+
+    def object_events(
+        self, object_type: str, object_id: str, *, limit: int = 30
+    ) -> dict[str, Any]:
+        return self.request(
+            "GET",
+            "/api/knowledge/object-events",
+            params={
+                "object_type": object_type,
+                "object_id": object_id,
+                "limit": limit,
+            },
+        )
+
+    def get_card(self, card_id: str) -> dict[str, Any]:
+        return self.request(
+            "GET", f"/api/knowledge/cards/{quote(str(card_id), safe='')}"
+        )
+
+    def item_dependencies(self, kind: str, item_id: str) -> dict[str, Any]:
+        return self.request(
+            "GET",
+            f"/api/knowledge/library/items/{quote(str(kind), safe='')}/"
+            f"{quote(str(item_id), safe='')}/dependencies",
+        )
+
     def selection_chat(
         self, kind: str, item_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:

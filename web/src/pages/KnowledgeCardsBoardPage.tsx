@@ -281,9 +281,9 @@ export default function KnowledgeCardsBoardPage() {
     try {
       const result = await api.commitKnowledgeGardenDraft(draft.id);
       if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
-        throw new Error(result.error || result.errors?.[0] || "确认入库失败。");
+        throw new Error(result.error || result.errors?.[0] || "确认保存失败。");
       }
-      setNotice(`已确认入库卡片草稿：《${title}》。`);
+      setNotice(`已确认保存卡片草稿：《${title}》。`);
       await Promise.all([loadCards(), loadPendingDrafts()]);
     } catch (err) {
       setError(`确认卡片草稿失败：${err instanceof Error ? err.message : String(err)}`);
@@ -452,7 +452,7 @@ export default function KnowledgeCardsBoardPage() {
                             ) : (
                               <Check className="h-3.5 w-3.5" />
                             )}
-                            确认入库
+                            确认保存
                           </button>
                           <button
                             type="button"
@@ -735,7 +735,7 @@ function KnowledgeGraphPanel({ focusCardId }: { focusCardId: string }) {
               知识图谱
             </h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              仅展示已入库笔记、知识卡片和可解释主题关系。
+              仅展示已保存笔记、知识卡片和可解释主题关系。
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -1850,7 +1850,7 @@ function GraphEmptyState() {
         <Network className="mx-auto h-8 w-8 text-muted-foreground" />
         <h2 className="mt-3 text-base font-semibold text-foreground">暂无知识图谱</h2>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          空库或还没有足够关系时不会生成图谱。先新建或导入材料，入库后再刷新图谱。
+          空库或还没有足够关系时不会生成图谱。先新建或导入材料，保存后再刷新图谱。
         </p>
         <div className="mt-4 flex justify-center">
           <Link

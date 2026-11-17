@@ -4,7 +4,7 @@ import type { KnowledgeLibraryItem } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export function StatusBadge({ item }: { item: KnowledgeLibraryItem }) {
-  const label = item.kind === "capture" ? "已入库" : "草稿";
+  const label = item.kind === "capture" ? "已保存" : "草稿";
   return (
     <span
       className={cn(

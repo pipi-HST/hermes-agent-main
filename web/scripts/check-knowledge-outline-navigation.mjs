@@ -22,6 +22,9 @@ const toolCallPath = fileURLToPath(
 const libraryPagePath = fileURLToPath(
   new URL("../src/pages/KnowledgeLibraryPage.tsx", import.meta.url),
 );
+const readingOverlayPath = fileURLToPath(
+  new URL("../src/pages/knowledge-library/ReadingOverlay.tsx", import.meta.url),
+);
 const draftReviewPath = fileURLToPath(
   new URL("../src/pages/knowledge-chat/DraftReview.tsx", import.meta.url),
 );
@@ -332,8 +335,10 @@ assert(
 );
 
 const libraryPageSource = readFileSync(libraryPagePath, "utf8");
+const readingOverlaySource = readFileSync(readingOverlayPath, "utf8");
+const libraryOutlineSource = `${libraryPageSource}\n${readingOverlaySource}`;
 assert(
-  libraryPageSource.includes("enableKnowledgeOutlineLinks"),
+  libraryOutlineSource.includes("enableKnowledgeOutlineLinks"),
   "Knowledge library article view should enable outline links",
 );
 assert(
@@ -365,8 +370,8 @@ assert(
   "Workbench copy must not imply full-text capture bypasses final rendering",
 );
 assert(
-  draftReviewSource.includes("生成整理稿并入库")
-    && draftReviewSource.includes("全文高保真入库"),
+  draftReviewSource.includes("生成整理稿并保存")
+    && draftReviewSource.includes("全文高保真保存"),
   "Workbench commit actions should describe final rendering before commit",
 );
 

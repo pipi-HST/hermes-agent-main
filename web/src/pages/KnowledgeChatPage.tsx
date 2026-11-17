@@ -792,10 +792,10 @@ export default function KnowledgeChatPage() {
     try {
       const result = await api.commitKnowledgeCaptureDraft(draftId, { operationId: operation.operationId });
       if (isAiCancelledResult(result)) {
-        setDraftNotice("已停止。草稿仍保留，可继续修改或重试入库。");
+        setDraftNotice("已停止。草稿仍保留，可继续修改或重试保存。");
         return false;
       }
-      setDraftNotice(title ? `已入库到知识库：《${title}》。` : "已入库到知识库，草稿状态已刷新。");
+      setDraftNotice(title ? `已保存到资料库：《${title}》。` : "已保存到资料库，草稿状态已刷新。");
       await loadDrafts();
       await loadDraftDetail(draftId);
       return true;
@@ -966,7 +966,7 @@ export default function KnowledgeChatPage() {
     if (!answerDraftDetail) return;
     const captureId = readingDraftCaptureId(answerDraftDetail);
     if (answerDraftDetail.output_type !== "local_learning_note" || answerDraftDetail.status !== "committed" || !captureId) {
-      setDraftError("只有已入库的资料笔记可以转换成知识卡片。");
+      setDraftError("只有已保存的资料笔记可以转换成知识卡片。");
       return;
     }
     const operation = beginAiOperation("reading-card");
@@ -1071,8 +1071,8 @@ export default function KnowledgeChatPage() {
     if (!target) {
       setDraftError(
         openDrafts.length > 1
-          ? "现在有多个待审草稿，请先在左侧选择要入库的草稿，或进入草稿审阅页点击“入库到知识库”。"
-          : "当前没有待审草稿可以入库。",
+          ? "现在有多个待审草稿，请先在左侧选择要保存的草稿，或进入草稿审阅页点击“保存到资料库”。"
+          : "当前没有待审草稿可以保存。",
       );
       return true;
     }
@@ -1085,8 +1085,8 @@ export default function KnowledgeChatPage() {
     });
     const committed = await commitDraftById(target.id, target.title);
     const assistantText = committed
-      ? `已入库到知识库：《${target.title || "未命名草稿"}》。`
-      : `入库失败：《${target.title || "未命名草稿"}》。请查看上方错误提示。`;
+      ? `已保存到资料库：《${target.title || "未命名草稿"}》。`
+      : `保存失败：《${target.title || "未命名草稿"}》。请查看上方错误提示。`;
     dispatch({
       type: "message_complete",
       id: nextId("assistant"),
@@ -1308,7 +1308,7 @@ export default function KnowledgeChatPage() {
       || draft.committed_capture_id
     );
     if (!captureId) {
-      return { generated: false, error: "入库成功，但没有拿到 Capture ID。" };
+      return { generated: false, error: "保存成功，但没有拿到 Capture ID。" };
     }
     try {
       onStage?.("正在生成知识卡片...");
@@ -1471,8 +1471,8 @@ export default function KnowledgeChatPage() {
         return payload.draft;
       }
       setEditableStatus("ready_to_commit");
-      setEditableProgressMessage("整理完成，可以入库");
-      setDraftNotice("已生成 AI 建议，可以继续编辑或入库。");
+      setEditableProgressMessage("整理完成，可以保存");
+      setDraftNotice("已生成 AI 建议，可以继续编辑或保存。");
       await loadDrafts();
       return payload.draft;
     } catch (error) {
@@ -1527,7 +1527,7 @@ export default function KnowledgeChatPage() {
       if (operation.isCancelled() || isAiCancelledResult(commitResult)) {
         setEditableStatus("ready_to_commit");
         setEditableProgressMessage("已停止，草稿仍保留");
-        setDraftNotice("已停止。草稿仍保留，可继续编辑或重试入库。");
+        setDraftNotice("已停止。草稿仍保留，可继续编辑或重试保存。");
         return;
       }
       setEditableProgressMessage("正在重建索引和大纲...");
@@ -1553,20 +1553,20 @@ export default function KnowledgeChatPage() {
       if (operation.isCancelled()) return;
       setEditableStatus("committed");
       setEditableCardCommitStatus(cardResult.generated ? "generated" : cardResult.error ? "failed" : "skipped");
-      setEditableProgressMessage("入库完成");
+      setEditableProgressMessage("保存完成");
       if (cardResult.generated) {
-        setDraftNotice(`已入库并生成知识卡片：《${payload.draft.title || "未命名草稿"}》。`);
+        setDraftNotice(`已保存并生成知识卡片：《${payload.draft.title || "未命名草稿"}》。`);
       } else if (cardResult.error) {
-        setDraftNotice(`已入库，但知识卡片生成失败：${cardResult.error}`);
+        setDraftNotice(`已保存，但知识卡片生成失败：${cardResult.error}`);
       } else {
-        setDraftNotice(`已入库到知识库：《${payload.draft.title || "未命名草稿"}》。`);
+        setDraftNotice(`已保存到资料库：《${payload.draft.title || "未命名草稿"}》。`);
       }
       await loadDrafts();
     } catch (error) {
       if (operation.isCancelled() || isAbortError(error)) {
         setEditableStatus("ready_to_commit");
         setEditableProgressMessage("已请求停止，可继续编辑或重试");
-        setDraftNotice("已请求停止。草稿仍保留，可继续编辑或重试入库。");
+        setDraftNotice("已请求停止。草稿仍保留，可继续编辑或重试保存。");
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -1766,7 +1766,7 @@ export default function KnowledgeChatPage() {
     if (!draftDetail) return;
     const captureId = draftDetail.committed_capture_id?.trim() ?? "";
     if (draftDetail.status !== "committed" || !captureId) {
-      setDraftError("请先入库到知识库后再转换成知识卡片。");
+      setDraftError("请先保存到资料库后再转换成知识卡片。");
       return;
     }
     const operation = beginAiOperation("capture-card");

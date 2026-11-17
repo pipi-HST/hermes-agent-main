@@ -5696,7 +5696,7 @@ def _knowledge_capture_dependency_summary(
         "policy": {
             "action": "archive_capture_only",
             "knowledge_file": "retained",
-            "database_row": "retained_with_review_state_archived",
+            "database_row": "retained_with_archived_at",
             "garden_cards": "retained",
             "garden_drafts": "retained",
             "committed_drafts": "retained",
@@ -5764,7 +5764,7 @@ def _knowledge_capture_library_item(
         "tags": _knowledge_tags(frontmatter.get("tags")),
         "source": str(frontmatter.get("source") or "").strip(),
         "source_type": str(frontmatter.get("source_type") or "").strip(),
-        "status": str(frontmatter.get("status") or data.get("review_state") or "captured"),
+        "status": str(frontmatter.get("status") or ("archived" if data.get("archived_at") else "") or "captured"),
         "file_path": file_path,
         "raw_path": str(data.get("raw_path") or ""),
         "word_count": int(frontmatter.get("word_count") or len(body)),
@@ -5971,7 +5971,7 @@ def _knowledge_library_items(
 ) -> list[dict]:
     rows = conn.execute(
         """SELECT * FROM captures
-           WHERE COALESCE(review_state, '') != 'archived'
+           WHERE archived_at IS NULL
            ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
                     rowid DESC
            LIMIT 10000""",
@@ -6335,7 +6335,7 @@ async def get_knowledge_library_folders(request: Request):
     extra = sorted(folder for folder in counts if folder not in configured_folders)
     folders.extend({"path": folder, "name": folder, "count": counts[folder]} for folder in extra)
     smart_views = [
-        {"key": "recent", "label": "最近入库", "count": len(items)},
+        {"key": "recent", "label": "最近保存", "count": len(items)},
         {
             "key": "review",
             "label": "待审阅",
@@ -6453,7 +6453,7 @@ async def patch_knowledge_library_folder(
 
         write_service = KnowledgeWriteService(vault_path)
         capture_rows = conn.execute(
-            "SELECT * FROM captures WHERE COALESCE(review_state, '') != 'archived'"
+            "SELECT * FROM captures WHERE archived_at IS NULL"
         ).fetchall()
         for row in capture_rows:
             data = dict(row)
@@ -6612,6 +6612,19 @@ async def get_knowledge_library_item_dependencies(request: Request, kind: str, i
                 },
             },
         }
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.item_dependencies(kind, item_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
     vault_path = _knowledge_vault_path()
     with _knowledge_conn() as conn:
         return _knowledge_capture_dependency_response(conn, vault_path, item_id=item_id)
@@ -6625,7 +6638,7 @@ def _knowledge_library_selection_item(kind: str, item_id: str) -> dict[str, Any]
             row = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail="Library capture not found")
-            if str(row["review_state"] or "") == "archived":
+            if row["archived_at"]:
                 raise HTTPException(status_code=409, detail="Library capture is archived")
             return _knowledge_capture_library_item(vault_path, row, conn=conn, full=True)
         if kind == "capture_draft":
@@ -7077,7 +7090,7 @@ async def post_knowledge_library_item(request: Request, body: _KnowledgeLibraryC
         content=content or title,
         source=body.source,
         source_type=body.source_type,
-        instruction="自由编辑后入库到知识库",
+        instruction="自由编辑后保存到资料库",
         title=title,
         folder_path=_knowledge_folder(body.folder_path),
         existing_folders=_knowledge_visible_folder_paths(),
@@ -7203,6 +7216,18 @@ async def patch_knowledge_library_item(
                 "UPDATE captures SET updated_at = datetime('now') WHERE id = ?",
                 (item_id,),
             )
+            if folder_path is not None:
+                # Keep the SQL mirror in step; otherwise folder filters hide
+                # the note until a full repair run.
+                conn.execute(
+                    """INSERT INTO capture_metadata
+                           (capture_id, folder_path, created_at, updated_at)
+                       VALUES (?, ?, datetime('now'), datetime('now'))
+                       ON CONFLICT(capture_id) DO UPDATE SET
+                           folder_path=excluded.folder_path,
+                           updated_at=excluded.updated_at""",
+                    (item_id, folder_path),
+                )
             conn.commit()
             refreshed = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
             return {
@@ -7333,7 +7358,7 @@ def _knowledge_capture_revision_prompt(
     raw_body: str,
 ) -> str:
     raw_section = raw_body.strip() or "（没有单独 raw 来源材料；以当前笔记为准。）"
-    return f"""你是 Hermes Knowledge 的入库笔记修订助手。
+    return f"""你是 Hermes Knowledge 的保存笔记修订助手。
 
 用户要修改的笔记标题：{title or "未命名"}
 
@@ -7580,7 +7605,7 @@ async def permanent_delete_knowledge_library_item(request: Request, kind: str, i
             "rows": deleted_rows,
         },
         "warnings": unlink_warnings,
-        "message": "已彻底删除入库文件及其本地索引记录。",
+        "message": "已彻底删除保存文件及其本地索引记录。",
     }
 
 
@@ -7613,7 +7638,7 @@ async def delete_knowledge_library_item(request: Request, kind: str, item_id: st
         with _knowledge_conn() as conn:
             dependency_response = _knowledge_capture_dependency_response(conn, vault_path, item_id=item_id)
             conn.execute(
-                "UPDATE captures SET review_state = 'archived', updated_at = datetime('now') WHERE id = ?",
+                "UPDATE captures SET archived_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
                 (item_id,),
             )
             conn.commit()
@@ -7622,7 +7647,7 @@ async def delete_knowledge_library_item(request: Request, kind: str, item_id: st
             "status": "archived",
             "id": item_id,
             "dependencies": dependency_response["dependencies"],
-            "message": "已归档入库文件；源文件、卡片、引用和历史记录已保留。",
+            "message": "已归档保存文件；源文件、卡片、引用和历史记录已保留。",
         }
     raise HTTPException(status_code=400, detail="Unsupported library item kind")
 
@@ -7630,6 +7655,19 @@ async def delete_knowledge_library_item(request: Request, kind: str, item_id: st
 @app.get("/api/knowledge/capture-drafts")
 async def get_knowledge_capture_drafts(request: Request, limit: int = 50):
     _require_token(request)
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.list_capture_drafts(limit=max(1, min(limit, 200)))
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
     with _knowledge_conn() as conn:
         rows = conn.execute(
             """SELECT * FROM capture_drafts
@@ -7654,6 +7692,19 @@ async def get_knowledge_capture_drafts(request: Request, limit: int = 50):
 @app.get("/api/knowledge/capture-drafts/{draft_id}")
 async def get_knowledge_capture_draft(request: Request, draft_id: str):
     _require_token(request)
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.get_capture_draft(draft_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
     vault_path = _knowledge_vault_path()
     with _knowledge_conn() as conn:
         row = conn.execute(
@@ -8155,23 +8206,25 @@ async def get_knowledge_garden_drafts(
     with _knowledge_conn() as conn:
         if status:
             rows = conn.execute(
-                """SELECT id, title, one_liner, card_kind, status, markdown,
-                          capture_ids, created_at, updated_at
-                   FROM garden_drafts WHERE status = ?
+                """SELECT * FROM garden_drafts WHERE status = ?
                    ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
                             id DESC LIMIT ?""",
                 (status, max(1, min(int(limit), 200))),
             ).fetchall()
         else:
             rows = conn.execute(
-                """SELECT id, title, one_liner, card_kind, status, markdown,
-                          capture_ids, created_at, updated_at
-                   FROM garden_drafts
+                """SELECT * FROM garden_drafts
                    ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
                             id DESC LIMIT ?""",
                 (max(1, min(int(limit), 200)),),
             ).fetchall()
-        items = [dict(row) for row in rows]
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["one_liner"] = str(
+                _knowledge_normalized_card_payload(item).get("claim") or ""
+            )
+            items.append(item)
         return {"items": items, "total": len(items)}
 
 
@@ -8229,6 +8282,19 @@ async def delete_knowledge_garden_draft(request: Request, draft_id: str):
 @app.get("/api/knowledge/reading-drafts")
 async def get_knowledge_reading_drafts(request: Request, limit: int = 50):
     _require_token(request)
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.list_reading_drafts(limit=max(1, min(limit, 200)))
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
     with _knowledge_conn() as conn:
         vault_path = _knowledge_vault_path()
         rows = conn.execute(
@@ -8259,6 +8325,19 @@ async def get_knowledge_reading_drafts(request: Request, limit: int = 50):
 @app.get("/api/knowledge/reading-drafts/{draft_id}")
 async def get_knowledge_reading_draft(request: Request, draft_id: str):
     _require_token(request)
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.get_reading_draft(draft_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
     with _knowledge_conn() as conn:
         vault_path = _knowledge_vault_path()
         row = conn.execute(
@@ -8293,6 +8372,19 @@ async def get_knowledge_object_events(
     object_id = (object_id or "").strip()
     if not object_type or not object_id:
         raise HTTPException(status_code=400, detail="object_type and object_id are required")
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.object_events(object_type, object_id, limit=limit)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
     with _knowledge_conn() as conn:
         vault_path = _knowledge_vault_path()
         related_ids = _knowledge_related_object_ids(conn, vault_path, object_type, object_id)
@@ -8488,6 +8580,40 @@ def _source_for_capture(conn: sqlite3.Connection, vault_path: Path, capture_id: 
     }
 
 
+def _knowledge_legacy_card_fields(payload: dict) -> dict:
+    """Project a v2 card payload into the legacy API fields."""
+    judgments = payload.get("core_judgments") or []
+    core_arguments = [
+        {
+            "claim": item.get("statement", ""),
+            "consensus": True,
+            "source_ids": [
+                source_id
+                for support in item.get("support") or []
+                for source_id in support.get("source_ids") or []
+            ],
+        }
+        for item in judgments
+        if isinstance(item, dict)
+    ]
+    key_materials = [
+        {
+            "content": support.get("summary", ""),
+            "capture_id": (support.get("source_ids") or [""])[0],
+        }
+        for judgment in judgments
+        if isinstance(judgment, dict)
+        for support in judgment.get("support") or []
+        if isinstance(support, dict) and support.get("summary")
+    ]
+    return {
+        "core_arguments": core_arguments,
+        "knowledge_links": list(payload.get("related_card_ids") or []),
+        "key_materials": key_materials,
+        "my_view": "\n".join(f"- {item}" for item in payload.get("action_items") or []),
+    }
+
+
 def _knowledge_card_row(
     row: sqlite3.Row,
     *,
@@ -8498,11 +8624,19 @@ def _knowledge_card_row(
     data = dict(row)
     card_id = str(data.get("id") or "")
     payload = _knowledge_normalized_card_payload(data)
+    if not payload:
+        try:
+            raw = json.loads(str(data.get("payload_json") or "{}"))
+        except (TypeError, ValueError):
+            raw = {}
+        if isinstance(raw, dict):
+            payload = raw
+    legacy = _knowledge_legacy_card_fields(payload)
     capture_ids = payload.get("source_ids") or _json_value(str(data.get("capture_ids") or "[]"), [])
-    core_arguments = _json_value(str(data.get("core_arguments") or "[]"), [])
-    knowledge_links = _json_value(str(data.get("knowledge_links") or "[]"), [])
-    key_materials = _json_value(str(data.get("key_materials") or "[]"), [])
-    summary = str(payload.get("claim") or data.get("one_liner") or "").strip()
+    core_arguments = legacy["core_arguments"]
+    knowledge_links = legacy["knowledge_links"]
+    key_materials = legacy["key_materials"]
+    summary = str(payload.get("claim") or "").strip()
     kind = str(payload.get("card_kind") or data.get("card_kind") or "viewpoint").strip() or "viewpoint"
     if kind not in _KNOWLEDGE_CARD_KINDS:
         kind = "viewpoint"
@@ -8516,11 +8650,11 @@ def _knowledge_card_row(
         "created_at": data.get("created_at", ""),
         "file_path": "",
         "markdown": "",
-        "source_theme": "",
+        "source_theme": str(data.get("source_theme") or ""),
         "core_arguments": core_arguments,
         "knowledge_links": knowledge_links,
         "key_materials": key_materials,
-        "my_view": data.get("my_view", ""),
+        "my_view": legacy["my_view"],
         "sources": [
             _source_for_capture(conn, vault_path, str(capture_id))
             for capture_id in capture_ids
@@ -8536,7 +8670,7 @@ def _knowledge_card_row(
                 "core_arguments": core_arguments,
                 "knowledge_links": knowledge_links,
                 "key_materials": key_materials,
-                "my_view": data.get("my_view", ""),
+                "my_view": legacy["my_view"],
                 "markdown": "",
             }
         )
@@ -8602,6 +8736,19 @@ async def get_knowledge_cards(request: Request, limit: int = 100):
 @app.get("/api/knowledge/cards/{card_id}")
 async def get_knowledge_card(request: Request, card_id: str):
     _require_token(request)
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.get_card(card_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
     vault_path = _knowledge_vault_path()
     with _knowledge_conn() as conn:
         row = conn.execute(

@@ -67,7 +67,7 @@ export function WorkbenchSidebar({
   const listTitle = ({
     open: "待处理",
     all: "全部",
-    committed: "已入库",
+    committed: "已保存",
   } as Record<DraftFilterKey, string>)[filter];
   const showConversationHistory = currentMode === "chat" && filter === "open";
   const knowledgeItems: KnowledgeListItem[] = [

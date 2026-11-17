@@ -24,7 +24,7 @@ def test_revise_garden_draft_tool_preserves_envelope(monkeypatch):
         "source_map": [],
         "next_actions": [
             {
-                "label": "确认卡片入库",
+                "label": "确认卡片保存",
                 "intent": "commit_garden_draft",
                 "payload": {"draft_id": "draft1"},
                 "requires_confirmation": True,

@@ -51,7 +51,7 @@ function captureDraftPayload(draft: MockCaptureDraft) {
     source: "e2e",
     source_type: "note",
     word_count: draft.draft_text.length,
-    instruction: "整理后入库",
+    instruction: "整理后保存",
     summary: "浏览器端到端测试材料",
     tags: ["e2e"],
     capture_intent: {},
@@ -81,7 +81,7 @@ function libraryItemPayload(item: MockLibraryItem) {
   return {
     ...item,
     kind: "capture",
-    summary: "浏览器端到端已入库材料",
+    summary: "浏览器端到端已保存材料",
     preview: item.body,
     folder_path: "Inbox",
     tags: ["e2e"],
