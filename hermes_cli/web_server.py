@@ -4972,10 +4972,6 @@ class _KnowledgeGardenDraftBody(BaseModel):
     title: str = ""
     card_kind: str = ""
     instruction: str = ""
-    # Dashboard default: the route creates the draft, then issues a
-    # confirmation token and commits.  The service itself defaults to False,
-    # so this value is never forwarded as ``auto_commit=True``.
-    auto_commit: bool = True
 
 
 class _KnowledgeLibraryCreateBody(BaseModel):
@@ -8128,25 +8124,6 @@ async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDr
     )
 
 
-def _knowledge_garden_draft_id(result: Any) -> str:
-    """Return the draft id carried by a garden synthesis envelope."""
-    if not isinstance(result, dict):
-        return ""
-    meta = result.get("meta")
-    if isinstance(meta, dict):
-        draft_id = str(meta.get("draft_id") or "").strip()
-        if draft_id:
-            return draft_id
-    artifacts = result.get("durable_artifacts")
-    if isinstance(artifacts, list):
-        for item in artifacts:
-            if isinstance(item, dict) and item.get("type") == "garden_draft":
-                draft_id = str(item.get("id") or "").strip()
-                if draft_id:
-                    return draft_id
-    return ""
-
-
 def _garden_confirmation_token(issued: Any) -> str:
     if not isinstance(issued, dict):
         return ""
@@ -8181,9 +8158,10 @@ def _commit_local_garden_draft(garden_bridge, draft_id: str) -> dict[str, Any]:
 async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDraftBody):
     _require_token(request)
 
-    # HTTP mode: the service creates a draft without committing (its
-    # ``auto_commit`` default is False).  When the dashboard asks to commit,
-    # request a confirmation token for that draft and then commit with it.
+    # Garden synthesis only creates a draft.  Saving it is a separate,
+    # user-confirmed step handled by the commit route below (issue a one-time
+    # confirmation token, then commit with it).  ``auto_commit`` is neither
+    # accepted nor forwarded.
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
@@ -8192,26 +8170,12 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            created = client.create_garden_draft(
+            return client.create_garden_draft(
                 capture_ids=body.capture_ids,
                 title=body.title,
                 card_kind=body.card_kind,
                 instruction=body.instruction,
-                auto_commit=False,
             )
-            if not body.auto_commit:
-                return created
-            draft_id = _knowledge_garden_draft_id(created)
-            if not draft_id:
-                return created
-            token = _garden_confirmation_token(
-                client.issue_garden_confirmation(draft_id)
-            )
-            if not token:
-                raise KnowledgeUnavailable(
-                    "knowledge service did not return a garden confirmation token"
-                )
-            return client.commit_garden_draft(draft_id, token)
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
         finally:
@@ -8219,7 +8183,7 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
 
     garden_bridge = _knowledge_custom_module("bridge.garden_bridge", "Garden bridge")
     synthesize_garden = garden_bridge.synthesize_garden
-    result = await _run_cancellable_ai_operation(
+    return await _run_cancellable_ai_operation(
         request,
         "garden.synthesize",
         lambda: synthesize_garden(
@@ -8229,28 +8193,11 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
             instruction=body.instruction,
         ),
     )
-    if result.get("status") == "error":
-        return result
-    artifacts = result.get("durable_artifacts") if isinstance(result.get("durable_artifacts"), list) else []
-    if any(isinstance(item, dict) and item.get("type") == "garden_card" for item in artifacts):
-        return result
-    draft_id = _knowledge_garden_draft_id(result)
-    if not draft_id:
-        return result
-    if not body.auto_commit:
-        return result
-    return await _run_cancellable_ai_operation(
-        request,
-        "garden.commit",
-        lambda: _commit_local_garden_draft(garden_bridge, draft_id),
-    )
 
 
 @app.post("/api/knowledge/garden-drafts/preview")
 async def post_knowledge_garden_draft_preview(request: Request, body: _KnowledgeGardenDraftBody):
-    return await post_knowledge_garden_draft(
-        request, body.model_copy(update={"auto_commit": False})
-    )
+    return await post_knowledge_garden_draft(request, body)
 
 
 @app.get("/api/knowledge/garden-drafts")

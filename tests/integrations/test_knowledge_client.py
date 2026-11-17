@@ -656,7 +656,6 @@ def test_garden_client_methods():
         "title": "T",
         "card_kind": "viewpoint",
         "instruction": "I",
-        "auto_commit": False,
     }
     assert seen[1].url.path == "/api/garden/cards"
     assert dict(seen[1].url.params) == {"limit": "10"}
@@ -707,15 +706,6 @@ def test_garden_commit_issues_token_when_omitted():
 
     assert [request.method for request in calls] == ["POST", "POST"]
     assert json.loads(calls[1].content) == {"confirmation_token": "ctok"}
-
-
-def test_garden_auto_commit_requires_confirmation_token():
-    client, seen = _recording_client()
-
-    with pytest.raises(KnowledgeUnavailable, match="confirmation token"):
-        client.create_garden_draft(auto_commit=True)
-
-    assert seen == []
 
 
 def test_graph_and_answer_client_methods():

@@ -926,18 +926,18 @@ export default function KnowledgeLibraryPage() {
     suggestionsText: string;
     onStage?: (message: string) => void;
     operationId?: string;
-  }): Promise<{ generated: boolean; error?: string }> => {
-    if (!shouldGenerate) return { generated: false };
+  }): Promise<{ drafted: boolean; error?: string }> => {
+    if (!shouldGenerate) return { drafted: false };
     const captureId = (
       bridgeMetaString(commitResult, "capture_id")
       || bridgeMetaString(commitResult, "committed_capture_id")
       || draft.committed_capture_id
     );
     if (!captureId) {
-      return { generated: false, error: "保存成功，但没有拿到 Capture ID。" };
+      return { drafted: false, error: "保存成功，但没有拿到 Capture ID。" };
     }
     try {
-      onStage?.("正在生成知识卡片...");
+      onStage?.("正在生成知识卡片草稿...");
       const cardHint = firstGardenCardHint(suggestionsText);
       const result = await api.createKnowledgeGardenDraft({
         capture_ids: [captureId],
@@ -946,15 +946,15 @@ export default function KnowledgeLibraryPage() {
         instruction: buildGardenDraftInstruction(reason, suggestionsText),
       }, operationId ? { operationId } : undefined);
       if (isAiCancelledResult(result)) {
-        return { generated: false, error: "已停止。" };
+        return { drafted: false, error: "已停止。" };
       }
       if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
         throw new Error(gardenDraftError(result));
       }
-      return { generated: true };
+      return { drafted: true };
     } catch (err) {
       return {
-        generated: false,
+        drafted: false,
         error: err instanceof Error ? err.message : String(err),
       };
     }
@@ -989,10 +989,10 @@ export default function KnowledgeLibraryPage() {
         operationId: operation.operationId,
       });
       await refreshAll();
-      if (cardResult.generated) {
-        setNotice("已保存并生成知识卡片。");
+      if (cardResult.drafted) {
+        setNotice("已保存到资料库，并生成知识卡片草稿。请到知识卡片板确认保存。");
       } else if (cardResult.error) {
-        setNotice(`已保存，但知识卡片生成失败：${cardResult.error}`);
+        setNotice(`已保存，但知识卡片草稿生成失败：${cardResult.error}`);
       } else {
         setNotice("保存完成。");
       }
@@ -1087,7 +1087,7 @@ export default function KnowledgeLibraryPage() {
     const operation = beginAiOperation("library-card");
     setCardGenerating(true);
     setError("");
-    setNotice("正在生成卡片...");
+    setNotice("正在生成知识卡片草稿...");
     try {
       const saved = await saveDetail({ refresh: false, silent: true });
       if (!saved) return;
@@ -1384,13 +1384,13 @@ export default function KnowledgeLibraryPage() {
       });
       if (operation.isCancelled()) return;
       setEditableStatus("committed");
-      setEditableCardCommitStatus(cardResult.generated ? "generated" : cardResult.error ? "failed" : "skipped");
+      setEditableCardCommitStatus(cardResult.drafted ? "drafted" : cardResult.error ? "failed" : "skipped");
       setEditableProgressMessage("保存完成");
       await refreshAll();
-      if (cardResult.generated) {
-        setNotice(`已保存并生成知识卡片：《${payload.draft.title || "未命名草稿"}》。`);
+      if (cardResult.drafted) {
+        setNotice(`已保存到资料库，并生成知识卡片草稿：《${payload.draft.title || "未命名草稿"}》。请到知识卡片板确认保存。`);
       } else if (cardResult.error) {
-        setNotice(`已保存，但知识卡片生成失败：${cardResult.error}`);
+        setNotice(`已保存，但知识卡片草稿生成失败：${cardResult.error}`);
       } else {
         setNotice(`已保存到资料库：《${payload.draft.title || "未命名草稿"}》。`);
       }
@@ -2206,7 +2206,7 @@ function FileWorkbench({
             {isPublished ? (
               <MenuButton
                 icon={Layers3}
-                label={cardGenerating ? "正在生成卡片" : "生成知识卡片"}
+                label={cardGenerating ? "正在生成卡片草稿" : "生成知识卡片草稿"}
                 disabled={!canGenerateCard}
                 onClick={() => { setMoreOpen(false); onGenerateCard(); }}
               />

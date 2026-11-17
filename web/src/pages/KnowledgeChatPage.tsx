@@ -179,13 +179,13 @@ const DEFAULT_CHAT_INSPECTOR_WIDTH = 320;
 function gardenDraftNotice(result: KnowledgeGardenDraftResponse): string {
   const title = result.meta?.title;
   if (typeof title === "string" && title.trim()) {
-    return `已生成知识卡片草稿：《${title.trim()}》。`;
+    return `已生成知识卡片草稿：《${title.trim()}》。请到知识卡片板确认保存。`;
   }
   const previewLine = (result.chat_preview || result.USER_VISIBLE_REPLY || "")
     .split("\n")
     .map((line) => line.trim())
     .find(Boolean);
-  return previewLine || "已生成知识卡片草稿。";
+  return previewLine || "已生成知识卡片草稿。请到知识卡片板确认保存。";
 }
 
 function gardenDraftError(result: KnowledgeGardenDraftResponse): string {
@@ -1300,18 +1300,18 @@ export default function KnowledgeChatPage() {
     suggestionsText: string;
     onStage?: (message: string) => void;
     operationId?: string;
-  }): Promise<{ generated: boolean; error?: string }> => {
-    if (!shouldGenerate) return { generated: false };
+  }): Promise<{ drafted: boolean; error?: string }> => {
+    if (!shouldGenerate) return { drafted: false };
     const captureId = (
       bridgeMetaString(commitResult, "capture_id")
       || bridgeMetaString(commitResult, "committed_capture_id")
       || draft.committed_capture_id
     );
     if (!captureId) {
-      return { generated: false, error: "保存成功，但没有拿到 Capture ID。" };
+      return { drafted: false, error: "保存成功，但没有拿到 Capture ID。" };
     }
     try {
-      onStage?.("正在生成知识卡片...");
+      onStage?.("正在生成知识卡片草稿...");
       const cardHint = firstGardenCardHint(suggestionsText);
       const result = await api.createKnowledgeGardenDraft({
         capture_ids: [captureId],
@@ -1320,15 +1320,15 @@ export default function KnowledgeChatPage() {
         instruction: buildGardenDraftInstruction(reason, suggestionsText),
       }, operationId ? { operationId } : undefined);
       if (isAiCancelledResult(result)) {
-        return { generated: false, error: "已停止。" };
+        return { drafted: false, error: "已停止。" };
       }
       if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
         throw new Error(gardenDraftError(result));
       }
-      return { generated: true };
+      return { drafted: true };
     } catch (error) {
       return {
-        generated: false,
+        drafted: false,
         error: error instanceof Error ? error.message : String(error),
       };
     }
@@ -1552,12 +1552,12 @@ export default function KnowledgeChatPage() {
       });
       if (operation.isCancelled()) return;
       setEditableStatus("committed");
-      setEditableCardCommitStatus(cardResult.generated ? "generated" : cardResult.error ? "failed" : "skipped");
+      setEditableCardCommitStatus(cardResult.drafted ? "drafted" : cardResult.error ? "failed" : "skipped");
       setEditableProgressMessage("保存完成");
-      if (cardResult.generated) {
-        setDraftNotice(`已保存并生成知识卡片：《${payload.draft.title || "未命名草稿"}》。`);
+      if (cardResult.drafted) {
+        setDraftNotice(`已保存到资料库，并生成知识卡片草稿：《${payload.draft.title || "未命名草稿"}》。请到知识卡片板确认保存。`);
       } else if (cardResult.error) {
-        setDraftNotice(`已保存，但知识卡片生成失败：${cardResult.error}`);
+        setDraftNotice(`已保存，但知识卡片草稿生成失败：${cardResult.error}`);
       } else {
         setDraftNotice(`已保存到资料库：《${payload.draft.title || "未命名草稿"}》。`);
       }
