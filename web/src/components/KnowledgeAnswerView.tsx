@@ -344,7 +344,7 @@ function orderedGroups(
   citedRefs: string[],
 ): Array<{ label: string; sources: KnowledgeAnswerSource[] }> {
   const groups = [
-    { label: "📚 个人知识库（卡片与资料）", sources: knowledge, fallbackOrder: 0 },
+    { label: "📚 个人资料库（卡片与资料）", sources: knowledge, fallbackOrder: 0 },
     { label: "🌐 DeepSeek 联网来源", sources: web, fallbackOrder: 1 },
   ].filter((group) => group.sources.length);
   if (!citedRefs.length) return groups;

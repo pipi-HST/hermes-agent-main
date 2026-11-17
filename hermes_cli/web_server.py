@@ -4972,6 +4972,9 @@ class _KnowledgeGardenDraftBody(BaseModel):
     title: str = ""
     card_kind: str = ""
     instruction: str = ""
+    # Dashboard default: the route creates the draft, then issues a
+    # confirmation token and commits.  The service itself defaults to False,
+    # so this value is never forwarded as ``auto_commit=True``.
     auto_commit: bool = True
 
 
@@ -5019,7 +5022,12 @@ class _KnowledgeLibrarySelectionChatBody(BaseModel):
 
 
 def _knowledge_local_root() -> Path | None:
-    """Return the validated local checkout, or None in HTTP-only mode."""
+    """Return the validated dev-only local checkout, or None when unset.
+
+    HTTP mode is the supported production shape and normally leaves this
+    unset.  The local checkout exists for offline development and debugging,
+    not as a deployment option.
+    """
     from integrations.hermes_knowledge import KnowledgeUnavailable, configured_root, validate_root
 
     root = configured_root()
@@ -5038,9 +5046,14 @@ def _knowledge_custom_root() -> Path:
     """Return a path anchor for Knowledge files.
 
     HTTP mode has no checkout, so this must not fail just because only
-    ``HERMES_KNOWLEDGE_URL`` is configured. Callers that truly need to import
-    local Python modules must use :func:`_knowledge_custom_module`, which fails
-    with a precise local-checkout error instead.
+    ``HERMES_KNOWLEDGE_URL`` is configured.  Some dashboard helpers still
+    resolve the SQLite DB / vault path directly, so without a local root this
+    falls back to the directory around ``HERMES_KNOWLEDGE_DB`` or the
+    conventional ``~/Hermes/knowledge`` path.  Those variables are a known
+    exception for reads, not an HTTP-mode requirement.  Callers that truly
+    need to import local Python modules must use
+    :func:`_knowledge_custom_module`, which fails with a precise
+    local-checkout error instead.
     """
     root = _knowledge_local_root()
     if root is not None:
@@ -5260,6 +5273,11 @@ def _knowledge_db_path() -> Path:
     the old form passed the checkout-derived default as a function argument,
     which Python evaluates eagerly, so setting the env var still raised the
     fail-closed 503 when no checkout was configured.
+
+    This is also the documented read-route exception in HTTP mode: most reads
+    delegate to the service, but some local compatibility branches still open
+    the DB directly.  Unset in HTTP mode means the conventional
+    ``~/Hermes/knowledge/data/captures.db`` path, not a required setting.
     """
     configured = (os.environ.get("HERMES_KNOWLEDGE_DB") or "").strip()
     if configured:
@@ -5276,6 +5294,14 @@ def _knowledge_db_path() -> Path:
 
 
 def _knowledge_vault_path() -> Path:
+    """Path to the Knowledge vault.
+
+    ``HERMES_KNOWLEDGE_VAULT`` is the vault-side counterpart to the
+    ``HERMES_KNOWLEDGE_DB`` read exception: most HTTP-mode routes delegate to
+    the service, but some helpers (automation inventory, local compatibility
+    branches) still resolve files under the vault.  It is not a required
+    HTTP-mode setting.
+    """
     configured = (os.environ.get("HERMES_KNOWLEDGE_VAULT") or "").strip()
     if configured:
         return Path(configured).expanduser()
@@ -8102,13 +8128,62 @@ async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDr
     )
 
 
+def _knowledge_garden_draft_id(result: Any) -> str:
+    """Return the draft id carried by a garden synthesis envelope."""
+    if not isinstance(result, dict):
+        return ""
+    meta = result.get("meta")
+    if isinstance(meta, dict):
+        draft_id = str(meta.get("draft_id") or "").strip()
+        if draft_id:
+            return draft_id
+    artifacts = result.get("durable_artifacts")
+    if isinstance(artifacts, list):
+        for item in artifacts:
+            if isinstance(item, dict) and item.get("type") == "garden_draft":
+                draft_id = str(item.get("id") or "").strip()
+                if draft_id:
+                    return draft_id
+    return ""
+
+
+def _garden_confirmation_token(issued: Any) -> str:
+    if not isinstance(issued, dict):
+        return ""
+    return str(issued.get("token") or issued.get("confirmation_token") or "").strip()
+
+
+def _commit_local_garden_draft(garden_bridge, draft_id: str) -> dict[str, Any]:
+    """Commit through the dev-only local bridge.
+
+    Newer checkouts expose the same ``issue_garden_confirmation`` ->
+    ``confirmation_token`` handshake as the HTTP service.  Prefer it when it is
+    available; older local checkouts only understand the dashboard's
+    ``token_verified`` shortcut, which stays as the fallback.
+    """
+    issue = getattr(garden_bridge, "issue_garden_confirmation", None)
+    if callable(issue):
+        token = _garden_confirmation_token(issue(draft_id=draft_id))
+        if token:
+            return garden_bridge.commit_garden_draft(
+                draft_id=draft_id, confirmation_token=token
+            )
+    return garden_bridge.commit_garden_draft(
+        draft_id=draft_id,
+        confirmation_source="dashboard",
+        # The dashboard route already authenticated the user and the click
+        # is the confirmation; the bridge must not demand a chat phrase.
+        token_verified=True,
+    )
+
+
 @app.post("/api/knowledge/garden-drafts")
 async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDraftBody):
     _require_token(request)
 
-    # HTTP mode: garden synthesis and its implicit commit run inside the
-    # service; the envelope it returns matches the local bridge envelope, so it
-    # is passed through unchanged.
+    # HTTP mode: the service creates a draft without committing (its
+    # ``auto_commit`` default is False).  When the dashboard asks to commit,
+    # request a confirmation token for that draft and then commit with it.
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
@@ -8117,27 +8192,32 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            if body.auto_commit:
-                return client.create_garden_draft(
-                    capture_ids=body.capture_ids,
-                    title=body.title,
-                    card_kind=body.card_kind,
-                    instruction=body.instruction,
-                )
-            return client.create_garden_draft(
+            created = client.create_garden_draft(
                 capture_ids=body.capture_ids,
                 title=body.title,
                 card_kind=body.card_kind,
                 instruction=body.instruction,
                 auto_commit=False,
             )
+            if not body.auto_commit:
+                return created
+            draft_id = _knowledge_garden_draft_id(created)
+            if not draft_id:
+                return created
+            token = _garden_confirmation_token(
+                client.issue_garden_confirmation(draft_id)
+            )
+            if not token:
+                raise KnowledgeUnavailable(
+                    "knowledge service did not return a garden confirmation token"
+                )
+            return client.commit_garden_draft(draft_id, token)
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
         finally:
             client.close()
 
     garden_bridge = _knowledge_custom_module("bridge.garden_bridge", "Garden bridge")
-    commit_garden_draft = garden_bridge.commit_garden_draft
     synthesize_garden = garden_bridge.synthesize_garden
     result = await _run_cancellable_ai_operation(
         request,
@@ -8154,12 +8234,7 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
     artifacts = result.get("durable_artifacts") if isinstance(result.get("durable_artifacts"), list) else []
     if any(isinstance(item, dict) and item.get("type") == "garden_card" for item in artifacts):
         return result
-    draft_id = str((result.get("meta") or {}).get("draft_id") or "").strip()
-    if not draft_id:
-        for item in artifacts:
-            if isinstance(item, dict) and item.get("type") == "garden_draft":
-                draft_id = str(item.get("id") or "").strip()
-                break
+    draft_id = _knowledge_garden_draft_id(result)
     if not draft_id:
         return result
     if not body.auto_commit:
@@ -8167,12 +8242,7 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
     return await _run_cancellable_ai_operation(
         request,
         "garden.commit",
-        lambda: commit_garden_draft(
-            draft_id=draft_id,
-            confirmation_source="dashboard",
-            # Dashboard click == confirmation; see the capture commit above.
-            token_verified=True,
-        ),
+        lambda: _commit_local_garden_draft(garden_bridge, draft_id),
     )
 
 
@@ -8239,17 +8309,20 @@ async def post_knowledge_garden_draft_commit(request: Request, draft_id: str):
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            return client.commit_garden_draft(draft_id)
+            token = _garden_confirmation_token(
+                client.issue_garden_confirmation(draft_id)
+            )
+            if not token:
+                raise KnowledgeUnavailable(
+                    "knowledge service did not return a garden confirmation token"
+                )
+            return client.commit_garden_draft(draft_id, token)
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
         finally:
             client.close()
     garden_bridge = _knowledge_custom_module("bridge.garden_bridge", "Garden bridge")
-    return garden_bridge.commit_garden_draft(
-        draft_id=draft_id,
-        confirmation_source="dashboard",
-        token_verified=True,
-    )
+    return _commit_local_garden_draft(garden_bridge, draft_id)
 
 
 @app.delete("/api/knowledge/garden-drafts/{draft_id}")

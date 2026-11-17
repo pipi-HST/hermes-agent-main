@@ -16,7 +16,7 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
 };
 
 const CUSTOM_TITLES: Record<string, string> = {
-  "/knowledge-library": "知识库",
+  "/knowledge-library": "资料库",
   "/knowledge-chat": "工作台",
   "/capture-review": "Capture Review",
   "/cards-board": "知识卡片",

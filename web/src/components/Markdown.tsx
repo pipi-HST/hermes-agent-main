@@ -566,7 +566,7 @@ function CitationControl({
   const title = href
     ? `${label} ${href}`
     : canOpenKnowledge
-      ? `打开知识库来源 ${label}`
+      ? `打开资料库来源 ${label}`
       : label;
   const className = "mx-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded border border-primary/25 bg-primary/5 px-1 align-[0.08em] text-[0.68rem] font-medium text-primary hover:border-primary/45 hover:bg-primary/10";
 
@@ -590,7 +590,7 @@ function CitationControl({
         type="button"
         className={className}
         title={title}
-        aria-label={`打开知识库来源 ${label}`}
+        aria-label={`打开资料库来源 ${label}`}
         onClick={() => onSourceOpen?.(source)}
       >
         {refId}

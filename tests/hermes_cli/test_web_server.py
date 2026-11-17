@@ -122,14 +122,31 @@ class _FakeKnowledgeServiceClient:
     def get_library_item(self, kind, item_id):
         return self._respond("get_library_item", kind, item_id)
 
-    def create_garden_draft(self, *, capture_ids=None, title="", card_kind="", instruction=""):
+    def create_garden_draft(
+        self,
+        *,
+        capture_ids=None,
+        title="",
+        card_kind="",
+        instruction="",
+        auto_commit=False,
+        confirmation_token="",
+    ):
         return self._respond(
             "create_garden_draft",
             capture_ids=capture_ids,
             title=title,
             card_kind=card_kind,
             instruction=instruction,
+            auto_commit=auto_commit,
+            confirmation_token=confirmation_token,
         )
+
+    def issue_garden_confirmation(self, draft_id):
+        return self._respond("issue_garden_confirmation", draft_id)
+
+    def commit_garden_draft(self, draft_id, confirmation_token=""):
+        return self._respond("commit_garden_draft", draft_id, confirmation_token)
 
     def list_garden_cards(self, *, limit=100, status=""):
         return self._respond("list_garden_cards", limit=limit, status=status)
@@ -2858,7 +2875,107 @@ class TestWebServerEndpoints:
             "title": "T",
             "card_kind": "viewpoint",
             "instruction": "I",
+            "auto_commit": False,
+            "confirmation_token": "",
         }
+        assert fake.closed is True
+
+    def test_garden_draft_auto_commit_issues_token_then_commits(self, monkeypatch):
+        created = {
+            "status": "ok",
+            "agent": "garden",
+            "intent": "garden.synthesize",
+            "durable_artifacts": [{"type": "garden_draft", "id": "gd-1"}],
+            "meta": {},
+        }
+        committed = {
+            "status": "ok",
+            "agent": "garden",
+            "intent": "commit_garden_draft",
+            "durable_artifacts": [{"type": "garden_card", "id": "k1"}],
+            "meta": {},
+        }
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "create_garden_draft": created,
+                "issue_garden_confirmation": {
+                    "token": "gtok",
+                    "expires_at": "soon",
+                    "intent": "commit_garden_draft",
+                },
+                "commit_garden_draft": committed,
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post(
+            "/api/knowledge/garden-drafts",
+            json={"capture_ids": ["cap-1"], "auto_commit": True},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == committed
+        assert [call["method"] for call in fake.calls] == [
+            "create_garden_draft",
+            "issue_garden_confirmation",
+            "commit_garden_draft",
+        ]
+        assert fake.calls[0]["kwargs"]["auto_commit"] is False
+        assert fake.calls[1]["args"] == ("gd-1",)
+        assert fake.calls[2]["args"] == ("gd-1", "gtok")
+        assert fake.closed is True
+
+    def test_garden_draft_without_auto_commit_skips_confirmation(self, monkeypatch):
+        created = {
+            "status": "ok",
+            "agent": "garden",
+            "intent": "garden.synthesize",
+            "durable_artifacts": [{"type": "garden_draft", "id": "gd-1"}],
+            "meta": {},
+        }
+        fake = _FakeKnowledgeServiceClient(responses={"create_garden_draft": created})
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post(
+            "/api/knowledge/garden-drafts",
+            json={"capture_ids": ["cap-1"], "auto_commit": False},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == created
+        assert [call["method"] for call in fake.calls] == ["create_garden_draft"]
+        assert fake.closed is True
+
+    def test_garden_draft_commit_issues_token_first(self, monkeypatch):
+        committed = {
+            "status": "ok",
+            "agent": "garden",
+            "intent": "commit_garden_draft",
+            "durable_artifacts": [{"type": "garden_card", "id": "k1"}],
+            "meta": {},
+        }
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "issue_garden_confirmation": {
+                    "token": "gtok",
+                    "expires_at": "soon",
+                    "intent": "commit_garden_draft",
+                },
+                "commit_garden_draft": committed,
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post("/api/knowledge/garden-drafts/gd-1/commit")
+
+        assert resp.status_code == 200
+        assert resp.json() == committed
+        assert [call["method"] for call in fake.calls] == [
+            "issue_garden_confirmation",
+            "commit_garden_draft",
+        ]
+        assert fake.calls[0]["args"] == ("gd-1",)
+        assert fake.calls[1]["args"] == ("gd-1", "gtok")
         assert fake.closed is True
 
     def test_cards_read_delegates_and_rebuilds_local_shape(self, monkeypatch):
@@ -3606,6 +3723,39 @@ class TestWebServerEndpoints:
         assert calls["commit_capture_draft"]["args"] == ("draft-1",)
         assert calls["commit_reading_artifact"]["token_verified"] is True
         assert calls["commit_reading_artifact"]["draft_id"] == "draft-1"
+
+        assert self.client.post("/api/knowledge/garden-drafts/draft-1/commit").status_code == 200
+        assert calls["commit_garden_draft"]["token_verified"] is True
+        assert calls["commit_garden_draft"]["draft_id"] == "draft-1"
+
+    def test_local_garden_commit_prefers_bridge_token_handshake(self, monkeypatch):
+        import types
+        import hermes_cli.web_server as web_server
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        monkeypatch.setattr(knowledge_client, "get_client", lambda transport=None: None)
+        seen: dict = {}
+
+        def issue(draft_id):
+            seen["issue"] = draft_id
+            return {"token": "ltok", "expires_at": "soon"}
+
+        def commit(*, draft_id, confirmation_token=""):
+            seen["commit"] = (draft_id, confirmation_token)
+            return {"status": "ok", "intent": "commit_garden_draft"}
+
+        fake_garden = types.ModuleType("bridge.garden_bridge")
+        fake_garden.issue_garden_confirmation = issue
+        fake_garden.commit_garden_draft = commit
+        monkeypatch.setattr(
+            web_server, "_knowledge_custom_module", lambda module_name, label: fake_garden
+        )
+
+        response = self.client.post("/api/knowledge/garden-drafts/draft-1/commit")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok", "intent": "commit_garden_draft"}
+        assert seen == {"issue": "draft-1", "commit": ("draft-1", "ltok")}
 
     def test_get_knowledge_reading_draft_returns_full_text(self, monkeypatch, tmp_path):
         import sqlite3

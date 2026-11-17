@@ -27,7 +27,7 @@ const SCAN_TOPIC_PROMPT =
   "扫描最近保存的内容，看看有没有可以整理成知识卡片或输出选题的跨篇关联";
 
 const PROMPT_STARTERS = [
-  "基于知识库回答这个问题：",
+  "基于资料库回答这个问题：",
   "展开最近的 Capture 草稿",
   SCAN_TOPIC_PROMPT,
 ];
@@ -42,7 +42,7 @@ const TOPIC_FILTERS: Array<{ key: TopicKey; label: string }> = [
 ];
 
 const TOPIC_FALLBACK_PROMPT =
-  "请结合我的知识卡片与知识库资料，帮我找出最近可以整理成专题输出的跨篇关联，并给出一个选题与输出提纲。";
+  "请结合我的知识卡片与资料库资料，帮我找出最近可以整理成专题输出的跨篇关联，并给出一个选题与输出提纲。";
 
 interface TopicInspiration {
   key: Exclude<TopicKey, "all">;
@@ -60,7 +60,7 @@ const TOPIC_INSPIRATIONS: TopicInspiration[] = [
     insight:
       "串联《真伪需求判断三步法》方法卡与《高频输入切忌人工审批卡点》避坑卡，对比高频收集与低频决策的交互边界。",
     prompt:
-      "请结合我知识库中关于“真伪需求判断”和“高频输入审批卡点”的卡片与资料，帮我梳理一份 AI 产品经理面试高分回答框架：《如何辨别并重构“为了 AI 而 AI”的伪需求？》",
+      "请结合我资料库中关于“真伪需求判断”和“高频输入审批卡点”的卡片与资料，帮我梳理一份 AI 产品经理面试高分回答框架：《如何辨别并重构“为了 AI 而 AI”的伪需求？》",
   },
   {
     key: "agent",
@@ -69,16 +69,16 @@ const TOPIC_INSPIRATIONS: TopicInspiration[] = [
     insight:
       "结合《大模型传话筒效应》新知卡、《130 秒延迟复盘》洞察卡与《MCP 工具收敛》资料，总结控制流与数据流分离的架构范式。",
     prompt:
-      "请结合我知识库中关于“大模型传话筒效应”、“130秒重型研究管线复盘”和“Model Routing”的卡片与资料，生成一份结构化的项目亮点复盘手稿。",
+      "请结合我资料库中关于“大模型传话筒效应”、“130秒重型研究管线复盘”和“Model Routing”的卡片与资料，生成一份结构化的项目亮点复盘手稿。",
   },
   {
     key: "industry",
     topicLabel: "🌱 专题：行业与产品拆解",
-    title: "《为什么 90% 的个人知识库沦为“吃灰收藏夹”？从 RAG 证据分层谈破局》",
+    title: "《为什么 90% 的个人资料库沦为“吃灰收藏夹”？从 RAG 证据分层谈破局》",
     insight:
       "对比 Notion AI、NotebookLM、腾讯 IMA 与本项目的“资料(Evidence) → 卡片(Viewpoint) → 专题(Topic)”三阶内化模型。",
     prompt:
-      "请结合我知识库中的《PKM 竞品拆解》资料与《区分原文证据与个人观点》卡片，帮我撰写一篇关于个人知识库产品破局思路的深度分析提纲。",
+      "请结合我资料库中的《PKM 竞品拆解》资料与《区分原文证据与个人观点》卡片，帮我撰写一篇关于个人资料库产品破局思路的深度分析提纲。",
   },
 ];
 
@@ -298,8 +298,8 @@ function ComposerQuickActions({
         aria-pressed={webEnabled}
         title={
           webEnabled
-            ? "关闭联网搜索，仅检索个人知识库"
-            : "开启 DeepSeek 联网搜索，与个人知识库联合解答"
+            ? "关闭联网搜索，仅检索个人资料库"
+            : "开启 DeepSeek 联网搜索，与个人资料库联合解答"
         }
         className={cn(
           "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition",
@@ -312,7 +312,7 @@ function ComposerQuickActions({
         🌐 联网搜索{webEnabled ? " · 已开启" : ""}
       </button>
       <span className="text-[11px] leading-5 text-muted-foreground">
-        {webEnabled ? "⚡ DeepSeek 联网搜索 + 个人知识库联合解答" : "📚 默认检索个人知识库（卡片 + 资料）"}
+        {webEnabled ? "⚡ DeepSeek 联网搜索 + 个人资料库联合解答" : "📚 默认检索个人资料库（卡片 + 资料）"}
       </span>
       <button
         type="button"
@@ -442,7 +442,7 @@ function TopicInspirationRadar({
           <div className="rounded-lg border border-dashed border-border bg-background/55 p-4 lg:col-span-3">
             <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
               <Lightbulb className="h-4 w-4 text-primary/80" />
-              暂无预置选题，先扫描你的知识库
+              暂无预置选题，先扫描你的资料库
             </h3>
             <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
               让 Hermes 扫描最近保存的卡片与资料，自动找出可以整理成专题输出的跨篇关联。

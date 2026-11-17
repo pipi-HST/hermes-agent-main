@@ -656,11 +656,66 @@ def test_garden_client_methods():
         "title": "T",
         "card_kind": "viewpoint",
         "instruction": "I",
+        "auto_commit": False,
     }
     assert seen[1].url.path == "/api/garden/cards"
     assert dict(seen[1].url.params) == {"limit": "10"}
     assert dict(seen[2].url.params) == {"limit": "5", "status": "active"}
     assert _raw_path(seen[3]) == b"/api/garden/cards/k%201"
+
+
+def test_garden_confirmation_issues_token_and_commit_sends_it():
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("/confirmation"):
+            return httpx.Response(
+                200,
+                json={
+                    "token": "gtok",
+                    "expires_at": "soon",
+                    "intent": "commit_garden_draft",
+                },
+            )
+        return httpx.Response(200, json={"ok": True})
+
+    with _client(handler) as client:
+        issued = client.issue_garden_confirmation("d 1")
+        result = client.commit_garden_draft("d 1", issued["token"])
+
+    assert issued["token"] == "gtok"
+    assert result == {"ok": True}
+    assert calls[0].method == "POST"
+    assert _raw_path(calls[0]) == b"/api/garden/drafts/d%201/confirmation"
+    assert calls[1].method == "POST"
+    assert _raw_path(calls[1]) == b"/api/garden/drafts/d%201/commit"
+    assert json.loads(calls[1].content) == {"confirmation_token": "gtok"}
+
+
+def test_garden_commit_issues_token_when_omitted():
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("/confirmation"):
+            return httpx.Response(200, json={"confirmation_token": "ctok"})
+        return httpx.Response(200, json={"ok": True})
+
+    with _client(handler) as client:
+        client.commit_garden_draft("d1")
+
+    assert [request.method for request in calls] == ["POST", "POST"]
+    assert json.loads(calls[1].content) == {"confirmation_token": "ctok"}
+
+
+def test_garden_auto_commit_requires_confirmation_token():
+    client, seen = _recording_client()
+
+    with pytest.raises(KnowledgeUnavailable, match="confirmation token"):
+        client.create_garden_draft(auto_commit=True)
+
+    assert seen == []
 
 
 def test_graph_and_answer_client_methods():

@@ -1147,7 +1147,7 @@ function graphEvidenceText(edge: KnowledgeGraphEdge): string {
   const reasons = Array.isArray(evidence.reasons) ? evidence.reasons.slice(0, 2).join("；") : "";
   const title = typeof evidence.title === "string" ? evidence.title : "";
   const question = typeof evidence.question === "string" ? evidence.question : "";
-  return matches || reasons || title || question || "该关系由现有知识库结构确定生成。";
+  return matches || reasons || title || question || "该关系由现有资料库结构确定生成。";
 }
 
 function KnowledgeCardTile({
@@ -1895,7 +1895,7 @@ function normalizedArguments(items?: Array<Record<string, unknown> | string>): s
 }
 
 function cardTopicOutputPath(card: KnowledgeCard): string {
-  const prompt = `请结合我的知识卡片《${card.title}》（专题：${card.source_theme || "核心认知"}）以及知识库中的相关资料，帮我梳理一份结构化的思考与输出框架。`;
+  const prompt = `请结合我的知识卡片《${card.title}》（专题：${card.source_theme || "核心认知"}）以及资料库中的相关资料，帮我梳理一份结构化的思考与输出框架。`;
   return `/knowledge-chat?prompt=${encodeURIComponent(prompt)}`;
 }
 

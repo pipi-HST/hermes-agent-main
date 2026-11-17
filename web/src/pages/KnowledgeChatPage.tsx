@@ -1519,7 +1519,7 @@ export default function KnowledgeChatPage() {
       if (operation.isCancelled()) return;
       if (!draft) return;
       setEditableStatus("committing");
-      setEditableProgressMessage("正在写入知识库文件...");
+      setEditableProgressMessage("正在写入资料库文件...");
       const commitResult = await api.commitKnowledgeCaptureDraft(draft.id, {
         operationId: operation.operationId,
         signal: operation.signal,
@@ -1684,7 +1684,7 @@ export default function KnowledgeChatPage() {
   }, [inspectorObjectRef, isObjectInspectorMode, objectEvents, state.tools]);
   const toolsEmptyText =
     !isObjectInspectorMode
-      ? "还没有工具调用。让 Hermes 检索知识库、展开草稿或整理知识卡片时，这里会显示状态流转。"
+      ? "还没有工具调用。让 Hermes 检索资料库、展开草稿或整理知识卡片时，这里会显示状态流转。"
       : objectEventsLoading
         ? "正在读取当前对象的工具记录..."
         : `当前${mode === "answer_draft_review" ? "资料笔记" : "材料"}还没有可追踪的工具调用记录。`;
@@ -1800,7 +1800,7 @@ export default function KnowledgeChatPage() {
       ? "检查这份回答沉淀草稿，满意后点确认保存；不满意可以回到对话继续追问..."
       : mode === "draft_review"
       ? "写修改意见，比如：把方法论部分展开、保留更多原文例子、删掉模板化表达..."
-      : "直接问知识库，或让 Hermes 做跨篇灵感扫描与专题输出；也可以上传文件、粘贴材料...";
+      : "直接问资料库，或让 Hermes 做跨篇灵感扫描与专题输出；也可以上传文件、粘贴材料...";
 
   const openGatewaySource = useCallback((source: {
     url?: string;

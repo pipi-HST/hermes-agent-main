@@ -971,7 +971,7 @@ export default function KnowledgeLibraryPage() {
       if (!saved) return;
       const draftBeforeCommit = (await api.getKnowledgeCaptureDraft(detail.id)).draft;
       const cardSuggestion = editableCardSuggestion(draftBeforeCommit.capture_intent);
-      setNotice("正在写入知识库文件...");
+      setNotice("正在写入资料库文件...");
       const commitResult = await api.commitKnowledgeCaptureDraft(detail.id, { operationId: operation.operationId });
       if (isAiCancelledResult(commitResult)) {
         setNotice("已停止。草稿仍保留，可继续编辑或重试保存。");
@@ -1351,7 +1351,7 @@ export default function KnowledgeLibraryPage() {
       if (operation.isCancelled()) return;
       if (!draft) return;
       setEditableStatus("committing");
-      setEditableProgressMessage("正在写入知识库文件...");
+      setEditableProgressMessage("正在写入资料库文件...");
       const commitResult = await api.commitKnowledgeCaptureDraft(draft.id, {
         operationId: operation.operationId,
         signal: operation.signal,
@@ -1709,7 +1709,7 @@ export default function KnowledgeLibraryPage() {
         hermes_session_id: "knowledge-library",
         user_message: [...chatMessages].reverse().find((item) => item.role === "user")?.content || chatQuestion || detail.title,
         assistant_answer: message.content,
-        instruction: outputType === "knowledge_card" ? "把知识库右侧 AI 回答做成卡片" : "把知识库右侧 AI 回答存成资料笔记",
+        instruction: outputType === "knowledge_card" ? "把资料库右侧 AI 回答做成卡片" : "把资料库右侧 AI 回答存成资料笔记",
         output_type: outputType,
         assistant_message_id: message.id,
         sources: articleSourcesForSave(message.sources, detail),
@@ -1752,7 +1752,7 @@ export default function KnowledgeLibraryPage() {
     const kind = rawKind === "capture_draft" ? "capture_draft" : rawKind === "capture" ? "capture" : "";
     const itemId = String(source.item_id || "").trim();
     if (!kind || !itemId) {
-      setNotice("这个知识库来源暂时缺少可打开的本地文件信息。");
+      setNotice("这个资料库来源暂时缺少可打开的本地文件信息。");
       return;
     }
     if (!confirmLeaveCurrentWork()) return;
@@ -1779,7 +1779,7 @@ export default function KnowledgeLibraryPage() {
   const openKnowledgeSourceLocal = useCallback(async (source: KnowledgeResearchSource) => {
     const itemId = String(source.item_id || "").trim();
     if (source.item_kind !== "capture" || !itemId) {
-      setNotice("这个知识库来源暂时缺少可打开的本地文件信息。");
+      setNotice("这个资料库来源暂时缺少可打开的本地文件信息。");
       return;
     }
     setError("");
@@ -2452,7 +2452,7 @@ function ArticleAIPanel({
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold" title={detail.title || "未命名文件"}>AI 伴读</h2>
             <p className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">
-              结合当前资料与知识库，解惑、追问、一键提炼卡片
+              结合当前资料与资料库，解惑、追问、一键提炼卡片
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1">
@@ -2515,7 +2515,7 @@ function ArticleAIPanel({
           </div>
         ) : (
           <div className="space-y-2">
-            <EmptyState text="划选正文中的一段话，或直接输入问题；AI 会结合当前资料与知识库为你解惑。" />
+            <EmptyState text="划选正文中的一段话，或直接输入问题；AI 会结合当前资料与资料库为你解惑。" />
             <div className="flex flex-wrap gap-1.5">
               {ARTICLE_AI_STARTERS.map((starter) => (
                 <button
@@ -2671,8 +2671,8 @@ function ResearchModeControl({
         onClick={() => onChange(webEnabled ? "current_article_only" : "local_web")}
         title={
           webEnabled
-            ? "关闭联网搜索，仅使用当前笔记与个人知识库"
-            : "开启 DeepSeek 联网搜索，与个人知识库联合解答"
+            ? "关闭联网搜索，仅使用当前笔记与个人资料库"
+            : "开启 DeepSeek 联网搜索，与个人资料库联合解答"
         }
         className={cn(
           "inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition",
@@ -2685,7 +2685,7 @@ function ResearchModeControl({
         🌐 联网搜索{webEnabled ? " · 已开启" : ""}
       </button>
       <span className="min-w-0 truncate text-[11px] leading-5 text-muted-foreground">
-        {webEnabled ? "⚡ DeepSeek 联网搜索 + 个人知识库联合解答" : "📚 当前笔记 + 个人知识库"}
+        {webEnabled ? "⚡ DeepSeek 联网搜索 + 个人资料库联合解答" : "📚 当前笔记 + 个人资料库"}
       </span>
     </div>
   );
@@ -2765,13 +2765,13 @@ function applySelectionChatStreamEvent(
       setProgressContent("正在搜索网页...");
       break;
     case "local_search_start":
-      providerStatus.stage = "正在检索本地知识库";
-      setProgressContent("正在检索本地知识库...");
+      providerStatus.stage = "正在检索本地资料库";
+      setProgressContent("正在检索本地资料库...");
       break;
     case "local_search_done":
       trace.knowledge_sources = mergeResearchSources(trace.knowledge_sources, event.knowledge_sources);
-      providerStatus.stage = "本地知识库检索完成";
-      setProgressContent("本地知识库检索完成，继续整理证据...");
+      providerStatus.stage = "本地资料库检索完成";
+      setProgressContent("本地资料库检索完成，继续整理证据...");
       break;
     case "web_search_start":
       trace.web_search_attempted = true;
@@ -3556,7 +3556,7 @@ function researchSummaryText({
   if (pending) {
     if (!webSearchAttempted) {
       if (mode === "current_article_only") return "正在基于当前文章回答";
-      if (mode === "local_only" || mode === "local_web") return "正在检索知识库";
+      if (mode === "local_only" || mode === "local_web") return "正在检索资料库";
       return "正在回答";
     }
     const parts = ["联网搜索中"];
@@ -3585,10 +3585,10 @@ function researchProgressFallback({
 }): string {
   if (webSearchAttempted) return pending ? "联网检索中" : "已联网补充";
   if (mode === "current_article_only") return pending ? "正在基于当前文章回答" : "当前文章回答完成";
-  if (mode === "local_only") return pending ? "正在检索知识库" : "知识库检索完成";
+  if (mode === "local_only") return pending ? "正在检索资料库" : "资料库检索完成";
   if (mode === "local_web") {
-    if (pending) return "正在检索知识库";
-    return knowledgeCount ? "未联网，已用知识库回答" : "未联网";
+    if (pending) return "正在检索资料库";
+    return knowledgeCount ? "未联网，已用资料库回答" : "未联网";
   }
   return pending ? "正在回答" : "回答完成";
 }
@@ -3675,9 +3675,9 @@ function researchModeLabel(mode: KnowledgeResearchMode): string {
     case "current_article_only":
       return "当前文章";
     case "local_only":
-      return "知识库";
+      return "资料库";
     case "local_web":
-      return "联网搜索 + 知识库";
+      return "联网搜索 + 资料库";
     case "web_only":
       return "联网";
     case "theme_scan":
@@ -3768,7 +3768,7 @@ function providerStatusValue(name: string, value: unknown): string {
 function stageTimingLabel(timings: Record<string, unknown>): string {
   const labels: Array<[string, string]> = [
     ["planning_ms", "规划"],
-    ["local_search_ms", "知识库"],
+    ["local_search_ms", "资料库"],
     ["search_ms", "联网搜索"],
     ["extract_ms", "网页整理"],
     ["synthesis_ms", "生成答案"],

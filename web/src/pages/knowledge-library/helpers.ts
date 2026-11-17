@@ -224,9 +224,9 @@ export function libraryDeleteConfirmMessage(
   }
   const counts = libraryDependencyCounts(dependencies);
   return [
-    `确定从知识库移除《${item.title || "未命名文件"}》吗？`,
+    `确定从资料库移除《${item.title || "未命名文件"}》吗？`,
     "",
-    "这不是物理删除：文件会标记为归档并从知识库列表隐藏。",
+    "这不是物理删除：文件会标记为归档并从资料库列表隐藏。",
     "",
     "将保留：",
     "- 本地正文和来源记录",

@@ -63,7 +63,7 @@ function requireKnowledgeBusinessSuccess<T extends Record<string, unknown>>(resu
     : [];
   const error = typeof result.error === "string" ? result.error.trim() : "";
   if (result.ok === false || result.status === "error" || result.error || errors.length) {
-    throw new Error(error || errors[0] || "知识库保存失败，请重试。");
+    throw new Error(error || errors[0] || "资料库保存失败，请重试。");
   }
   return result;
 }
