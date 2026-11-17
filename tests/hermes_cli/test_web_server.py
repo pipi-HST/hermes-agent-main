@@ -144,6 +144,23 @@ class _FakeKnowledgeServiceClient:
         )
         return self.update_result
 
+    def issue_confirmation(self, resource, resource_id):
+        return self._respond("issue_confirmation", resource, resource_id)
+
+    def commit_draft(self, resource, resource_id, confirmation_token):
+        return self._respond(
+            "commit_draft", resource, resource_id, confirmation_token
+        )
+
+    def call_tool(self, module_name, function_name, *, args=None, kwargs=None):
+        return self._respond(
+            "call_tool",
+            module_name,
+            function_name,
+            args=args,
+            kwargs=kwargs,
+        )
+
     def issue_library_delete_confirmation(self, kind, item_id):
         if self.error is not None:
             raise self.error
@@ -2566,6 +2583,52 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert fake.closed is True
 
+    def test_capture_commit_delegates_confirmation_and_commit_to_service(
+        self, monkeypatch
+    ):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "issue_confirmation": {"token": "tok-capture"},
+                "commit_draft": {"ok": True, "status": "committed"},
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post("/api/knowledge/capture-drafts/d1/commit")
+
+        assert resp.status_code == 200
+        assert fake.calls == [
+            {
+                "method": "issue_confirmation",
+                "args": ("capture-drafts", "d1"),
+                "kwargs": {},
+            },
+            {
+                "method": "commit_draft",
+                "args": ("capture-drafts", "d1", "tok-capture"),
+                "kwargs": {},
+            },
+        ]
+        assert fake.closed is True
+
+    def test_reading_commit_delegates_confirmation_and_commit_to_service(
+        self, monkeypatch
+    ):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "issue_confirmation": {"token": "tok-reading"},
+                "commit_draft": {"ok": True, "status": "committed"},
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post("/api/knowledge/reading-drafts/d2/commit")
+
+        assert resp.status_code == 200
+        assert fake.calls[0]["args"] == ("reading/drafts", "d2")
+        assert fake.calls[1]["args"] == ("reading/drafts", "d2", "tok-reading")
+        assert fake.closed is True
+
     # ── HTTP-mode delegation: library reads / garden / cards / graph ────────
 
     def test_library_items_read_delegates_and_matches_local_shape(self, monkeypatch):
@@ -3292,7 +3355,7 @@ class TestWebServerEndpoints:
         import types
         import hermes_cli.web_server as web_server
 
-        monkeypatch.setattr(web_server, "_knowledge_custom_root", lambda: tmp_path)
+        monkeypatch.setattr(web_server, "_knowledge_local_root", lambda: tmp_path)
         called = {}
 
         def fake_save(**kwargs):
@@ -3474,7 +3537,7 @@ class TestWebServerEndpoints:
         import types
         import hermes_cli.web_server as web_server
 
-        monkeypatch.setattr(web_server, "_knowledge_custom_root", lambda: tmp_path)
+        monkeypatch.setattr(web_server, "_knowledge_local_root", lambda: tmp_path)
         called = {}
 
         def fake_revise(**kwargs):
@@ -3868,6 +3931,37 @@ class TestWebServerEndpoints:
             "contract_version": None,
             "compatible": None,
         }
+
+    def test_knowledge_custom_root_http_only_returns_path_anchor(
+        self, monkeypatch, tmp_path
+    ):
+        """HTTP-only mode must not fail just because there is no checkout."""
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.delenv("HERMES_KNOWLEDGE_LOCAL_ROOT", raising=False)
+        monkeypatch.delenv("HERMES_CUSTOM_ROOT", raising=False)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://127.0.0.1:8123")
+        db_path = tmp_path / "hermes-custom" / "data" / "captures.db"
+        db_path.parent.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_DB", str(db_path))
+
+        assert web_server._knowledge_custom_root() == tmp_path / "hermes-custom"
+
+    def test_knowledge_custom_module_http_only_asks_for_local_checkout(
+        self, monkeypatch
+    ):
+        """Only local-only code paths should fail, with a precise error code."""
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.delenv("HERMES_KNOWLEDGE_LOCAL_ROOT", raising=False)
+        monkeypatch.delenv("HERMES_CUSTOM_ROOT", raising=False)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://127.0.0.1:8123")
+
+        with pytest.raises(Exception) as exc_info:
+            web_server._knowledge_custom_module("bridge.capture_bridge", "Capture")
+
+        assert getattr(exc_info.value, "status_code", None) == 503
+        assert exc_info.value.detail["code"] == "local_checkout_required"
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")

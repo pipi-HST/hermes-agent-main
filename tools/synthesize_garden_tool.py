@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from tools.hermes_custom_envelope import (
-    ensure_hermes_custom_path,
+    call_custom_bridge,
     envelope_error_json,
     envelope_success_json,
 )
@@ -54,10 +54,9 @@ SYNTHESIZE_GARDEN_SCHEMA = {
 
 
 def do_synthesize(**kwargs):
-    ensure_hermes_custom_path()
-    from bridge.garden_bridge import synthesize_garden
-
-    return synthesize_garden(**kwargs)
+    # Keep this on the same transport switch as every other custom tool:
+    # local checkout in dev mode, Knowledge Service over HTTP in production.
+    return call_custom_bridge("garden_bridge", "synthesize_garden", **kwargs)
 
 
 def _handler(params: dict, **kw) -> str:

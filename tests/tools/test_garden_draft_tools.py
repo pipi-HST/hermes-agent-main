@@ -163,3 +163,44 @@ def test_synthesize_garden_tool_treats_card_kind_as_optional_agent_hint():
 
     assert "不要为了确定类型追问用户" in description
     assert "系统提示" in card_kind_description
+
+
+def test_synthesize_garden_routes_through_shared_bridge_transport(monkeypatch):
+    """HTTP mode must reach the service, not import a local checkout."""
+    import tools.synthesize_garden_tool as tool
+
+    calls = {}
+
+    def fake_call(module_name, function_name, **kwargs):
+        calls["module"] = module_name
+        calls["function"] = function_name
+        calls["kwargs"] = kwargs
+        return {
+            "status": "success",
+            "agent": "garden",
+            "intent": "synthesize_garden",
+            "chat_preview": "ok",
+            "durable_artifacts": [],
+            "source_map": [],
+            "next_actions": [],
+            "warnings": [],
+            "errors": [],
+            "meta": {},
+        }
+
+    monkeypatch.setattr(tool, "call_custom_bridge", fake_call)
+
+    result = json.loads(tool._handler({"capture_ids": ["cap1"]}))
+
+    assert result["status"] == "success"
+    assert calls == {
+        "module": "garden_bridge",
+        "function": "synthesize_garden",
+        "kwargs": {
+            "capture_ids": ["cap1"],
+            "question_id": "",
+            "title": "",
+            "card_kind": "",
+            "export_file": False,
+        },
+    }

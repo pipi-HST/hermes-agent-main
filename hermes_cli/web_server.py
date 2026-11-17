@@ -83,6 +83,31 @@ _log = logging.getLogger(__name__)
 
 app = FastAPI(title="Hermes Agent", version=__version__)
 
+
+def _knowledge_transport_mode() -> str:
+    """Return ``http``, ``local`` or ``disabled`` without network I/O."""
+    if (os.environ.get("HERMES_KNOWLEDGE_URL") or "").strip():
+        return "http"
+    try:
+        from integrations.hermes_knowledge import configured_root
+
+        if configured_root() is not None:
+            return "local"
+    except Exception:
+        pass
+    return "disabled"
+
+
+@app.on_event("startup")
+def _log_knowledge_transport_mode() -> None:
+    mode = _knowledge_transport_mode()
+    _log.info("Hermes Knowledge transport: %s", mode)
+    if mode == "local":
+        _log.warning(
+            "Hermes Knowledge local-checkout mode is for development only; "
+            "production should set HERMES_KNOWLEDGE_URL and HERMES_KNOWLEDGE_TOKEN."
+        )
+
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
 # Generated fresh on every server start — dies when the process exits.
@@ -2928,9 +2953,14 @@ def _knowledge_write_path(*parts: str) -> str:
 
 
 def _knowledge_checkout_path(*parts: str) -> str:
-    """Best-effort path under the Knowledge checkout (empty when unconfigured)."""
+    """Best-effort path under the local Knowledge checkout.
+
+    HTTP mode has no checkout; the inventory reports an empty path instead of
+    inventing one from a path anchor.
+    """
     try:
-        return str(_knowledge_custom_root().joinpath(*parts))
+        root = _knowledge_local_root()
+        return str(root.joinpath(*parts)) if root is not None else ""
     except Exception:  # noqa: BLE001 - unconfigured feature degrades to empty
         return ""
 
@@ -4986,23 +5016,13 @@ class _KnowledgeLibrarySelectionChatBody(BaseModel):
     force_web: bool = False
 
 
-def _knowledge_custom_root() -> Path:
-    """Return the validated Hermes Knowledge checkout, or fail closed."""
+def _knowledge_local_root() -> Path | None:
+    """Return the validated local checkout, or None in HTTP-only mode."""
     from integrations.hermes_knowledge import KnowledgeUnavailable, configured_root, validate_root
 
     root = configured_root()
     if root is None:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "feature_disabled",
-                "message": (
-                    "Hermes Knowledge is not configured. Set HERMES_KNOWLEDGE_URL "
-                    "(HTTP mode) or HERMES_KNOWLEDGE_LOCAL_ROOT (local checkout) "
-                    "and restart the dashboard."
-                ),
-            },
-        )
+        return None
     try:
         return validate_root(root)
     except KnowledgeUnavailable as exc:
@@ -5010,6 +5030,24 @@ def _knowledge_custom_root() -> Path:
             status_code=503,
             detail={"code": "feature_disabled", "message": str(exc)},
         ) from exc
+
+
+def _knowledge_custom_root() -> Path:
+    """Return a path anchor for Knowledge files.
+
+    HTTP mode has no checkout, so this must not fail just because only
+    ``HERMES_KNOWLEDGE_URL`` is configured. Callers that truly need to import
+    local Python modules must use :func:`_knowledge_custom_module`, which fails
+    with a precise local-checkout error instead.
+    """
+    root = _knowledge_local_root()
+    if root is not None:
+        return root
+    configured_db = (os.environ.get("HERMES_KNOWLEDGE_DB") or "").strip()
+    if configured_db:
+        # <repo>/data/captures.db -> <repo>
+        return Path(configured_db).expanduser().resolve().parent.parent
+    return Path("~/Hermes/knowledge").expanduser()
 
 
 def _knowledge_custom_import_failure_detail(
@@ -5048,7 +5086,20 @@ def _knowledge_custom_import_failure_detail(
 
 
 def _knowledge_custom_module(module_name: str, label: str):
-    root = _knowledge_custom_root()
+    root = _knowledge_local_root()
+    if root is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "local_checkout_required",
+                "message": (
+                    f"{label} requires a local Hermes Knowledge checkout. "
+                    "Set HERMES_KNOWLEDGE_LOCAL_ROOT for local development, or "
+                    "use the HTTP-mode route that delegates to the service."
+                ),
+                "module": module_name,
+            },
+        )
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
     try:
@@ -5188,7 +5239,7 @@ async def post_knowledge_ai_operation_cancel(request: Request, operation_id: str
 def _knowledge_db_path() -> Path:
     """Path to the knowledge SQLite DB.
 
-    ``HERMES_KNOWLEDGE_DB`` must win without touching ``_knowledge_custom_root``:
+    ``HERMES_KNOWLEDGE_DB`` must win without touching a local checkout:
     the old form passed the checkout-derived default as a function argument,
     which Python evaluates eagerly, so setting the env var still raised the
     fail-closed 503 when no checkout was configured.
@@ -5196,12 +5247,24 @@ def _knowledge_db_path() -> Path:
     configured = (os.environ.get("HERMES_KNOWLEDGE_DB") or "").strip()
     if configured:
         return Path(configured).expanduser()
-    return _knowledge_custom_root() / "data" / "captures.db"
+    root = _knowledge_local_root()
+    if root is not None:
+        return root / "data" / "captures.db"
+    if _knowledge_transport_mode() == "http":
+        return Path("~/Hermes/knowledge/data/captures.db").expanduser()
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "feature_disabled", "message": "Hermes Knowledge is not configured."},
+    )
 
 
 def _knowledge_vault_path() -> Path:
-    config_path = _knowledge_custom_root() / "config.yaml"
-    if config_path.exists():
+    configured = (os.environ.get("HERMES_KNOWLEDGE_VAULT") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    root = _knowledge_local_root()
+    config_path = root / "config.yaml" if root is not None else None
+    if config_path is not None and config_path.exists():
         try:
             cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
             vault = cfg.get("vault") if isinstance(cfg, dict) else {}
@@ -5209,7 +5272,12 @@ def _knowledge_vault_path() -> Path:
                 return Path(str(vault["path"])).expanduser()
         except Exception:
             _log.warning("Failed to read Hermes Knowledge config at %s", config_path)
-    return Path("~/Hermes/knowledge").expanduser()
+    if root is not None or _knowledge_transport_mode() == "http":
+        return Path("~/Hermes/knowledge").expanduser()
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "feature_disabled", "message": "Hermes Knowledge is not configured."},
+    )
 
 
 def _knowledge_conn() -> sqlite3.Connection:
@@ -5254,6 +5322,7 @@ async def get_knowledge_runtime_check(request: Request):
             )
     return {
         "ok": ok,
+        "mode": _knowledge_transport_mode(),
         "custom_root": str(_knowledge_custom_root()),
         "python": sys.executable,
         "checks": checks,
@@ -5269,15 +5338,14 @@ def _json_value(text: str, fallback):
 
 
 def _knowledge_normalized_card_payload(data: dict) -> dict:
-    root = _knowledge_custom_root()
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
     try:
-        from agents.garden_card_payload import normalize_garden_payload, parse_payload_json
+        module = _knowledge_custom_module(
+            "agents.garden_card_payload", "Knowledge card payload"
+        )
     except Exception:
         return {}
-    return normalize_garden_payload(
-        parse_payload_json(str(data.get("payload_json") or "{}")),
+    return module.normalize_garden_payload(
+        module.parse_payload_json(str(data.get("payload_json") or "{}")),
         legacy=data,
     )
 
@@ -5325,7 +5393,10 @@ def _knowledge_folder(value: Any) -> str:
 
 
 def _knowledge_folder_store_path() -> Path:
-    return _knowledge_custom_root() / "data" / "knowledge_folders.json"
+    # The Knowledge service stores the topic registry inside the vault
+    # (``<vault>/.hermes/knowledge_folders.json``). Keep the local fallback on
+    # the same file so both modes read and write one registry.
+    return _knowledge_vault_path() / ".hermes" / "knowledge_folders.json"
 
 
 def _knowledge_stored_folders() -> list[str]:
@@ -6373,11 +6444,27 @@ async def patch_knowledge_library_folder(
                     requires_backup=True,
                 )
             )
+            capture_id = str(data.get("id") or "")
             conn.execute(
                 "UPDATE captures SET updated_at = datetime('now') WHERE id = ?",
-                (str(data.get("id") or ""),),
+                (capture_id,),
+            )
+            conn.execute(
+                """INSERT INTO capture_metadata
+                       (capture_id, folder_path, created_at, updated_at)
+                   VALUES (?, ?, datetime('now'), datetime('now'))
+                   ON CONFLICT(capture_id) DO UPDATE SET
+                       folder_path=excluded.folder_path,
+                       updated_at=excluded.updated_at""",
+                (capture_id, new_folder),
             )
             updated_items += 1
+        conn.execute(
+            """UPDATE garden_cards
+               SET source_theme = ?, updated_at = datetime('now')
+               WHERE source_theme = ?""",
+            (new_folder, old_folder),
+        )
         conn.commit()
 
     _knowledge_rename_stored_folder(old_folder, new_folder)
@@ -7124,9 +7211,18 @@ def _knowledge_delete_capture_review_items(conn: sqlite3.Connection, capture_id:
 
 def _new_capture_agent():
     capture_agent_module = _knowledge_custom_module("agents.capture_agent", "Capture agent")
+    root = _knowledge_local_root()
+    if root is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "local_checkout_required",
+                "message": "Capture revision requires a local checkout; use the service route in HTTP mode.",
+            },
+        )
     CaptureAgent = capture_agent_module.CaptureAgent
     load_capture_config = capture_agent_module.load_config
-    return CaptureAgent(load_capture_config(str(_knowledge_custom_root() / "config.yaml")))
+    return CaptureAgent(load_capture_config(str(root / "config.yaml")))
 
 
 def _knowledge_revision_llm_text(result: Any) -> str:
@@ -7466,8 +7562,6 @@ async def post_knowledge_editable_capture_draft(
     body: _KnowledgeEditableCaptureDraftBody,
 ):
     _require_token(request)
-    capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
-    create_editable_capture_draft = capture_bridge.create_editable_capture_draft
     kwargs = {
         "content": body.content,
         "source": body.source,
@@ -7476,10 +7570,32 @@ async def post_knowledge_editable_capture_draft(
         "title": body.title,
         "title_source": body.title_source,
         "organize": body.organize,
-        "existing_folders": body.existing_folders or _knowledge_visible_folder_paths(),
     }
+    if body.existing_folders:
+        kwargs["existing_folders"] = body.existing_folders
     if body.folder_path.strip():
         kwargs["folder_path"] = body.folder_path
+
+    # HTTP mode: creating a draft is a service write.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.call_tool(
+                "capture_bridge", "create_editable_capture_draft", kwargs=kwargs
+            )
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
+    capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
+    create_editable_capture_draft = capture_bridge.create_editable_capture_draft
+    kwargs["existing_folders"] = body.existing_folders or _knowledge_visible_folder_paths()
     return await _run_cancellable_ai_operation(
         request,
         "capture.editable.create",
@@ -7548,6 +7664,28 @@ async def patch_knowledge_editable_capture_draft(
 @app.post("/api/knowledge/capture-drafts/{draft_id}/commit")
 async def post_knowledge_capture_draft_commit(request: Request, draft_id: str):
     _require_token(request)
+
+    # HTTP mode: confirmation + commit both live in the service.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            issued = client.issue_confirmation("capture-drafts", draft_id)
+            token = str((issued or {}).get("token") or "").strip()
+            if not token:
+                raise KnowledgeUnavailable(
+                    "knowledge service did not return a capture commit token"
+                )
+            return client.commit_draft("capture-drafts", draft_id, token)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
     commit_capture_draft = capture_bridge.commit_capture_draft
     result = await _run_cancellable_ai_operation(
@@ -7571,6 +7709,25 @@ async def post_knowledge_capture_draft_revise(
     body: _KnowledgeDraftRevisionBody,
 ):
     _require_token(request)
+
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.call_tool(
+                "capture_bridge",
+                "revise_capture_draft",
+                kwargs={"draft_id": draft_id, "instruction": body.instruction},
+            )
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
     revise_capture_draft = capture_bridge.revise_capture_draft
     result = await _run_cancellable_ai_operation(
@@ -8097,6 +8254,27 @@ async def get_knowledge_object_events(
 @app.post("/api/knowledge/reading-drafts/{draft_id}/commit")
 async def post_knowledge_reading_draft_commit(request: Request, draft_id: str):
     _require_token(request)
+
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            issued = client.issue_confirmation("reading/drafts", draft_id)
+            token = str((issued or {}).get("token") or "").strip()
+            if not token:
+                raise KnowledgeUnavailable(
+                    "knowledge service did not return a reading commit token"
+                )
+            return client.commit_draft("reading/drafts", draft_id, token)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     reading_bridge = _knowledge_custom_module("bridge.reading_bridge", "Reading bridge")
     commit_reading_artifact = reading_bridge.commit_reading_artifact
     return await _run_cancellable_ai_operation(
@@ -8117,6 +8295,25 @@ async def post_knowledge_reading_draft_revise(
     body: _KnowledgeDraftRevisionBody,
 ):
     _require_token(request)
+
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.call_tool(
+                "answer_bridge",
+                "revise_answer_draft",
+                kwargs={"draft_id": draft_id, "instruction": body.instruction},
+            )
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     answer_bridge = _knowledge_custom_module("bridge.answer_bridge", "Answer bridge")
     revise_answer_draft = answer_bridge.revise_answer_draft
     return await _run_cancellable_ai_operation(
