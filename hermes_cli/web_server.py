@@ -2980,8 +2980,10 @@ def _automation_boundary_for_cron_job(job: dict[str, Any]) -> dict[str, Any]:
     name_lower = name.lower()
     if "theme_scan" in lowered or "theme-scan" in name_lower:
         read_write = "knowledge_storage_write"
-        writes_tables = ["captures", "pending_questions", "theme_candidates"]
-        writes_paths = _known_paths(_knowledge_write_path("themes"))
+        # Theme candidates live in pending_questions; the default scan writes
+        # no standing themes/*.md file (only an explicit export does).
+        writes_tables = ["captures", "pending_questions"]
+        writes_paths = []
         risk = "high"
         description = "Scheduled Theme View maintenance; disabled jobs cannot auto-trigger."
     elif "daily_review" in lowered or "daily-review" in lowered or "knowledge-review" in toolsets:
@@ -3136,8 +3138,8 @@ async def get_knowledge_automation_boundaries():
                 enabled=theme_enabled,
                 runtime_status="configured" if theme_enabled else "disabled",
                 read_write="knowledge_storage_write",
-                writes_tables=["captures", "pending_questions", "theme_candidates"],
-                writes_paths=_known_paths(_knowledge_write_path("themes")),
+                writes_tables=["captures", "pending_questions"],
+                writes_paths=[],
                 toolsets=["knowledge-advanced"],
                 risk_level="high",
                 description="Theme View clustering and local Knowledge storage maintenance tool; disabled unless the theme-scan cron is enabled or invoked manually.",
@@ -5230,6 +5232,21 @@ async def _run_cancellable_ai_operation(
 @app.post("/api/knowledge/ai-operations/{operation_id}/cancel")
 async def post_knowledge_ai_operation_cancel(request: Request, operation_id: str):
     _require_token(request)
+
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.cancel_ai_operation(operation_id)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     cancel_module = _knowledge_ai_cancel_module()
     cancelled = getattr(cancel_module, "cancel_operation")(operation_id)
     normalized = _normalize_ai_operation_id(operation_id)
@@ -5297,6 +5314,20 @@ def _knowledge_graph_conn() -> sqlite3.Connection:
 @app.get("/api/knowledge/runtime-check")
 async def get_knowledge_runtime_check(request: Request):
     _require_token(request)
+    if _knowledge_transport_mode() == "http":
+        return {
+            "ok": True,
+            "mode": "http",
+            "custom_root": "",
+            "python": sys.executable,
+            "checks": [
+                {
+                    "module": "hermes-knowledge-http",
+                    "label": "Knowledge Service over HTTP",
+                    "ok": True,
+                }
+            ],
+        }
     modules = [
         ("bridge.capture_bridge", "Capture bridge"),
         ("bridge.answer_bridge", "Answer bridge"),
@@ -6755,6 +6786,10 @@ def _knowledge_selection_chat_sources(result: dict[str, Any], meta: dict[str, An
             knowledge_sources = _merge_selection_chat_source(knowledge_sources, source)
         elif _is_selection_chat_web_source(source):
             web_sources = _merge_selection_chat_source(web_sources, source)
+    if _knowledge_transport_mode() == "http":
+        # The service owns the item and source metadata; enriching here would
+        # require a local checkout and reintroduce the split we removed.
+        return {"knowledge": knowledge_sources, "web": web_sources}
     return {
         "knowledge": _enrich_knowledge_sources(knowledge_sources),
         "web": web_sources,
@@ -6859,6 +6894,25 @@ async def post_knowledge_library_item_selection_chat(
     body: _KnowledgeLibrarySelectionChatBody,
 ):
     _require_token(request)
+
+    # HTTP mode: the service owns the item + research bridge call.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            result = client.selection_chat(
+                kind, item_id, body.model_dump()
+            )
+            return _knowledge_library_selection_chat_response(result, body)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
     research_kwargs = _knowledge_library_selection_research_kwargs(kind, item_id, body)
     try:
         research_bridge = _knowledge_custom_module("bridge.research_bridge", "Research bridge")
@@ -6886,6 +6940,47 @@ async def post_knowledge_library_item_selection_chat_stream(
     body: _KnowledgeLibrarySelectionChatBody,
 ):
     _require_token(request)
+
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        async def http_event_stream():
+            yield _sse_json({"event": "start", "mode": body.mode})
+            try:
+                result = await asyncio.to_thread(
+                    client.selection_chat, kind, item_id, body.model_dump()
+                )
+                yield _sse_json(
+                    {
+                        "event": "complete",
+                        "response": _knowledge_library_selection_chat_response(
+                            result, body
+                        ),
+                    }
+                )
+            except KnowledgeUnavailable as exc:
+                yield _sse_json(
+                    {
+                        "event": "error",
+                        "message": _knowledge_client_operation_error(exc).detail,
+                    }
+                )
+            except Exception as exc:
+                yield _sse_json(
+                    {"event": "error", "message": f"Selection chat failed: {exc}"}
+                )
+            finally:
+                client.close()
+
+        return StreamingResponse(
+            http_event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     async def event_stream():
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -7269,6 +7364,20 @@ async def post_knowledge_capture_revise(
     instruction = (body.instruction or "").strip()
     if not instruction:
         raise HTTPException(status_code=400, detail="instruction cannot be empty")
+
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = get_client()
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        try:
+            return client.revise_capture_note(capture_id, instruction)
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
 
     markdown_writer = _knowledge_custom_module("agents.markdown_writer", "Markdown writer")
     repo_module = _knowledge_custom_module("db.repo", "Capture repository")

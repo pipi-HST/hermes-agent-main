@@ -397,6 +397,30 @@ class KnowledgeClient:
     def search(self, query: str, *, limit: int = 10) -> dict[str, Any]:
         return self.request("GET", "/api/knowledge/search", params={"q": query, "limit": limit})
 
+    def selection_chat(
+        self, kind: str, item_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Run one source-selection discussion through the Knowledge service."""
+        return self.request(
+            "POST",
+            f"/api/knowledge/library/items/{quote(str(kind), safe='')}/"
+            f"{quote(str(item_id), safe='')}/selection-chat",
+            json=dict(payload),
+        )
+
+    def revise_capture_note(self, capture_id: str, instruction: str) -> dict[str, Any]:
+        return self.request(
+            "POST",
+            f"/api/captures/{quote(str(capture_id), safe='')}/revise",
+            json={"instruction": instruction},
+        )
+
+    def cancel_ai_operation(self, operation_id: str) -> dict[str, Any]:
+        return self.request(
+            "POST",
+            f"/api/knowledge/ai-operations/{quote(str(operation_id), safe='')}/cancel",
+        )
+
     def update_capture(
         self,
         capture_id: str,
@@ -621,6 +645,7 @@ class KnowledgeClient:
         *,
         args: list[Any] | None = None,
         kwargs: dict[str, Any] | None = None,
+        operation_id: str = "",
     ) -> Any:
         """Invoke a whitelisted ``bridge.<module>.<function>`` on the service.
 
@@ -629,6 +654,11 @@ class KnowledgeClient:
         (including its own ``{"error": ...}`` shape — the tool layer already
         wraps results in the envelope).
         """
+        headers = (
+            {"X-Hermes-AI-Operation-Id": str(operation_id)}
+            if str(operation_id or "").strip()
+            else None
+        )
         return self.request(
             "POST",
             f"/api/tools/{quote(str(module_name), safe='')}/{quote(str(function_name), safe='')}",
@@ -636,6 +666,7 @@ class KnowledgeClient:
                 "args": list(args or []),
                 "kwargs": dict(kwargs or {}),
             },
+            headers=headers,
         )
 
 

@@ -144,6 +144,15 @@ class _FakeKnowledgeServiceClient:
         )
         return self.update_result
 
+    def selection_chat(self, kind, item_id, payload):
+        return self._respond("selection_chat", kind, item_id, payload)
+
+    def revise_capture_note(self, capture_id, instruction):
+        return self._respond("revise_capture_note", capture_id, instruction)
+
+    def cancel_ai_operation(self, operation_id):
+        return self._respond("cancel_ai_operation", operation_id)
+
     def issue_confirmation(self, resource, resource_id):
         return self._respond("issue_confirmation", resource, resource_id)
 
@@ -2610,6 +2619,83 @@ class TestWebServerEndpoints:
             },
         ]
         assert fake.closed is True
+
+    def test_selection_chat_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "selection_chat": {
+                    "status": "success",
+                    "chat_preview": "服务端回答",
+                    "warnings": [],
+                    "meta": {},
+                }
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://127.0.0.1:8123")
+
+        resp = self.client.post(
+            "/api/knowledge/library/items/capture/cap-1/selection-chat",
+            json={"question": "这是什么？", "mode": "local_web"},
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["answer"] == "服务端回答"
+        assert fake.calls[0]["method"] == "selection_chat"
+        assert fake.calls[0]["args"][:2] == ("capture", "cap-1")
+        assert fake.closed is True
+
+    def test_capture_revise_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={"revise_capture_note": {"ok": True, "capture_id": "cap-1"}}
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post(
+            "/api/knowledge/captures/cap-1/revise",
+            json={"instruction": "补回例子"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["capture_id"] == "cap-1"
+        assert fake.calls[0]["method"] == "revise_capture_note"
+        assert fake.closed is True
+
+    def test_ai_cancel_delegates_to_service(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={
+                "cancel_ai_operation": {
+                    "ok": True,
+                    "operation_id": "op-1",
+                    "status": "cancel_requested",
+                }
+            }
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+
+        resp = self.client.post("/api/knowledge/ai-operations/op-1/cancel")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "cancel_requested"
+        assert fake.calls[0]["method"] == "cancel_ai_operation"
+        assert fake.closed is True
+
+    def test_runtime_check_reports_http_without_local_imports(self, monkeypatch):
+        self._clear_knowledge_env(monkeypatch)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://127.0.0.1:8123")
+
+        import hermes_cli.web_server as web_server
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("runtime-check must not import local modules in HTTP mode")
+
+        monkeypatch.setattr(web_server, "_knowledge_custom_module", _boom)
+
+        resp = self.client.get("/api/knowledge/runtime-check")
+
+        assert resp.status_code == 200
+        assert resp.json()["mode"] == "http"
+        assert resp.json()["ok"] is True
 
     def test_reading_commit_delegates_confirmation_and_commit_to_service(
         self, monkeypatch

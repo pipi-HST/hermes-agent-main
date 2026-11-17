@@ -57,7 +57,7 @@ run `python scripts/fork_delta.py --write` after rebasing/merging.
 | `hermes_cli/gateway.py` | modified | +18 / -2 |
 | `hermes_cli/main.py` | modified | +152 / -27 |
 | `hermes_cli/profiles.py` | modified | +49 / -2 |
-| `hermes_cli/web_server.py` | modified | +4318 / -21 |
+| `hermes_cli/web_server.py` | modified | +4427 / -21 |
 | `model_tools.py` | modified | +3 / -0 |
 | `nix/web.nix` | modified | +1 / -1 |
 | `plugins/web/ddgs/provider.py` | modified | +2 / -2 |
@@ -104,7 +104,7 @@ run `python scripts/fork_delta.py --write` after rebasing/merging.
 | `tests/hermes_cli/test_gateway_service.py` | modified | +27 / -0 |
 | `tests/hermes_cli/test_opencode_go_flat_namespace.py` | modified | +23 / -3 |
 | `tests/hermes_cli/test_update_stale_dashboard.py` | modified | +25 / -0 |
-| `tests/hermes_cli/test_web_server.py` | modified | +3879 / -77 |
+| `tests/hermes_cli/test_web_server.py` | modified | +3965 / -77 |
 | `tests/plugins/test_kanban_dashboard_plugin.py` | modified | +1 / -1 |
 | `tests/plugins/web/test_web_search_provider_plugins.py` | modified | +3 / -1 |
 | `tests/run_agent/test_run_agent.py` | modified | +207 / -3 |
