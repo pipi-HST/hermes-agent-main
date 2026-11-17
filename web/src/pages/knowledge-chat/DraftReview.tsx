@@ -176,7 +176,7 @@ function DraftReviewLoaded({
                 className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-3 py-2 text-sm text-foreground transition hover:bg-primary/10"
               >
                 <Edit3 className="h-4 w-4" />
-                去知识库编辑
+                去资料库编辑
               </button>
             )}
             <button
@@ -222,7 +222,7 @@ function DraftReviewLoaded({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {isCommitted && (
           <div className="mb-3 rounded-md border border-success/25 bg-success/10 px-3 py-2 text-sm leading-6 text-success">
-            这份材料已保存。需要调整内容时，请进入知识库编辑页。
+            这份材料已保存。需要调整内容时，请进入资料库编辑页。
           </div>
         )}
         {needsFinalization && (

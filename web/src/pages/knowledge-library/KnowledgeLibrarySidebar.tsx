@@ -208,7 +208,7 @@ export function KnowledgeLibrarySidebar({
                   </div>
                 ) : (
                   <EmptyState
-                    text="当前知识库范围没有文件。"
+                    text="当前资料库范围没有文件。"
                     onCreate={createKnowledgeFile}
                     onImport={importContent}
                   />

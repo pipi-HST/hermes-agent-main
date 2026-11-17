@@ -12,6 +12,8 @@ Endpoints used (all under ``/api``, bearer auth):
 * ``PATCH /captures/{id}``
 * ``POST /capture-drafts/{id}/confirmation`` / ``/commit``
 * ``POST /reading/drafts/{id}/confirmation`` / ``/commit``
+* ``POST /garden/drafts`` / ``/preview``
+* ``POST /garden/drafts/{id}/confirmation`` / ``/commit``
 * ``POST /library/items`` / ``PATCH /library/items/{kind}/{id}`` / ``DELETE``
 * ``GET  /library/folders`` / ``POST`` / ``PATCH /library/folders/{path}``
 * ``PATCH /capture-drafts/{id}`` / ``DELETE /capture-drafts/{id}``
@@ -591,24 +593,31 @@ class KnowledgeClient:
         title: str = "",
         card_kind: str = "",
         instruction: str = "",
-        auto_commit: bool = True,
+        auto_commit: bool = False,
+        confirmation_token: str = "",
     ) -> dict[str, Any]:
         """Run garden synthesis through the service.
 
-        ``auto_commit=True`` preserves the legacy dashboard behavior.  Review
-        clients send ``False`` (or call ``preview_garden_draft``) to get a
-        draft that must be confirmed explicitly.
+        The service creates a draft unless ``auto_commit=True`` is explicitly
+        sent together with a confirmation token.  Dashboard flows create the
+        draft first, then call :meth:`issue_garden_confirmation` and
+        :meth:`commit_garden_draft`; ``auto_commit=True`` remains available for
+        callers that already hold a token.
         """
         payload = {
             "capture_ids": [str(item) for item in (capture_ids or [])],
             "title": title,
             "card_kind": card_kind,
             "instruction": instruction,
+            "auto_commit": bool(auto_commit),
         }
-        # Omit the legacy default to keep older fake clients/tests and
-        # third-party callers byte-compatible.
-        if not auto_commit:
-            payload["auto_commit"] = False
+        if auto_commit:
+            token = str(confirmation_token or "").strip()
+            if not token:
+                raise KnowledgeUnavailable(
+                    "garden auto_commit requires a confirmation token"
+                )
+            payload["confirmation_token"] = token
         return self.request("POST", "/api/garden/drafts", json=payload)
 
     def preview_garden_draft(
@@ -636,10 +645,49 @@ class KnowledgeClient:
             params["status"] = status
         return self.request("GET", "/api/garden/drafts", params=params)
 
-    def commit_garden_draft(self, draft_id: str) -> dict[str, Any]:
+    def issue_garden_confirmation(self, draft_id: str) -> dict[str, Any]:
+        """Ask the service for a garden-draft commit confirmation token.
+
+        Accepts both response spellings the service has shipped (``token`` and
+        ``confirmation_token``) and normalises the value under ``token`` so
+        callers do not depend on the wire spelling.
+        """
+        payload = self.request(
+            "POST",
+            f"/api/garden/drafts/{quote(str(draft_id), safe='')}/confirmation",
+        )
+        if not isinstance(payload, dict):
+            payload = {}
+        token = str(payload.get("token") or payload.get("confirmation_token") or "").strip()
+        if not token:
+            raise KnowledgeUnavailable(
+                "knowledge service did not return a garden confirmation token"
+            )
+        normalized = dict(payload)
+        normalized["token"] = token
+        return normalized
+
+    def commit_garden_draft(
+        self, draft_id: str, confirmation_token: str = ""
+    ) -> dict[str, Any]:
+        """Commit a garden draft with a confirmation token.
+
+        ``confirmation_token`` is optional for backward compatibility: when it
+        is omitted the client issues one first, matching the
+        :meth:`issue_garden_confirmation` + commit handshake.
+        """
+        token = str(confirmation_token or "").strip()
+        if not token:
+            issued = self.issue_garden_confirmation(draft_id)
+            token = str(issued.get("token") or "").strip()
+        if not token:
+            raise KnowledgeUnavailable(
+                "refusing to commit a garden draft without a confirmation token"
+            )
         return self.request(
             "POST",
             f"/api/garden/drafts/{quote(str(draft_id), safe='')}/commit",
+            json={"confirmation_token": token},
         )
 
     def discard_garden_draft(self, draft_id: str) -> dict[str, Any]:
