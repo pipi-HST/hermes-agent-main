@@ -789,6 +789,34 @@ def test_call_tool_returns_service_error_payload_as_is():
     }
 
 
+def test_dispatch_drops_callable_kwargs(monkeypatch):
+    import integrations.hermes_knowledge.tool_bridge as tool_bridge
+
+    calls: list[tuple] = []
+
+    class _FakeClient:
+        def call_tool(self, module_name, function_name, *, args=None, kwargs=None):
+            calls.append((module_name, function_name, args, kwargs))
+            return {"ok": True}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(tool_bridge, "get_client", lambda: _FakeClient())
+
+    result = tool_bridge.dispatch(
+        "research_bridge",
+        "async_web_assist_answer",
+        question="q",
+        event_callback=lambda event: None,
+    )
+
+    assert result == {"ok": True}
+    assert calls == [
+        ("research_bridge", "async_web_assist_answer", [], {"question": "q"})
+    ]
+
+
 def test_dispatch_uses_http_client_when_configured(monkeypatch):
     import integrations.hermes_knowledge.tool_bridge as tool_bridge
 

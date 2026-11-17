@@ -58,9 +58,14 @@ def _normalise_call(
         _normalise_value(module_name, function_name, f"positional argument {index}", value)
         for index, value in enumerate(args)
     ]
+    # Callbacks (progress, event streams) cannot cross the HTTP boundary; local
+    # mode calls them directly. Serialising one would send a function repr and
+    # the service would try to call that string. Drop them and let the service
+    # fall back to its default no-listener behaviour.
     safe_kwargs = {
         key: _normalise_value(module_name, function_name, f"argument '{key}'", value)
         for key, value in kwargs.items()
+        if not callable(value)
     }
     return safe_args, safe_kwargs
 
