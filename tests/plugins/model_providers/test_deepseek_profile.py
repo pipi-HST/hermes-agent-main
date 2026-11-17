@@ -111,6 +111,7 @@ class TestDeepSeekModelGating:
     @pytest.mark.parametrize(
         "model",
         [
+            "deepseek-flash",
             "deepseek-v4-pro",
             "deepseek-v4-flash",
             "deepseek-v4-future-variant",
@@ -195,12 +196,16 @@ class TestDeepSeekAuxModel:
     system.
     """
 
-    def test_profile_advertises_deepseek_chat(self, deepseek_profile):
-        assert deepseek_profile.default_aux_model == "deepseek-chat"
+    def test_profile_advertises_deepseek_flash(self, deepseek_profile):
+        assert deepseek_profile.default_aux_model == "deepseek-flash"
 
-    def test_consumer_api_returns_deepseek_chat(self):
+    def test_profile_falls_back_to_current_model_names(self, deepseek_profile):
+        assert deepseek_profile.fallback_models[0] == "deepseek-flash"
+        assert "deepseek-chat" not in deepseek_profile.fallback_models
+
+    def test_consumer_api_returns_deepseek_flash(self):
         from agent.auxiliary_client import _get_aux_model_for_provider
-        assert _get_aux_model_for_provider("deepseek") == "deepseek-chat"
+        assert _get_aux_model_for_provider("deepseek") == "deepseek-flash"
 
     def test_consumer_api_returns_non_empty(self):
         from agent.auxiliary_client import _get_aux_model_for_provider

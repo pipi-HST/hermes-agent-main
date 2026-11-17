@@ -28,13 +28,15 @@ from providers.base import ProviderProfile
 def _model_supports_thinking(model: str | None) -> bool:
     """DeepSeek thinking-capable model families.
 
-    Currently covers the V4 family (``deepseek-v4-pro``, ``deepseek-v4-flash``,
-    and any future ``deepseek-v4-*`` variants) and the legacy
-    ``deepseek-reasoner`` (R1).  ``deepseek-chat`` is V3 with no thinking mode.
+    Covers ``deepseek-flash`` (V4.1 Flash, thinking on by default), the V4
+    family (``deepseek-v4-pro``, ``deepseek-v4-flash``) and the legacy
+    ``deepseek-reasoner`` (R1).  ``deepseek-chat`` is the non-thinking alias.
     """
     m = (model or "").strip().lower()
     if not m:
         return False
+    if m == "deepseek-flash":
+        return True
     if m.startswith("deepseek-v") and not m.startswith("deepseek-v3"):
         # deepseek-v4-*, deepseek-v5-*, etc. — every V4+ generation has
         # thinking. v3 explicitly excluded.
@@ -90,11 +92,11 @@ deepseek = DeepSeekProfile(
     description="DeepSeek — native DeepSeek API",
     signup_url="https://platform.deepseek.com/",
     fallback_models=(
-        "deepseek-chat",
-        "deepseek-reasoner",
+        "deepseek-flash",
+        "deepseek-v4-pro",
     ),
     base_url="https://api.deepseek.com/v1",
-    default_aux_model="deepseek-chat",
+    default_aux_model="deepseek-flash",
 )
 
 register_provider(deepseek)
