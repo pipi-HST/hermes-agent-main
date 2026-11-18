@@ -33,7 +33,7 @@ for (const [label, source] of [
 ]) {
   assert(source.includes("createAiOperationId"), `${label} should create AI operation ids`);
   assert(source.includes("AbortController"), `${label} should create AbortController for AI operations`);
-  assert(source.includes("controller.abort()"), `${label} stop should abort the local fetch immediately`);
+  assert(source.includes("已请求停止，等待服务确认"), `${label} should distinguish requesting cancellation from confirmed cancellation`);
   assert(source.includes("isCancelled"), `${label} should expose a stale-result guard for cancelled operations`);
   assert(source.includes("cancelKnowledgeAiOperation"), `${label} should call operation cancel`);
   assert(source.includes("isAiCancelledResult"), `${label} should handle cancelled backend responses`);

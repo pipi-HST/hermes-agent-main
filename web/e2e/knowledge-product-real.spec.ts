@@ -53,7 +53,13 @@ test("真实浏览器提交的文章可展示目录并被纯知识库 RAG 引用
     has: page.getByRole("heading", { name: title, exact: true }),
   }).first();
   await expect(libraryItem).toBeVisible();
-  await libraryItem.click();
+  // "保存完成" is shown just before the page clears its AI activity lock.
+  // A sidebar click during that window is ignored, so retry until the
+  // editable workbench has closed and the reading view is active.
+  await expect(async () => {
+    await libraryItem.click({ timeout: 5_000 });
+    await expect(editor).toHaveCount(0, { timeout: 1_000 });
+  }).toPass({ timeout: 30_000 });
 
   const article = page.locator("[data-markdown-root]").filter({ hasText: signal }).first();
   await expect(article).toBeVisible({ timeout: 30_000 });
@@ -76,10 +82,10 @@ test("真实浏览器提交的文章可展示目录并被纯知识库 RAG 引用
   await expect(webToggle).toHaveAttribute("aria-pressed", "true");
   await webToggle.click();
   await expect(webToggle).toHaveAttribute("aria-pressed", "false");
-  await expect(page.getByText("📚 默认检索个人知识库（卡片 + 资料）")).toBeVisible();
+  await expect(page.getByText("📚 默认检索个人资料库（卡片 + 资料）")).toBeVisible();
   await expect(page.getByText(/gateway not connected/)).toHaveCount(0);
 
-  const composer = page.getByRole("textbox", { name: /直接问知识库/ });
+  const composer = page.getByRole("textbox", { name: /直接问资料库/ });
   await composer.fill(`只使用知识库回答：${signal} 这篇文章强调了什么？请引用《${title}》。`);
   await page.getByRole("button", { name: "发送" }).click();
 
@@ -87,7 +93,7 @@ test("真实浏览器提交的文章可展示目录并被纯知识库 RAG 引用
   await expect(sourceSummary).toBeVisible({ timeout: 120_000 });
   await sourceSummary.click();
   const sourceDetails = sourceSummary.locator("xpath=..");
-  await expect(sourceDetails.getByText("📚 个人知识库（卡片与资料）", { exact: true })).toBeVisible();
+  await expect(sourceDetails.getByText("📚 个人资料库（卡片与资料）", { exact: true })).toBeVisible();
   await expect(sourceDetails.getByText("🌐 DeepSeek 联网来源", { exact: true })).toHaveCount(0);
   const knowledgeSource = sourceDetails.getByRole("button", {
     name: new RegExp(title),

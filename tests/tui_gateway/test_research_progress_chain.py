@@ -41,6 +41,8 @@ def test_research_tool_progress_reaches_tui_gateway(monkeypatch):
             "warnings": [],
             "errors": [],
             "meta": {
+                "answer": "OpenAI 是一家 AI 研究与产品公司 [W1]",
+                "source_run_id": "web-run-1",
                 "web_sources": [{"ref": "W1", "title": "OpenAI", "url": "https://openai.com"}],
                 "research_trace": {"web_search_attempted": True},
             },
@@ -79,6 +81,7 @@ def test_research_tool_progress_reaches_tui_gateway(monkeypatch):
     assert progress_payloads[1]["stage"] == "web_query_start"
     assert progress_payloads[2]["status"] == "completed"
     complete_payload = [payload for event, _sid, payload in emitted if event == "tool.complete"][0]
+    assert complete_payload["source_run_id"] == "web-run-1"
     assert complete_payload["source_map"][0]["ref"] == "W1"
     assert complete_payload["web_sources"][0]["url"] == "https://openai.com"
     assert complete_payload["research_trace"]["web_search_attempted"] is True

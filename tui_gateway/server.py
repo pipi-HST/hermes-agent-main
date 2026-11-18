@@ -1026,11 +1026,13 @@ def _load_enabled_toolsets() -> list[str] | None:
         )
         if fallback_notice is not None:
             print(fallback_notice, file=sys.stderr, flush=True)
-        return enabled or None
+        # [] is an explicit empty selection; None enables all toolsets.
+        return enabled
     except Exception:
         if fallback_notice is not None:
             print(
-                "[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets",
+                "[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; "
+                "falling back to the platform default (disabled toolsets still apply)",
                 file=sys.stderr,
                 flush=True,
             )
@@ -1045,7 +1047,7 @@ def _normalize_session_toolsets(value: Any) -> list[str] | None:
 
     names = [str(item).strip() for item in value if str(item).strip()]
     if not names:
-        return None
+        return []
 
     try:
         from toolsets import validate_toolset
@@ -1608,6 +1610,9 @@ def _tool_source_payload(name: str, result: str) -> dict[str, object]:
         payload["provider_status"] = provider_status
     if answer_text:
         payload["answer_text"] = answer_text
+        run_id = meta.get("source_run_id")
+        if data.get("status") == "success" and isinstance(run_id, str) and run_id.strip():
+            payload["source_run_id"] = run_id.strip()
     return payload
 
 
@@ -2406,6 +2411,9 @@ def _make_agent(
             if enabled_toolsets is not None
             else _load_enabled_toolsets()
         ),
+        # Subtract the disabled tool names from the final resolution even
+        # for environment/session overrides, all, and composite toolsets.
+        disabled_toolsets=agent_cfg.get("disabled_toolsets") or None,
         platform="tui",
         session_id=session_id or key,
         session_db=_get_db(),
@@ -6931,7 +6939,10 @@ def _(rid, params: dict) -> dict:
             if session
             else _load_enabled_toolsets()
         )
-        tools = get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)
+        disabled = ((_load_cfg().get("agent") or {}).get("disabled_toolsets") or None)
+        tools = get_tool_definitions(
+            enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True
+        )
         sections = {}
 
         for tool in sorted(tools, key=lambda t: t["function"]["name"]):

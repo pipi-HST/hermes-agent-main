@@ -31,6 +31,8 @@ HTTP 模式下大多数 Knowledge 读写已经委托给 service，但仍有少�
 
 `POST /api/garden/drafts` 只生成卡片草稿，不会保存卡片，也不提供 `auto_commit` 一次落卡的语义。用户在 Dashboard 确认后，Runtime 才为该 draft 申请一次性的 confirmation token，再调用 commit；合成和保存始终是两个步骤。
 
+Runtime 使用 `/api/garden/drafts/preview`，因为旧服务的非预览接口会自动保存。通过 Dashboard 保存要求 Service 契约 v2 或以上。HTTP 的「停止」是协作式取消；界面等待服务结果，不会把取消请求的回执当成写入已经停止。
+
 ## 规则
 
 不要把 Life 实现重新塞回 `hermes-custom`。

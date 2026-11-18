@@ -28,6 +28,7 @@ import {
 } from "@/lib/gatewayClient";
 import {
   extractFullAnswerText,
+  buildAnswerSourceHints,
   extractSourceHints,
   initialKnowledgeChatState,
   knowledgeChatReducer,
@@ -116,6 +117,7 @@ interface ToolCompletePayload {
   error?: string;
   inline_diff?: string;
   answer_text?: string;
+  source_run_id?: string;
   knowledge_sources?: Array<Record<string, unknown>>;
   source_map?: Array<Record<string, unknown>>;
   web_sources?: Array<Record<string, unknown>>;
@@ -140,6 +142,7 @@ interface GatewayResumeMessage {
   retrieved_web_sources?: Array<Record<string, unknown>>;
   research_trace?: Record<string, unknown>;
   answer_text?: string;
+  source_run_id?: string;
 }
 
 interface GatewayResumeResponse {
@@ -225,11 +228,16 @@ export default function KnowledgeChatPage() {
   const hydratedPromptRef = useRef(false);
   const initialResumeTargetRef = useRef(searchParams.get("session"));
   const openedDraftReferencesRef = useRef(new Set<string>());
-  const [mode, setMode] = useState<WorkbenchMode>(isCaptureReviewRoute ? "draft_review" : "chat");
+  const [mode, setWorkbenchMode] = useState<WorkbenchMode>(isCaptureReviewRoute ? "draft_review" : "chat");
+  const modeRef = useRef(mode);
+  const setMode = useCallback((next: WorkbenchMode) => {
+    modeRef.current = next;
+    setWorkbenchMode(next);
+  }, []);
   const [selection, setSelection] = useState<WorkbenchSelection | null>(null);
   const [drafts, setDrafts] = useState<KnowledgeCaptureDraft[]>([]);
-  const [selectedDraftId, setSelectedDraftId] = useState("");
-  const [draftDetail, setDraftDetail] = useState<KnowledgeCaptureDraft | null>(null);
+  const [selectedDraftId, setCaptureSelection] = useState("");
+  const [loadedDraftDetail, setDraftDetail] = useState<KnowledgeCaptureDraft | null>(null);
   const [draftFilter, setDraftFilter] = useState<DraftFilterKey>("open");
   const [draftQuery, setDraftQuery] = useState("");
   const [draftView, setDraftView] = useState<DraftView>("draft");
@@ -237,17 +245,43 @@ export default function KnowledgeChatPage() {
   const [draftsLoading, setDraftsLoading] = useState(true);
   const [draftDetailLoading, setDraftDetailLoading] = useState(false);
   const [draftActionLoading, setDraftActionLoading] = useState<DraftActionLoading>(null);
+  const reviewWriteInFlight = useRef(false);
   const [draftError, setDraftError] = useState("");
   const [draftNotice, setDraftNotice] = useState("");
   const [aiOperation, setAiOperation] = useState<AiOperationState>(null);
   const cancelledAiOperationsRef = useRef<Set<string>>(new Set());
   const [answerDrafts, setAnswerDrafts] = useState<KnowledgeReadingDraft[]>([]);
   const [answerDraftsLoading, setAnswerDraftsLoading] = useState(true);
-  const [selectedAnswerDraftId, setSelectedAnswerDraftId] = useState("");
-  const [answerDraftDetail, setAnswerDraftDetail] = useState<KnowledgeReadingDraft | null>(null);
+  const [selectedAnswerDraftId, setReadingSelection] = useState("");
+  const [loadedAnswerDraftDetail, setAnswerDraftDetail] = useState<KnowledgeReadingDraft | null>(null);
   const [answerDraftLoading, setAnswerDraftLoading] = useState(false);
   const [answerDraftActionLoading, setAnswerDraftActionLoading] = useState<AnswerDraftActionLoading>(null);
   const [answerRevision, setAnswerRevision] = useState("");
+  const selectedDraftIdsRef = useRef({ capture: "", reading: "" });
+  const detailRequestsRef = useRef({ capture: 0, reading: 0 });
+  const listRequestsRef = useRef({ capture: 0, reading: 0 });
+  const draftDetail = loadedDraftDetail?.id === selectedDraftId ? loadedDraftDetail : null;
+  const answerDraftDetail = loadedAnswerDraftDetail?.id === selectedAnswerDraftId ? loadedAnswerDraftDetail : null;
+  const setSelectedDraftId = useCallback((draftId: string) => {
+    if (selectedDraftIdsRef.current.capture === draftId) return;
+    selectedDraftIdsRef.current.capture = draftId;
+    detailRequestsRef.current.capture += 1;
+    setDraftDetail(null);
+    setRevision("");
+    setDraftView("draft");
+    setCaptureSelection(draftId);
+  }, []);
+  const setSelectedAnswerDraftId = useCallback((draftId: string) => {
+    if (selectedDraftIdsRef.current.reading === draftId) return;
+    selectedDraftIdsRef.current.reading = draftId;
+    detailRequestsRef.current.reading += 1;
+    setAnswerRevision("");
+    setReadingSelection(draftId);
+  }, []);
+  const isReviewing = useCallback((kind: "capture" | "reading", draftId: string) => (
+    selectedDraftIdsRef.current[kind] === draftId
+    && modeRef.current === (kind === "capture" ? "draft_review" : "answer_draft_review")
+  ), []);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("sources");
   const [objectEvents, setObjectEvents] = useState<KnowledgeObjectEvent[]>([]);
   const [objectEventsLoading, setObjectEventsLoading] = useState(false);
@@ -323,40 +357,35 @@ export default function KnowledgeChatPage() {
 
   const stopAiOperation = useCallback(() => {
     if (!aiOperation || aiOperation.stopping) return;
-    cancelledAiOperationsRef.current.add(aiOperation.id);
-    aiOperation.controller.abort();
-    setAiOperation(null);
-    setDraftNotice("已请求停止。你可以继续编辑或重试。");
-    setEditableProgressMessage("已请求停止，可继续编辑或重试");
-    setEditableStatus((current) => (
-      current === "organizing" ? "editing" : current === "committing" ? "ready_to_commit" : current
-    ));
+    setAiOperation({ ...aiOperation, stopping: true });
+    setDraftNotice("已请求停止，等待服务确认。");
     void api.cancelKnowledgeAiOperation(aiOperation.id).catch((error) => {
       setDraftError(error instanceof Error ? error.message : String(error));
     });
   }, [aiOperation]);
 
-  const loadDrafts = useCallback(async (options?: { selectLatestOpen?: boolean }) => {
+  const loadDrafts = useCallback(async () => {
+    const request = ++listRequestsRef.current.capture;
     setDraftsLoading(true);
-    setDraftError("");
     try {
       const payload = await api.getKnowledgeCaptureDrafts(100);
+      if (request !== listRequestsRef.current.capture) return;
       const visibleDrafts = payload.drafts.filter((draft) => !HIDDEN_DRAFT_STATUSES.has(draft.status));
       setDrafts(visibleDrafts);
-      setSelectedDraftId((current) => {
-        if (!options?.selectLatestOpen && current && visibleDrafts.some((draft) => draft.id === current)) {
-          return current;
-        }
-        return visibleDrafts.find((draft) => OPEN_STATUSES.has(draft.status))?.id
+      if (!selectedDraftIdsRef.current.capture) {
+        setSelectedDraftId(visibleDrafts.find((draft) => OPEN_STATUSES.has(draft.status))?.id
           ?? visibleDrafts[0]?.id
-          ?? "";
-      });
+          ?? "");
+      }
+      return visibleDrafts;
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message : String(error));
+      if (request === listRequestsRef.current.capture) {
+        setDraftError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setDraftsLoading(false);
+      if (request === listRequestsRef.current.capture) setDraftsLoading(false);
     }
-  }, []);
+  }, [setSelectedDraftId]);
 
   const loadLibraryFolders = useCallback(async () => {
     try {
@@ -383,64 +412,84 @@ export default function KnowledgeChatPage() {
   }, []);
 
   const loadDraftDetail = useCallback(async (draftId: string) => {
+    if (draftId !== selectedDraftIdsRef.current.capture) return;
+    const request = ++detailRequestsRef.current.capture;
+    const isCurrent = () => request === detailRequestsRef.current.capture;
     if (!draftId) {
-      setDraftDetail(null);
+      setDraftDetailLoading(false);
       return;
     }
     setDraftDetailLoading(true);
-    setDraftError("");
     try {
       const payload = await api.getKnowledgeCaptureDraft(draftId);
+      if (!isCurrent() || payload.draft.id !== draftId) return;
       setDraftDetail(payload.draft);
-      setRevision("");
-      setDraftView(payload.draft.draft_text ? "draft" : "raw");
+      setDraftView((current) => current === "draft" && !payload.draft.draft_text ? "raw" : current);
+      return true;
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message : String(error));
+      if (isCurrent() && isReviewing("capture", draftId)) {
+        setDraftError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setDraftDetailLoading(false);
+      if (isCurrent()) setDraftDetailLoading(false);
     }
-  }, []);
+  }, [isReviewing]);
 
   const selectDraft = useCallback((draftId: string) => {
+    setDraftError("");
+    const alreadySelected = selectedDraftIdsRef.current.capture === draftId;
     setSelectedDraftId(draftId);
     setSelection({ type: "draft", draftId });
     setMode("draft_review");
-  }, []);
+    if (alreadySelected) void loadDraftDetail(draftId);
+  }, [loadDraftDetail, setMode, setSelectedDraftId]);
+
+  const loadAnswerDraftDetail = useCallback(async (draftId: string) => {
+    if (draftId !== selectedDraftIdsRef.current.reading) return;
+    const request = ++detailRequestsRef.current.reading;
+    const isCurrent = () => request === detailRequestsRef.current.reading;
+    if (!draftId) {
+      setAnswerDraftLoading(false);
+      return;
+    }
+    setAnswerDraftLoading(true);
+    try {
+      const payload = await api.getKnowledgeReadingDraft(draftId);
+      if (!isCurrent() || payload.draft.id !== draftId) return;
+      setAnswerDraftDetail(payload.draft);
+      return true;
+    } catch (error) {
+      if (isCurrent() && isReviewing("reading", draftId)) {
+        setDraftError(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (isCurrent()) setAnswerDraftLoading(false);
+    }
+  }, [isReviewing]);
 
   const openAnswerDraft = useCallback(async (draftId: string) => {
     if (!draftId) return;
-    setSelectedAnswerDraftId(draftId);
-    setAnswerDraftLoading(true);
     setDraftError("");
-    try {
-      const payload = await api.getKnowledgeReadingDraft(draftId);
-      setAnswerDraftDetail(payload.draft);
-      setAnswerRevision("");
-      setSelection({ type: "draft", draftId });
-      setMode("answer_draft_review");
-    } catch (error) {
-      setDraftError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setAnswerDraftLoading(false);
-    }
-  }, []);
+    setSelectedAnswerDraftId(draftId);
+    setSelection({ type: "draft", draftId });
+    setMode("answer_draft_review");
+    await loadAnswerDraftDetail(draftId);
+  }, [loadAnswerDraftDetail, setMode, setSelectedAnswerDraftId]);
 
   const loadAnswerDrafts = useCallback(async () => {
+    const request = ++listRequestsRef.current.reading;
     setAnswerDraftsLoading(true);
-    setDraftError("");
     try {
       const payload = await api.getKnowledgeReadingDrafts(100);
+      if (request !== listRequestsRef.current.reading) return;
       setAnswerDrafts(payload.drafts);
-      setSelectedAnswerDraftId((current) => {
-        if (current && payload.drafts.some((draft) => draft.id === current)) return current;
-        return payload.drafts.find((draft) => draft.status === "open")?.id
-          ?? payload.drafts[0]?.id
-          ?? "";
-      });
+      return payload.drafts;
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message : String(error));
+      if (request === listRequestsRef.current.reading) {
+        setDraftError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setAnswerDraftsLoading(false);
+      if (request === listRequestsRef.current.reading) setAnswerDraftsLoading(false);
     }
   }, []);
 
@@ -460,7 +509,6 @@ export default function KnowledgeChatPage() {
         type: "hydrate_messages",
         messages: hydrated.messages,
         tools: hydrated.tools,
-        toolSummaries: hydrated.toolSummaries,
       });
       return true;
     } catch {
@@ -508,11 +556,11 @@ export default function KnowledgeChatPage() {
     } catch {
       window.localStorage.removeItem(WORKBENCH_CACHE_KEY);
     }
-  }, [isCaptureReviewRoute]);
+  }, [isCaptureReviewRoute, setMode, setSelectedDraftId]);
 
   useEffect(() => {
     if (isCaptureReviewRoute) setMode("draft_review");
-  }, [isCaptureReviewRoute]);
+  }, [isCaptureReviewRoute, setMode]);
 
   useEffect(() => {
     const messages = state.messages.slice(-80);
@@ -607,7 +655,7 @@ export default function KnowledgeChatPage() {
         createdAt: Date.now(),
         warning: ev.payload?.warning,
       });
-      void loadDrafts({ selectLatestOpen: true });
+      void loadDrafts();
       void loadAnswerDrafts();
       void loadSessions();
       scheduleHistoryReconcile("message-complete", 250);
@@ -648,6 +696,7 @@ export default function KnowledgeChatPage() {
         error: ev.payload?.error,
         inlineDiff: ev.payload?.inline_diff,
         answerText: ev.payload?.answer_text,
+        sourceRunId: ev.payload?.source_run_id,
         knowledgeSources: ev.payload?.knowledge_sources,
         sourceMap: ev.payload?.source_map,
         webSources: ev.payload?.web_sources,
@@ -708,7 +757,6 @@ export default function KnowledgeChatPage() {
             type: "hydrate_messages",
             messages: hydrated.messages,
             tools: hydrated.tools,
-            toolSummaries: hydrated.toolSummaries,
           });
         }
       })
@@ -783,52 +831,62 @@ export default function KnowledgeChatPage() {
     !uploading &&
     (input.trim().length > 0 || attachments.length > 0);
 
+  const startReviewWrite = useCallback((kind: "capture" | "reading", draftId: string) => {
+    if (reviewWriteInFlight.current || aiOperation) return false;
+    reviewWriteInFlight.current = true;
+    if (selectedDraftIdsRef.current[kind] === draftId) {
+      detailRequestsRef.current[kind] += 1;
+      if (kind === "capture") setDraftDetailLoading(false);
+      else setAnswerDraftLoading(false);
+    }
+    return true;
+  }, [aiOperation]);
+
   const commitDraftById = useCallback(async (draftId: string, title?: string): Promise<boolean> => {
-    if (!draftId) return false;
+    if (!draftId || !startReviewWrite("capture", draftId)) return false;
     const operation = beginAiOperation("capture-commit");
     setDraftActionLoading("commit");
     setDraftError("");
     setDraftNotice("");
     try {
       const result = await api.commitKnowledgeCaptureDraft(draftId, { operationId: operation.operationId });
-      if (isAiCancelledResult(result)) {
+      if (operation.isCancelled() || isAiCancelledResult(result)) {
         setDraftNotice("已停止。草稿仍保留，可继续修改或重试保存。");
         return false;
       }
       setDraftNotice(title ? `已保存到资料库：《${title}》。` : "已保存到资料库，草稿状态已刷新。");
       await loadDrafts();
-      await loadDraftDetail(draftId);
+      if (isReviewing("capture", draftId)) await loadDraftDetail(draftId);
       return true;
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : String(error));
       return false;
     } finally {
+      reviewWriteInFlight.current = false;
       setDraftActionLoading(null);
       operation.finish();
     }
-  }, [beginAiOperation, loadDraftDetail, loadDrafts]);
+  }, [beginAiOperation, isReviewing, loadDraftDetail, loadDrafts, startReviewWrite]);
 
   const deleteDraftById = useCallback(async (draftId: string, title?: string): Promise<boolean> => {
-    if (!draftId) return false;
+    if (!isReviewing("capture", draftId) || !startReviewWrite("capture", draftId)) return false;
     setDraftActionLoading("delete");
     setDraftError("");
     setDraftNotice("");
     try {
       await api.deleteKnowledgeCaptureDraft(draftId);
       setDraftNotice(title ? `已删除草稿：《${title}》。` : "已删除草稿。");
-      const payload = await api.getKnowledgeCaptureDrafts(100);
-      const visibleDrafts = payload.drafts.filter((draft) => !HIDDEN_DRAFT_STATUSES.has(draft.status));
-      setDrafts(visibleDrafts);
-      const nextDraftId = visibleDrafts.find(
+      setDrafts((current) => current.filter((draft) => draft.id !== draftId));
+      const visibleDrafts = await loadDrafts();
+      if (selectedDraftIdsRef.current.capture !== draftId) return true;
+      const nextDraftId = visibleDrafts?.find(
         (draft) => draft.id !== draftId && OPEN_STATUSES.has(draft.status),
       )?.id ?? "";
-      setDraftDetail(null);
-      setRevision("");
+      const wasReviewing = isReviewing("capture", draftId);
       setSelectedDraftId(nextDraftId);
+      if (!wasReviewing) return true;
       if (nextDraftId) {
         setSelection({ type: "draft", draftId: nextDraftId });
-        setMode("draft_review");
-        await loadDraftDetail(nextDraftId);
       } else {
         setSelection(null);
         setMode("chat");
@@ -838,9 +896,10 @@ export default function KnowledgeChatPage() {
       setDraftError(error instanceof Error ? error.message : String(error));
       return false;
     } finally {
+      reviewWriteInFlight.current = false;
       setDraftActionLoading(null);
     }
-  }, [loadDraftDetail]);
+  }, [isReviewing, loadDrafts, setMode, setSelectedDraftId, startReviewWrite]);
 
   const createAnswerDraft = useCallback(async (
     message: KnowledgeMessage,
@@ -848,6 +907,7 @@ export default function KnowledgeChatPage() {
   ) => {
     if (!state.sessionId || message.role !== "assistant" || !message.text.trim()) return;
     const messageIndex = state.messages.findIndex((item) => item.id === message.id);
+    if (messageIndex < 0) return;
     const previousUser = [...state.messages.slice(0, messageIndex)]
       .reverse()
       .find((item) => item.role === "user");
@@ -871,6 +931,7 @@ export default function KnowledgeChatPage() {
           id: source.sourceId || source.id,
           title: source.label,
           label: source.ref || source.label,
+          ref: source.ref,
           url: source.url,
           excerpt: source.excerpt,
           file_path: source.filePath,
@@ -880,7 +941,8 @@ export default function KnowledgeChatPage() {
           open_url: source.openUrl,
           path: source.path || source.filePath,
         })),
-        answer_source: sourceHints.length ? "latest_rag_full_answer" : "provided",
+        answer_source: message.sourceRunId ? "auto" : "provided",
+        source_run_id: message.sourceRunId,
       }, { operationId: operation.operationId });
       if (isAiCancelledResult(result)) {
         setDraftNotice("已停止。回答沉淀草稿未生成。");
@@ -906,35 +968,36 @@ export default function KnowledgeChatPage() {
       setAnswerDraftLoading(false);
       operation.finish();
     }
-  }, [beginAiOperation, loadAnswerDrafts, state.messages, state.sessionId]);
+  }, [beginAiOperation, loadAnswerDrafts, setMode, setSelectedAnswerDraftId, state.messages, state.sessionId]);
 
   const commitAnswerDraft = useCallback(async () => {
-    if (!answerDraftDetail) return;
+    if (!answerDraftDetail || !isReviewing("reading", answerDraftDetail.id)
+      || !startReviewWrite("reading", answerDraftDetail.id)) return;
     const operation = beginAiOperation("reading-commit");
     setAnswerDraftActionLoading("commit");
     setDraftError("");
     setDraftNotice("");
     try {
       const result = await api.commitKnowledgeReadingDraft(answerDraftDetail.id, { operationId: operation.operationId });
-      if (isAiCancelledResult(result)) {
+      if (operation.isCancelled() || isAiCancelledResult(result)) {
         setDraftNotice("已停止。草稿仍保留，可继续修改或重试保存。");
         return;
       }
       setDraftNotice(`已保存：《${answerDraftDetail.title || "回答沉淀草稿"}》。`);
-      const payload = await api.getKnowledgeReadingDraft(answerDraftDetail.id);
-      setAnswerDraftDetail(payload.draft);
-      await loadAnswerDrafts();
-      await loadDrafts();
+      if (isReviewing("reading", answerDraftDetail.id)) await loadAnswerDraftDetail(answerDraftDetail.id);
+      await Promise.all([loadAnswerDrafts(), loadDrafts()]);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : String(error));
     } finally {
+      reviewWriteInFlight.current = false;
       setAnswerDraftActionLoading(null);
       operation.finish();
     }
-  }, [answerDraftDetail, beginAiOperation, loadAnswerDrafts, loadDrafts]);
+  }, [answerDraftDetail, beginAiOperation, isReviewing, loadAnswerDraftDetail, loadAnswerDrafts, loadDrafts, startReviewWrite]);
 
   const reviseAnswerDraft = useCallback(async () => {
-    if (!answerDraftDetail || !answerRevision.trim()) return;
+    if (!answerDraftDetail || !answerRevision.trim() || !isReviewing("reading", answerDraftDetail.id)
+      || !startReviewWrite("reading", answerDraftDetail.id)) return;
     const operation = beginAiOperation("reading-revise");
     setAnswerDraftActionLoading("revise");
     setDraftError("");
@@ -945,30 +1008,33 @@ export default function KnowledgeChatPage() {
         answerRevision.trim(),
         { operationId: operation.operationId },
       );
-      if (isAiCancelledResult(result)) {
+      if (operation.isCancelled() || isAiCancelledResult(result)) {
         setDraftNotice("已停止。草稿内容未被覆盖。");
         return;
       }
       setDraftNotice("已修改文稿草稿，正在刷新。");
-      const payload = await api.getKnowledgeReadingDraft(answerDraftDetail.id);
-      setAnswerDraftDetail(payload.draft);
-      setAnswerRevision("");
+      if (isReviewing("reading", answerDraftDetail.id)) {
+        const loaded = await loadAnswerDraftDetail(answerDraftDetail.id);
+        if (loaded && isReviewing("reading", answerDraftDetail.id)) setAnswerRevision("");
+      }
       await loadAnswerDrafts();
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : String(error));
     } finally {
+      reviewWriteInFlight.current = false;
       setAnswerDraftActionLoading(null);
       operation.finish();
     }
-  }, [answerDraftDetail, answerRevision, beginAiOperation, loadAnswerDrafts]);
+  }, [answerDraftDetail, answerRevision, beginAiOperation, isReviewing, loadAnswerDraftDetail, loadAnswerDrafts, startReviewWrite]);
 
   const convertAnswerDraftToCard = useCallback(async () => {
-    if (!answerDraftDetail) return;
+    if (!answerDraftDetail || !isReviewing("reading", answerDraftDetail.id)) return;
     const captureId = readingDraftCaptureId(answerDraftDetail);
     if (answerDraftDetail.output_type !== "local_learning_note" || answerDraftDetail.status !== "committed" || !captureId) {
       setDraftError("只有已保存的资料笔记可以转换成知识卡片。");
       return;
     }
+    if (!startReviewWrite("reading", answerDraftDetail.id)) return;
     const operation = beginAiOperation("reading-card");
     setAnswerDraftActionLoading("card");
     setDraftError("");
@@ -978,7 +1044,7 @@ export default function KnowledgeChatPage() {
         { capture_ids: [captureId] },
         { operationId: operation.operationId },
       );
-      if (isAiCancelledResult(result)) {
+      if (operation.isCancelled() || isAiCancelledResult(result)) {
         setDraftNotice("已停止。知识卡片未生成。");
         return;
       }
@@ -990,30 +1056,34 @@ export default function KnowledgeChatPage() {
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : String(error));
     } finally {
+      reviewWriteInFlight.current = false;
       setAnswerDraftActionLoading(null);
       operation.finish();
     }
-  }, [answerDraftDetail, beginAiOperation]);
+  }, [answerDraftDetail, beginAiOperation, isReviewing, startReviewWrite]);
 
   const deleteAnswerDraftById = useCallback(async (draftId: string, title?: string): Promise<boolean> => {
-    if (!draftId) return false;
+    if (!isReviewing("reading", draftId) || !startReviewWrite("reading", draftId)) return false;
     setAnswerDraftActionLoading("delete");
     setDraftError("");
     setDraftNotice("");
     try {
       await api.deleteKnowledgeReadingDraft(draftId);
       setDraftNotice(title ? `已删除草稿：《${title}》。` : "已删除草稿。");
-      const payload = await api.getKnowledgeReadingDrafts(100);
-      setAnswerDrafts(payload.drafts);
-      const nextDraftId = payload.drafts.find(
+      setAnswerDrafts((current) => current.filter((draft) => draft.id !== draftId));
+      const visibleDrafts = await loadAnswerDrafts();
+      if (selectedDraftIdsRef.current.reading !== draftId) return true;
+      const nextDraftId = visibleDrafts?.find(
         (draft) => draft.id !== draftId && draft.status === "open",
       )?.id ?? "";
-      setAnswerDraftDetail(null);
-      setAnswerRevision("");
-      setSelectedAnswerDraftId(nextDraftId);
+      if (!isReviewing("reading", draftId)) {
+        setSelectedAnswerDraftId("");
+        return true;
+      }
       if (nextDraftId) {
         await openAnswerDraft(nextDraftId);
       } else {
+        setSelectedAnswerDraftId("");
         setSelection(null);
         setMode("chat");
       }
@@ -1022,9 +1092,10 @@ export default function KnowledgeChatPage() {
       setDraftError(error instanceof Error ? error.message : String(error));
       return false;
     } finally {
+      reviewWriteInFlight.current = false;
       setAnswerDraftActionLoading(null);
     }
-  }, [openAnswerDraft]);
+  }, [isReviewing, loadAnswerDrafts, openAnswerDraft, setMode, setSelectedAnswerDraftId, startReviewWrite]);
 
   const uploadFiles = useCallback(async (files: FileList | File[]) => {
     const list = Array.from(files);
@@ -1063,6 +1134,10 @@ export default function KnowledgeChatPage() {
 
   const handleDraftCommand = useCallback(async (text: string): Promise<boolean> => {
     if (!isCommitDraftCommand(text)) return false;
+    if (reviewWriteInFlight.current || aiOperation) {
+      setDraftError("请等待当前草稿操作结束后再保存。");
+      return true;
+    }
 
     const openDrafts = drafts.filter((draft) => OPEN_STATUSES.has(draft.status) && !isCommittedCaptureDraft(draft));
     const selectedOpenDraft = openDrafts.find((draft) => draft.id === selectedDraftId);
@@ -1093,7 +1168,6 @@ export default function KnowledgeChatPage() {
       text: assistantText,
       createdAt: Date.now(),
     });
-    setSelectedDraftId(target.id);
     if (state.sessionId) {
       try {
         await gw.request<GatewayAppendLocalMessagesResponse>("session.append_local_messages", {
@@ -1109,7 +1183,7 @@ export default function KnowledgeChatPage() {
       }
     }
     return true;
-  }, [commitDraftById, drafts, gw, loadSessions, nextId, selectedDraftId, state.sessionId]);
+  }, [aiOperation, commitDraftById, drafts, gw, loadSessions, nextId, selectedDraftId, state.sessionId]);
 
   const submit = useCallback(async () => {
     const text = input.trim();
@@ -1178,7 +1252,7 @@ export default function KnowledgeChatPage() {
     dispatch({ type: "interrupt_requested" });
     gw.request("session.interrupt", { session_id: state.sessionId }, 10_000)
       .then(() => {
-        void loadDrafts({ selectLatestOpen: true });
+        void loadDrafts();
         scheduleHistoryReconcile("manual-interrupt", 250);
       })
       .catch((error: Error) => {
@@ -1217,7 +1291,7 @@ export default function KnowledgeChatPage() {
     } finally {
       setResumingSessionId("");
     }
-  }, [gw, researchMode, setSearchParams, state.connection]);
+  }, [gw, researchMode, setMode, setSearchParams, state.connection]);
 
   const resumeSession = useCallback(async (sessionId: string) => {
     if (state.connection !== "open") return;
@@ -1233,7 +1307,6 @@ export default function KnowledgeChatPage() {
         type: "hydrate_messages",
         messages: hydrated.messages,
         tools: hydrated.tools,
-        toolSummaries: hydrated.toolSummaries,
       });
       const restoredId = result.resumed || sessionId;
       setSelection({ type: "conversation", sessionId: restoredId });
@@ -1252,7 +1325,7 @@ export default function KnowledgeChatPage() {
     } finally {
       setResumingSessionId("");
     }
-  }, [gw, researchMode, setSearchParams, state.connection]);
+  }, [gw, researchMode, setMode, setSearchParams, state.connection]);
 
   const applyEditableDraftSuggestion = useCallback((draft: KnowledgeCaptureDraft, options: {
     fallbackContent?: string;
@@ -1384,8 +1457,7 @@ export default function KnowledgeChatPage() {
         fallbackContent: content,
         fallbackFolder: folderPath,
       });
-      setSelectedDraftId(draftId);
-      setSelection({ type: "draft", draftId });
+      if (modeRef.current === "editable_capture") setSelection({ type: "draft", draftId });
       setEditableStatus("ready_to_commit");
       setEditableProgressMessage("已保存当前修改");
       setDraftNotice("已保存草稿。");
@@ -1429,12 +1501,11 @@ export default function KnowledgeChatPage() {
     setDraftNotice("");
     try {
       const result = editableDraft?.id
-          ? await api.updateKnowledgeEditableCaptureDraft(editableDraft.id, {
+          ? await api.regenerateKnowledgeEditableCaptureDraft(editableDraft.id, {
             content,
             title: editableTitle,
             title_source: editableTitleSource,
             folder_path: editableFolder,
-            organize: true,
             existing_folders: visibleFolderPaths,
           }, { operationId: operation.operationId, signal: operation.signal })
         : await api.createKnowledgeEditableCaptureDraft({
@@ -1461,8 +1532,7 @@ export default function KnowledgeChatPage() {
         fallbackContent: content,
         fallbackFolder: editableFolder,
       });
-      setSelectedDraftId(draftId);
-      setSelection({ type: "draft", draftId });
+      if (modeRef.current === "editable_capture") setSelection({ type: "draft", draftId });
       if (editableAiSuggestionsStatus(payload.draft) === "failed") {
         setEditableStatus("editing");
         setEditableProgressMessage("AI 建议生成失败，可手动填写或重试");
@@ -1537,9 +1607,7 @@ export default function KnowledgeChatPage() {
         fallbackContent: "",
         fallbackFolder: targetFolder,
       });
-      setDraftDetail(payload.draft);
-      setSelectedDraftId(draft.id);
-      setSelection({ type: "draft", draftId: draft.id });
+      if (modeRef.current === "editable_capture") setSelection({ type: "draft", draftId: draft.id });
       setEditableCardCommitStatus(editableGenerateCard ? "generating" : "skipped");
       const cardResult = await maybeGenerateGardenCardAfterCommit({
         draft: payload.draft,
@@ -1719,9 +1787,9 @@ export default function KnowledgeChatPage() {
   }, [inspectorObjectRef, objectEventsVersion]);
 
   const commitDraft = useCallback(async () => {
-    if (!draftDetail) return;
+    if (!draftDetail || !isReviewing("capture", draftDetail.id)) return;
     await commitDraftById(draftDetail.id, draftDetail.title);
-  }, [commitDraftById, draftDetail]);
+  }, [commitDraftById, draftDetail, isReviewing]);
 
   const deleteDraft = useCallback(async () => {
     if (!draftDetail) return;
@@ -1729,7 +1797,8 @@ export default function KnowledgeChatPage() {
   }, [deleteDraftById, draftDetail]);
 
   const reviseDraft = useCallback(async () => {
-    if (!draftDetail || !revision.trim()) return;
+    if (!draftDetail || !revision.trim() || !isReviewing("capture", draftDetail.id)
+      || !startReviewWrite("capture", draftDetail.id)) return;
     const operation = beginAiOperation("capture-revise");
     setDraftActionLoading("revise");
     setDraftError("");
@@ -1740,20 +1809,24 @@ export default function KnowledgeChatPage() {
         revision.trim(),
         { operationId: operation.operationId },
       );
-      if (isAiCancelledResult(result)) {
+      if (operation.isCancelled() || isAiCancelledResult(result)) {
         setDraftNotice("已停止。草稿内容未被覆盖。");
         return;
       }
       setDraftNotice("已提交修改，正在刷新草稿。");
+      if (isReviewing("capture", draftDetail.id)) {
+        const loaded = await loadDraftDetail(draftDetail.id);
+        if (loaded && isReviewing("capture", draftDetail.id)) setRevision("");
+      }
       await loadDrafts();
-      await loadDraftDetail(draftDetail.id);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : String(error));
     } finally {
+      reviewWriteInFlight.current = false;
       setDraftActionLoading(null);
       operation.finish();
     }
-  }, [beginAiOperation, draftDetail, loadDraftDetail, loadDrafts, revision]);
+  }, [beginAiOperation, draftDetail, isReviewing, loadDraftDetail, loadDrafts, revision, startReviewWrite]);
 
   const editCommittedCaptureInLibrary = useCallback(() => {
     const captureId = draftDetail?.committed_capture_id?.trim() ?? "";
@@ -1763,12 +1836,13 @@ export default function KnowledgeChatPage() {
 
 
   const openCardFlow = useCallback(async () => {
-    if (!draftDetail) return;
+    if (!draftDetail || !isReviewing("capture", draftDetail.id)) return;
     const captureId = draftDetail.committed_capture_id?.trim() ?? "";
     if (draftDetail.status !== "committed" || !captureId) {
       setDraftError("请先保存到资料库后再转换成知识卡片。");
       return;
     }
+    if (!startReviewWrite("capture", draftDetail.id)) return;
     const operation = beginAiOperation("capture-card");
     setDraftActionLoading("card");
     setDraftError("");
@@ -1778,7 +1852,7 @@ export default function KnowledgeChatPage() {
         { capture_ids: [captureId] },
         { operationId: operation.operationId },
       );
-      if (isAiCancelledResult(result)) {
+      if (operation.isCancelled() || isAiCancelledResult(result)) {
         setDraftNotice("已停止。知识卡片未生成。");
         return;
       }
@@ -1790,10 +1864,11 @@ export default function KnowledgeChatPage() {
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : String(error));
     } finally {
+      reviewWriteInFlight.current = false;
       setDraftActionLoading(null);
       operation.finish();
     }
-  }, [beginAiOperation, draftDetail]);
+  }, [beginAiOperation, draftDetail, isReviewing, startReviewWrite]);
 
   const composerPlaceholder =
     mode === "answer_draft_review"
@@ -1949,22 +2024,24 @@ export default function KnowledgeChatPage() {
           {mode === "answer_draft_review" ? (
             <ReadingDraftReview
               actionLoading={answerDraftActionLoading}
+              busy={Boolean(draftActionLoading || aiOperation || answerDraftLoading)}
               detail={answerDraftDetail}
-              loading={answerDraftLoading}
+              loading={answerDraftLoading && !answerDraftDetail}
               revision={answerRevision}
               onCommit={() => void commitAnswerDraft()}
               onCreateCard={() => void convertAnswerDraftToCard()}
               onDelete={() => void deleteAnswerDraftById(answerDraftDetail?.id ?? "", answerDraftDetail?.title)}
               onRevise={() => void reviseAnswerDraft()}
               onRevisionChange={setAnswerRevision}
-              onStopAiOperation={stopAiOperation}
+              onStopAiOperation={aiOperation ? stopAiOperation : undefined}
               stoppingAiOperation={Boolean(aiOperation?.stopping)}
             />
           ) : mode === "draft_review" ? (
             <DraftReview
               actionLoading={draftActionLoading}
+              busy={Boolean(answerDraftActionLoading || aiOperation || draftDetailLoading)}
               detail={draftDetail}
-              detailLoading={draftDetailLoading}
+              detailLoading={draftDetailLoading && !draftDetail}
               revision={revision}
               view={draftView}
               onCommit={() => void commitDraft()}
@@ -1973,12 +2050,13 @@ export default function KnowledgeChatPage() {
               onOpenCardFlow={openCardFlow}
               onRevise={() => void reviseDraft()}
               onRevisionChange={setRevision}
-              onStopAiOperation={stopAiOperation}
+              onStopAiOperation={aiOperation ? stopAiOperation : undefined}
               stoppingAiOperation={Boolean(aiOperation?.stopping)}
               onViewChange={setDraftView}
             />
           ) : mode === "editable_capture" ? (
             <EditableCaptureWorkbench
+              activityPending={Boolean(aiOperation || draftActionLoading || answerDraftActionLoading)}
               content={editableContent}
               draft={editableDraft}
               error={editableError}
@@ -2011,7 +2089,7 @@ export default function KnowledgeChatPage() {
               onFolderSuggestionReasonChange={setEditableFolderSuggestionReason}
               onGenerateCardChange={setEditableGenerateCard}
               onOrganizeDraft={() => void organizeEditableCaptureDraft()}
-              onStopAiOperation={stopAiOperation}
+              onStopAiOperation={aiOperation ? stopAiOperation : undefined}
               stoppingAiOperation={Boolean(aiOperation?.stopping)}
               onSourceChange={setEditableSource}
               onSummaryChange={setEditableSummary}
@@ -2044,7 +2122,9 @@ export default function KnowledgeChatPage() {
                 setAttachments((current) => current.filter((item) => item.id !== id))
               }
               onSourceOpen={openGatewaySource}
-              onSaveAnswer={createAnswerDraft}
+              onSaveAnswer={(message, outputType) => {
+                if (!aiOperation && !reviewWriteInFlight.current) void createAnswerDraft(message, outputType);
+              }}
               onStop={stopGeneration}
               onSubmit={submit}
               onUploadFiles={(files) => void uploadFiles(files)}
@@ -2304,16 +2384,17 @@ function knowledgeToolsetsForMode(mode: KnowledgeResearchMode): string[] {
 function gatewayMessagesToWorkbench(messages: GatewayResumeMessage[]): {
   messages: KnowledgeMessage[];
   tools: ToolEntry[];
-  toolSummaries: string[];
 } {
   const now = Date.now();
   const visibleMessages: KnowledgeMessage[] = [];
   const tools: ToolEntry[] = [];
   let pendingToolSummaries: string[] = [];
+  let pendingToolAnswer: GatewayResumeMessage | undefined;
 
   messages.forEach((message, index) => {
     const text = message.text || message.content || "";
     if (message.role === "tool") {
+      if (message.answer_text?.trim()) pendingToolAnswer = message;
       const summary = text.trim();
       if (summary) pendingToolSummaries.push(summary);
       const structuredSummary = gatewayToolSourceSummary(message);
@@ -2332,12 +2413,16 @@ function gatewayMessagesToWorkbench(messages: GatewayResumeMessage[]): {
       return;
     }
     if (message.role !== "user" && message.role !== "assistant") return;
+    if (message.role === "user") {
+      pendingToolSummaries = [];
+      pendingToolAnswer = undefined;
+    }
     if (!text.trim()) return;
     const fullAnswer = message.role === "assistant"
       ? extractFullAnswerText(text, pendingToolSummaries)
       : "";
     const sourceHints = message.role === "assistant"
-      ? extractSourceHints(fullAnswer || text, pendingToolSummaries)
+      ? buildAnswerSourceHints(fullAnswer || text, pendingToolSummaries)
       : undefined;
     const searchBackend = message.role === "assistant"
       ? searchBackendFromTrace(message.research_trace) ?? searchBackendFromToolSummaries(pendingToolSummaries)
@@ -2349,20 +2434,17 @@ function gatewayMessagesToWorkbench(messages: GatewayResumeMessage[]): {
       createdAt: now - (messages.length - index) * 1000,
       status: "complete" as const,
       sourceHints,
+      sourceRunId: fullAnswer && fullAnswer === pendingToolAnswer?.answer_text?.trim()
+        ? pendingToolAnswer.source_run_id : undefined,
       searchBackend,
     });
     if (message.role === "assistant") {
       pendingToolSummaries = [];
+      pendingToolAnswer = undefined;
     }
   });
 
-  return {
-    messages: visibleMessages,
-    tools,
-    toolSummaries: tools
-      .map((tool) => tool.summary)
-      .filter((summary): summary is string => Boolean(summary)),
-  };
+  return { messages: visibleMessages, tools };
 }
 
 function gatewayToolSourceSummary(message: GatewayResumeMessage): string {

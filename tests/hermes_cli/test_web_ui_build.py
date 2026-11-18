@@ -13,7 +13,13 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import _web_ui_build_needed, _build_web_ui, _run_npm_install_deterministic
+from hermes_cli.main import (
+    _build_web_ui,
+    _resolve_npm,
+    _run_npm_install_deterministic,
+    _web_ui_build_needed,
+    _web_ui_need_npm_install,
+)
 
 
 def _touch(path: Path, offset: float = 0.0) -> None:
@@ -120,6 +126,23 @@ class TestBuildWebUISkipsWhenFresh:
         assert result is True
         assert mock_run.call_count == 2  # npm install + npm run build
 
+    def test_skips_npm_install_when_node_modules_are_current(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        lock = '{"packages":{"node_modules/react":{"version":"1.0.0"}}}'
+        (web_dir / "package-lock.json").write_text(lock, encoding="utf-8")
+        hidden = web_dir / "node_modules" / ".package-lock.json"
+        hidden.parent.mkdir(parents=True)
+        hidden.write_text(lock, encoding="utf-8")
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        assert mock_run.call_count == 1
+        assert mock_run.call_args.args[0] == ["/usr/bin/npm", "run", "build"]
+
     def test_npm_install_uses_utf8_replace_output_decoding(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
         (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
@@ -147,6 +170,66 @@ class TestBuildWebUISkipsWhenFresh:
         assert build_kwargs["text"] is True
         assert build_kwargs["encoding"] == "utf-8"
         assert build_kwargs["errors"] == "replace"
+
+
+class TestNpmResolution:
+    """Windows lookup must return a shim CreateProcessW can execute."""
+
+    def test_prefers_cmd_shim_on_windows(self, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "_is_windows", lambda: True)
+        shims = {
+            "npm": r"C:\Program Files\nodejs\npm",
+            "npm.cmd": r"C:\Program Files\nodejs\npm.cmd",
+        }
+        with patch("hermes_cli.main.shutil.which", side_effect=shims.get):
+            assert _resolve_npm() == shims["npm.cmd"]
+
+    def test_uses_plain_npm_elsewhere(self, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"):
+            assert _resolve_npm() == "/usr/bin/npm"
+
+
+class TestWebUINpmInstallNeeded:
+
+    def test_needs_install_without_node_modules(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+        assert _web_ui_need_npm_install(web_dir) is True
+
+    def test_skips_install_when_hidden_lock_matches(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text(
+            '{"packages":{"node_modules/react":{"version":"1.0.0"}}}',
+            encoding="utf-8",
+        )
+        hidden = web_dir / "node_modules" / ".package-lock.json"
+        hidden.parent.mkdir(parents=True)
+        hidden.write_text(
+            '{"packages":{"node_modules/react":{"version":"1.0.0"}}}',
+            encoding="utf-8",
+        )
+        assert _web_ui_need_npm_install(web_dir) is False
+
+    def test_needs_install_when_lockfile_moved_ahead(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text(
+            '{"packages":{'
+            '"node_modules/react":{"version":"1.0.0"},'
+            '"node_modules/vite":{"version":"2.0.0"}}}',
+            encoding="utf-8",
+        )
+        hidden = web_dir / "node_modules" / ".package-lock.json"
+        hidden.parent.mkdir(parents=True)
+        hidden.write_text(
+            '{"packages":{"node_modules/react":{"version":"1.0.0"}}}',
+            encoding="utf-8",
+        )
+        assert _web_ui_need_npm_install(web_dir) is True
 
 
 class TestBuildWebUIRetryAndStaleFallback:

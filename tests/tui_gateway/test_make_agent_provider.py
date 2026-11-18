@@ -25,7 +25,7 @@ def test_make_agent_passes_resolved_provider():
 
     fake_cfg = {
         "model": {"default": "claude-opus-4-6", "provider": "anthropic"},
-        "agent": {"system_prompt": "test"},
+        "agent": {"system_prompt": "test", "disabled_toolsets": ["file"]},
     }
 
     with (
@@ -44,7 +44,7 @@ def test_make_agent_passes_resolved_provider():
 
         from tui_gateway.server import _make_agent
 
-        _make_agent("sid-1", "key-1")
+        _make_agent("sid-1", "key-1", enabled_toolsets=["web", "terminal"])
 
         # target_model comes from _resolve_startup_runtime() which reads
         # _load_cfg().  Due to module-level caching in tui_gateway.server,
@@ -58,6 +58,8 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
         assert call_kwargs.kwargs["api_key"] == "sk-test-key"
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
+        assert call_kwargs.kwargs["enabled_toolsets"] == ["web", "terminal"]
+        assert call_kwargs.kwargs["disabled_toolsets"] == ["file"]
 
 
 def test_make_agent_ignores_display_personality_without_system_prompt():

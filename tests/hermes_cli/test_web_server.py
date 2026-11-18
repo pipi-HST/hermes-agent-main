@@ -89,6 +89,9 @@ class _FakeKnowledgeServiceClient:
     def patch_capture_draft(self, draft_id, **fields):
         return self._respond("patch_capture_draft", draft_id, **fields)
 
+    def update_editable_capture_draft(self, draft_id, payload, **fields):
+        return self._respond("update_editable_capture_draft", draft_id, payload, **fields)
+
     def delete_capture_draft(self, draft_id):
         return self._respond("delete_capture_draft", draft_id)
 
@@ -183,9 +186,10 @@ class _FakeKnowledgeServiceClient:
     def issue_confirmation(self, resource, resource_id):
         return self._respond("issue_confirmation", resource, resource_id)
 
-    def commit_draft(self, resource, resource_id, confirmation_token):
+    def commit_draft(self, resource, resource_id, confirmation_token, *, operation_id=""):
+        kwargs = {"operation_id": operation_id} if operation_id else {}
         return self._respond(
-            "commit_draft", resource, resource_id, confirmation_token
+            "commit_draft", resource, resource_id, confirmation_token, **kwargs,
         )
 
     def call_tool(self, module_name, function_name, *, args=None, kwargs=None):
@@ -1358,6 +1362,40 @@ class TestWebServerEndpoints:
             "organize": True,
             "existing_folders": ["Inbox", "AI 产品", "数据 Agent", "待读", "临时"],
         }
+
+    def test_knowledge_regenerate_capture_draft_suggestions_delegates_to_bridge(self, monkeypatch, tmp_path):
+        custom_root = tmp_path / "hermes-custom"
+        custom_root.mkdir()
+        monkeypatch.setenv("HERMES_CUSTOM_ROOT", str(custom_root))
+        calls = {}
+
+        bridge_pkg = types.ModuleType("bridge")
+        bridge_pkg.__path__ = []
+        capture_bridge = types.ModuleType("bridge.capture_bridge")
+
+        def update_editable_capture_draft(**kwargs):
+            calls["update"] = kwargs
+            return {
+                "status": "success",
+                "intent": "update_editable_capture_draft",
+                "meta": {"draft_id": "draft-editable"},
+            }
+
+        capture_bridge.update_editable_capture_draft = update_editable_capture_draft
+        monkeypatch.setitem(sys.modules, "bridge", bridge_pkg)
+        monkeypatch.setitem(sys.modules, "bridge.capture_bridge", capture_bridge)
+
+        resp = self.client.post(
+            "/api/knowledge/capture-drafts/draft-editable/suggestions/regenerate",
+            json={"content": "正文", "title": "标题", "title_source": "ai"},
+        )
+
+        assert resp.status_code == 200
+        assert calls["update"]["organize"] is True
+        assert calls["update"]["title_source"] == "ai"
+        assert calls["update"]["folder_path"] is None
+        assert "summary" not in calls["update"]
+        assert "tags" not in calls["update"]
 
     def test_knowledge_editable_capture_draft_missing_dependency_returns_guidance(self, monkeypatch, tmp_path):
         import hermes_cli.web_server as web_server
@@ -2538,6 +2576,7 @@ class TestWebServerEndpoints:
                 "summary": "S",
                 "tags": ["a", "b"],
                 "folder_path": "AI 产品",
+                "organize": False,
             },
         )
 
@@ -2553,6 +2592,56 @@ class TestWebServerEndpoints:
             "capture_intent": {"folder_path": "AI 产品"},
         }
         assert fake.closed is True
+
+    def test_editable_capture_draft_organize_invokes_service_workflow(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={"update_editable_capture_draft": {"status": "success"}}
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+        response = self.client.patch(
+            "/api/knowledge/capture-drafts/d1/editable",
+            json={"content": "编辑后的正文", "organize": True},
+            headers={"X-Hermes-AI-Operation-Id": "organize-example"},
+        )
+        assert response.status_code == 200
+        call = fake.calls[0]
+        assert call["method"] == "update_editable_capture_draft"
+        assert call["args"][0] == "d1"
+        assert call["args"][1]["content"] == "编辑后的正文"
+        assert call["args"][1]["organize"] is True
+        assert call["kwargs"] == {"operation_id": "organize-example"}
+        assert fake.closed
+
+    def test_regenerate_capture_draft_suggestions_uses_editable_workflow(self, monkeypatch):
+        fake = _FakeKnowledgeServiceClient(
+            responses={"update_editable_capture_draft": {"status": "success"}}
+        )
+        self._patch_knowledge_client(monkeypatch, fake)
+        response = self.client.post(
+            "/api/knowledge/capture-drafts/d1/suggestions/regenerate",
+            json={
+                "content": "正文",
+                "title": "标题",
+                "title_source": "ai",
+                "folder_path": "AI 产品",
+                "existing_folders": ["Inbox", "AI 产品"],
+            },
+            headers={"X-Hermes-AI-Operation-Id": "regenerate-example"},
+        )
+        assert response.status_code == 200
+        call = fake.calls[0]
+        assert call["method"] == "update_editable_capture_draft"
+        assert call["args"][0] == "d1"
+        payload = call["args"][1]
+        assert payload["content"] == "正文"
+        assert payload["organize"] is True
+        assert payload["existing_folders"] == ["Inbox", "AI 产品"]
+        assert "summary" not in payload
+        assert "tags" not in payload
+        assert "folder_suggestion" not in payload
+        assert "card_suggestion" not in payload
+        assert call["kwargs"] == {"operation_id": "regenerate-example"}
+        assert fake.closed
 
     def test_capture_draft_delete_delegates_to_service(self, monkeypatch):
         fake = _FakeKnowledgeServiceClient(
@@ -2667,7 +2756,10 @@ class TestWebServerEndpoints:
         )
         self._patch_knowledge_client(monkeypatch, fake)
 
-        resp = self.client.post("/api/knowledge/capture-drafts/d1/commit")
+        resp = self.client.post(
+            "/api/knowledge/capture-drafts/d1/commit",
+            headers={"X-Hermes-AI-Operation-Id": "capture-example"},
+        )
 
         assert resp.status_code == 200
         assert fake.calls == [
@@ -2679,7 +2771,7 @@ class TestWebServerEndpoints:
             {
                 "method": "commit_draft",
                 "args": ("capture-drafts", "d1", "tok-capture"),
-                "kwargs": {},
+                "kwargs": {"operation_id": "capture-example"},
             },
         ]
         assert fake.closed is True
@@ -3262,6 +3354,7 @@ class TestWebServerEndpoints:
                 "errors": [],
                 "meta": {
                     "mode": kwargs["mode"],
+                    "source_run_id": "web-run-1",
                     "knowledge_sources": [{"ref": "K1", "title": "AI 工作台"}],
                     "web_sources": [{"ref": "W1", "title": "网页资料", "url": "https://example.com"}],
                     "research_trace": {
@@ -3295,6 +3388,7 @@ class TestWebServerEndpoints:
         assert data["citations"][0]["label"] == "当前选区"
         assert data["sources"]["knowledge"][0]["ref"] == "K1"
         assert data["sources"]["web"][0]["ref"] == "W1"
+        assert data["meta"]["source_run_id"] == "web-run-1"
         assert data["meta"]["research_trace"]["plan_status"] == "planned_web_forced_by_mode"
         assert data["meta"]["research_trace"]["web_search_attempted"] is True
         assert data["meta"]["research_trace"]["web_queries"] == ["SQL是什么意思"]

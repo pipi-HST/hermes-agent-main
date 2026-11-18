@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.attachment_policy import AgentReply, LocalAttachment
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.run import GatewayRunner
@@ -51,10 +52,14 @@ def _event(thread_id=None):
 
 
 @pytest.mark.asyncio
-async def test_base_adapter_routes_telegram_flac_media_tag_to_document_sender():
+async def test_base_adapter_routes_attachment_only_reply_to_document_sender(tmp_path):
     adapter = _MediaRoutingAdapter()
     event = _event()
-    adapter._message_handler = AsyncMock(return_value="MEDIA:/tmp/speech.flac")
+    path = tmp_path / "speech.flac"
+    path.write_bytes(b"audio")
+    identity = LocalAttachment.file_identity(path)
+    assert identity is not None
+    adapter._message_handler = AsyncMock(return_value=AgentReply("", (LocalAttachment(path, identity),)))
     adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
     adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
 
@@ -62,17 +67,21 @@ async def test_base_adapter_routes_telegram_flac_media_tag_to_document_sender():
 
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
-        file_path="/tmp/speech.flac",
+        file_path=str(path),
         metadata=None,
     )
     adapter.send_voice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_base_adapter_routes_non_voice_telegram_ogg_media_tag_to_document_sender():
+async def test_base_adapter_routes_non_voice_telegram_ogg_to_document_sender(tmp_path):
     adapter = _MediaRoutingAdapter()
     event = _event()
-    adapter._message_handler = AsyncMock(return_value="MEDIA:/tmp/speech.ogg")
+    path = tmp_path / "speech.ogg"
+    path.write_bytes(b"audio")
+    identity = LocalAttachment.file_identity(path)
+    assert identity is not None
+    adapter._message_handler = AsyncMock(return_value=AgentReply("speech", (LocalAttachment(path, identity),)))
     adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
     adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
 
@@ -80,18 +89,22 @@ async def test_base_adapter_routes_non_voice_telegram_ogg_media_tag_to_document_
 
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
-        file_path="/tmp/speech.ogg",
-        metadata=None,
+        file_path=str(path),
+        metadata={"notify": True},
     )
     adapter.send_voice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_sender():
+async def test_base_adapter_routes_telegram_voice_ogg_to_voice_sender(tmp_path):
     adapter = _MediaRoutingAdapter()
     event = _event()
+    path = tmp_path / "speech.ogg"
+    path.write_bytes(b"audio")
+    identity = LocalAttachment.file_identity(path)
+    assert identity is not None
     adapter._message_handler = AsyncMock(
-        return_value="[[audio_as_voice]]\nMEDIA:/tmp/speech.ogg"
+        return_value=AgentReply("speech", (LocalAttachment(path, identity, is_voice=True),))
     )
     adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
     adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
@@ -100,8 +113,8 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
 
     adapter.send_voice.assert_awaited_once_with(
         chat_id="chat-1",
-        audio_path="/tmp/speech.ogg",
-        metadata=None,
+        audio_path=str(path),
+        metadata={"notify": True},
     )
     adapter.send_document.assert_not_awaited()
 
@@ -117,8 +130,12 @@ def _fake_runner(thread_meta):
 
 
 @pytest.mark.asyncio
-async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sender():
+async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sender(tmp_path):
     event = _event(thread_id="topic-1")
+    path = tmp_path / "speech.flac"
+    path.write_bytes(b"audio")
+    identity = LocalAttachment.file_identity(path)
+    assert identity is not None
     adapter = SimpleNamespace(
         name="test",
         extract_media=BasePlatformAdapter.extract_media,
@@ -132,22 +149,26 @@ async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sen
 
     await GatewayRunner._deliver_media_from_response(
         _fake_runner({"thread_id": "topic-1"}),
-        "MEDIA:/tmp/speech.flac",
+        AgentReply("speech", (LocalAttachment(path, identity),)),
         event,
         adapter,
     )
 
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
-        file_path="/tmp/speech.flac",
+        file_path=str(path),
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_voice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_document_sender():
+async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_document_sender(tmp_path):
     event = _event(thread_id="topic-1")
+    path = tmp_path / "speech.ogg"
+    path.write_bytes(b"audio")
+    identity = LocalAttachment.file_identity(path)
+    assert identity is not None
     adapter = SimpleNamespace(
         name="test",
         extract_media=BasePlatformAdapter.extract_media,
@@ -161,24 +182,28 @@ async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_doc
 
     await GatewayRunner._deliver_media_from_response(
         _fake_runner({"thread_id": "topic-1"}),
-        "MEDIA:/tmp/speech.ogg",
+        AgentReply("speech", (LocalAttachment(path, identity),)),
         event,
         adapter,
     )
 
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
-        file_path="/tmp/speech.ogg",
+        file_path=str(path),
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_voice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender():
+async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(tmp_path):
     """MP3 audio on Telegram must go through send_voice (which routes to
     sendAudio internally); Telegram accepts MP3 for the audio player."""
     event = _event(thread_id="topic-1")
+    path = tmp_path / "speech.mp3"
+    path.write_bytes(b"audio")
+    identity = LocalAttachment.file_identity(path)
+    assert identity is not None
     adapter = SimpleNamespace(
         name="test",
         extract_media=BasePlatformAdapter.extract_media,
@@ -192,14 +217,14 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
 
     await GatewayRunner._deliver_media_from_response(
         _fake_runner({"thread_id": "topic-1"}),
-        "MEDIA:/tmp/speech.mp3",
+        AgentReply("speech", (LocalAttachment(path, identity, is_voice=True),)),
         event,
         adapter,
     )
 
     adapter.send_voice.assert_awaited_once_with(
         chat_id="chat-1",
-        audio_path="/tmp/speech.mp3",
+        audio_path=str(path),
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_document.assert_not_awaited()

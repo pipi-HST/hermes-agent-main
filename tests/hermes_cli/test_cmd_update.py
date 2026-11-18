@@ -117,7 +117,12 @@ class TestCmdUpdateBranchFallback:
         mock_run.side_effect = _make_run_side_effect(
             branch="main", verify_ok=True, commit_count="1"
         )
-        with patch.object(hm, "_is_termux_env", return_value=False):
+        with (
+            patch.object(hm, "_is_termux_env", return_value=False),
+            # Pin the install decision so the assertion below does not depend
+            # on whether the checkout has an already-populated web/node_modules.
+            patch.object(hm, "_web_ui_need_npm_install", return_value=True),
+        ):
             cmd_update(mock_args)
 
         npm_calls = [
@@ -286,6 +291,79 @@ def test_is_termux_env_false_for_non_termux_prefix():
     from hermes_cli import main as hm
 
     assert hm._is_termux_env({"PREFIX": "/usr/local"}) is False
+
+
+def test_detect_update_venv_prefers_dot_venv(tmp_path, monkeypatch):
+    from hermes_cli import main as hm
+
+    dot_venv = tmp_path / ".venv"
+    dot_venv.mkdir()
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(hm.sys, "prefix", hm.sys.base_prefix)
+
+    assert hm._detect_update_venv() == dot_venv
+
+
+def test_uv_install_env_clears_stale_virtual_env(monkeypatch):
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(hm, "_detect_update_venv", lambda: None)
+    monkeypatch.setenv("VIRTUAL_ENV", "/nonexistent/old-venv")
+
+    assert "VIRTUAL_ENV" not in hm._uv_install_env()
+
+
+def test_update_uv_install_targets_detected_venv(mock_args, tmp_path):
+    from hermes_cli import main as hm
+
+    dot_venv = tmp_path / ".venv"
+    dot_venv.mkdir()
+    captured = {}
+
+    def fake_install(prefix, *, env=None, group="all"):
+        captured["prefix"] = prefix
+        captured["env"] = env
+
+    with (
+        patch(
+            "hermes_cli.main.shutil.which",
+            side_effect=lambda name: "/usr/bin/uv" if name == "uv" else None,
+        ),
+        patch(
+            "subprocess.run",
+            side_effect=_make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            ),
+        ),
+        patch.object(hm, "_detect_update_venv", return_value=dot_venv),
+        patch.object(hm, "_is_termux_env", return_value=False),
+        patch.object(
+            hm,
+            "_install_python_dependencies_with_optional_fallback",
+            side_effect=fake_install,
+        ),
+        patch.object(hm, "_refresh_active_lazy_features"),
+        patch.object(hm, "_update_node_dependencies"),
+        patch.object(hm, "_build_web_ui"),
+    ):
+        cmd_update(mock_args)
+
+    assert captured["prefix"] == ["/usr/bin/uv", "pip"]
+    assert captured["env"]["VIRTUAL_ENV"] == str(dot_venv)
+
+
+def test_uv_pip_prefix_targets_interpreter_without_venv(monkeypatch):
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(hm, "_detect_update_venv", lambda: None)
+
+    assert hm._uv_pip_prefix("/usr/bin/uv") == [
+        "/usr/bin/uv",
+        "pip",
+        "--python",
+        hm.sys.executable,
+    ]
 
 
 def test_load_installable_optional_extras_supports_termux_group(tmp_path, monkeypatch):

@@ -38,6 +38,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   api,
   createAiOperationId,
+  KnowledgeSelectionChatStreamError,
   type KnowledgeCaptureDraft,
   type KnowledgeLibraryFolder,
   type KnowledgeLibraryItem,
@@ -54,6 +55,7 @@ import { ResizableRail, readStoredWidth } from "@/components/ResizableRail";
 import { KnowledgeLibraryHeader } from "@/pages/KnowledgeLibraryHeader";
 import { KnowledgeLibrarySidebar } from "@/pages/knowledge-library/KnowledgeLibrarySidebar";
 import {
+  articleQuestionForMessage,
   bridgeMetaString,
   buildGardenDraftInstruction,
   editableAiSuggestionsStatus,
@@ -212,12 +214,25 @@ export default function KnowledgeLibraryPage() {
   const [allItems, setAllItems] = useState<KnowledgeLibraryItem[]>([]);
   const [items, setItems] = useState<KnowledgeLibraryItem[]>([]);
   const [selection, setSelection] = useState<LibrarySelection>(DEFAULT_SELECTION);
-  const [selectedKey, setSelectedKey] = useState("");
+  const [selectedKey, updateSelectedKey] = useState("");
+  const selectedKeyRef = useRef("");
+  const detailSelectionRef = useRef(0);
+  const detailRequestRef = useRef(0);
+  const listRequestRef = useRef(0);
+  const saveInFlightRef = useRef(false);
+  const setSelectedKey = useCallback((key: string) => {
+    if (selectedKeyRef.current === key) return;
+    selectedKeyRef.current = key;
+    detailSelectionRef.current += 1;
+    detailRequestRef.current += 1;
+    updateSelectedKey(key);
+  }, []);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
     () => new Set(DEFAULT_EXPANDED_FOLDERS),
   );
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [detail, setDetail] = useState<KnowledgeLibraryItem | null>(null);
+  const [loadedDetail, setDetail] = useState<KnowledgeLibraryItem | null>(null);
+  const detail = loadedDetail && itemKey(loadedDetail) === selectedKey ? loadedDetail : null;
   const [query, setQuery] = useState("");
   const [newFolderName, setNewFolderName] = useState("");
   const [renamingFolder, setRenamingFolder] = useState("");
@@ -325,14 +340,8 @@ export default function KnowledgeLibraryPage() {
   }, []);
   const stopAiOperation = useCallback(() => {
     if (!aiOperation || aiOperation.stopping) return;
-    cancelledAiOperationsRef.current.add(aiOperation.id);
-    aiOperation.controller.abort();
-    setAiOperation(null);
-    setNotice("已请求停止。你可以继续编辑或重试。");
-    setEditableProgressMessage("已请求停止，可继续编辑或重试");
-    setEditableStatus((current) => (
-      current === "organizing" ? "editing" : current === "committing" ? "ready_to_commit" : current
-    ));
+    setAiOperation({ ...aiOperation, stopping: true });
+    setNotice("已请求停止，等待服务确认。");
     void api.cancelKnowledgeAiOperation(aiOperation.id).catch((err) => {
       setError(err instanceof Error ? err.message : String(err));
     });
@@ -363,7 +372,7 @@ export default function KnowledgeLibraryPage() {
     if (mode !== "files" || !detail) return false;
     return (
       draftTitle !== detail.title
-      || draftBody !== (detail.body || detail.preview || "")
+      || draftBody !== (detail.body ?? detail.preview ?? "")
       || draftFolder !== (detail.folder_path || "Inbox")
     );
   }, [detail, draftBody, draftFolder, draftTitle, mode]);
@@ -405,9 +414,10 @@ export default function KnowledgeLibraryPage() {
     "--knowledge-ai-width": `${aiPanelWidth}px`,
   } as CSSProperties;
   const confirmLeaveCurrentWork = useCallback(() => {
+    if (mode === "paste" && (aiOperation || deleting)) return false;
     if (!hasUnsavedChanges) return true;
     return window.confirm("当前文件有未保存更改，确定离开吗？");
-  }, [hasUnsavedChanges]);
+  }, [aiOperation, deleting, hasUnsavedChanges, mode]);
 
   useEffect(() => {
     window.localStorage.setItem(KNOWLEDGE_LEFT_COLLAPSED_KEY, leftPaneCollapsed ? "true" : "false");
@@ -501,6 +511,8 @@ export default function KnowledgeLibraryPage() {
   }, []);
 
   const loadItems = useCallback(async () => {
+    const request = ++listRequestRef.current;
+    const selectionVersion = detailSelectionRef.current;
     setLoadingItems(true);
     setError("");
     try {
@@ -510,50 +522,58 @@ export default function KnowledgeLibraryPage() {
         search: query,
         limit: 300,
       });
+      if (request !== listRequestRef.current) return;
       setItems(payload.items);
-      setSelectedKey((current) => {
-        if (current && payload.items.some((item) => itemKey(item) === current)) return current;
-        return payload.items[0] ? itemKey(payload.items[0]) : "";
-      });
+      if (selectionVersion !== detailSelectionRef.current) return;
+      const current = selectedKeyRef.current;
+      if (current && payload.items.some((item) => itemKey(item) === current)) return;
+      setSelectedKey(payload.items[0] ? itemKey(payload.items[0]) : "");
     } catch (err) {
+      if (request !== listRequestRef.current) return;
       setError(err instanceof Error ? err.message : String(err));
       setItems([]);
-      setSelectedKey("");
+      if (selectionVersion === detailSelectionRef.current) setSelectedKey("");
     } finally {
-      setLoadingItems(false);
+      if (request === listRequestRef.current) setLoadingItems(false);
     }
-  }, [query, selectedFolder, selectedView]);
+  }, [query, selectedFolder, selectedView, setSelectedKey]);
 
-  const loadDetail = useCallback(async (item: KnowledgeLibraryItem | null) => {
+  const applyDetail = useCallback((item: KnowledgeLibraryItem) => {
+    setDetail(item);
+    setDraftTitle(item.title);
+    setDraftBody(item.body ?? item.preview ?? "");
+    setDraftFolder(item.folder_path || "Inbox");
+  }, []);
+
+  const loadDetail = useCallback(async (item: Pick<KnowledgeLibraryItem, "kind" | "id"> | null) => {
+    if (item && `${item.kind}:${item.id}` !== selectedKeyRef.current) return;
+    const request = ++detailRequestRef.current;
     if (!item) {
       setDetail(null);
       setDraftTitle("");
       setDraftBody("");
-      setDraftFolder(selectedFolder || "Inbox");
+      setDraftFolder("Inbox");
+      setLoadingDetail(false);
       return;
     }
     setLoadingDetail(true);
     setError("");
     try {
       const payload = await api.getKnowledgeLibraryItem(item.kind, item.id);
-      setDetail(payload.item);
-      setDraftTitle(payload.item.title);
-      setDraftBody(payload.item.body || payload.item.preview || "");
-      setDraftFolder(payload.item.folder_path || "Inbox");
+      if (request === detailRequestRef.current) applyDetail(payload.item);
     } catch (err) {
+      if (request !== detailRequestRef.current) return;
       if (isLibraryNotFoundError(err)) {
         setDetail(null);
+        setLoadingDetail(false);
         setSelectedKey("");
-        setDraftTitle("");
-        setDraftBody("");
-        setDraftFolder(selectedFolder || "Inbox");
         return;
       }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoadingDetail(false);
+      if (request === detailRequestRef.current) setLoadingDetail(false);
     }
-  }, [selectedFolder]);
+  }, [applyDetail, setSelectedKey]);
 
   useEffect(() => {
     void loadFolders();
@@ -565,8 +585,10 @@ export default function KnowledgeLibraryPage() {
   }, [loadItems]);
 
   useEffect(() => {
-    void loadDetail(selectedItem);
-  }, [loadDetail, selectedItem]);
+    const [kind, ...idParts] = selectedKey.split(":");
+    const id = idParts.join(":");
+    void loadDetail(id && (kind === "capture" || kind === "capture_draft") ? { kind, id } : null);
+  }, [loadDetail, selectedKey]);
 
   useEffect(() => {
     chatStreamAbortRef.current?.abort();
@@ -628,9 +650,8 @@ export default function KnowledgeLibraryPage() {
     setMode("files");
     setWorkbenchMode(requestedMode === "edit" ? "edit" : "browse");
     setSelectedKey(itemKey(item));
-    void loadDetail(item);
     clearRouteParams();
-  }, [allItems, loadDetail, loadingItems, searchParams, setSearchParams]);
+  }, [allItems, loadingItems, searchParams, setSearchParams, setSelectedKey]);
 
   useEffect(() => {
     if (mode !== "files") return;
@@ -643,7 +664,7 @@ export default function KnowledgeLibraryPage() {
     if (!visibleItems.some((item) => itemKey(item) === selectedKey)) {
       setSelectedKey(itemKey(visibleItems[0]));
     }
-  }, [mode, selectedItem, selectedKey, visibleItems]);
+  }, [mode, selectedItem, selectedKey, setSelectedKey, visibleItems]);
 
   useEffect(() => {
     if (!hasUnsavedChanges) return undefined;
@@ -734,8 +755,7 @@ export default function KnowledgeLibraryPage() {
     setSelectedKey(itemKey(item));
     setWorkbenchMode("browse");
     switchMode("files");
-    void loadDetail(item);
-  }, [confirmLeaveCurrentWork, loadDetail, switchMode]);
+  }, [confirmLeaveCurrentWork, setSelectedKey, switchMode]);
 
   const createFolder = useCallback(async () => {
     const name = newFolderName.trim();
@@ -868,7 +888,10 @@ export default function KnowledgeLibraryPage() {
   }, [draftFolder, selectedFolder, switchMode]);
 
   const saveDetail = useCallback(async (options: { refresh?: boolean; silent?: boolean } = {}) => {
-    if (!detail) return false;
+    if (!detail || saveInFlightRef.current || itemKey(detail) !== selectedKeyRef.current) return false;
+    saveInFlightRef.current = true;
+    const selectionVersion = detailSelectionRef.current;
+    const isCurrent = () => selectionVersion === detailSelectionRef.current;
     setSaving(true);
     setError("");
     if (!options.silent) setNotice("");
@@ -889,26 +912,29 @@ export default function KnowledgeLibraryPage() {
           body: bodyToSave,
           folder_path: draftFolder,
         });
-        await loadDetail(detail);
+        if (isCurrent()) await loadDetail(detail);
       } else {
         const payload = await api.updateKnowledgeLibraryItem(detail.kind, detail.id, {
           title: draftTitle,
           body: bodyToSave,
           folder_path: draftFolder,
         });
-        setDetail(payload.item);
-        setSelectedKey(itemKey(payload.item));
+        if (isCurrent()) applyDetail(payload.item);
       }
-      if (options.refresh !== false) await refreshAll();
-      if (!options.silent) setNotice("已保存。");
+      if (options.refresh !== false) {
+        if (isCurrent()) await refreshAll();
+        else await loadAllItems();
+      }
+      if (!options.silent && isCurrent()) setNotice("已保存。");
       return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (isCurrent()) setError(err instanceof Error ? err.message : String(err));
       return false;
     } finally {
+      saveInFlightRef.current = false;
       setSaving(false);
     }
-  }, [detail, draftBody, draftFolder, draftTitle, loadDetail, refreshAll]);
+  }, [applyDetail, detail, draftBody, draftFolder, draftTitle, loadAllItems, loadDetail, refreshAll]);
 
   const maybeGenerateGardenCardAfterCommit = useCallback(async ({
     draft,
@@ -1036,7 +1062,7 @@ export default function KnowledgeLibraryPage() {
     } finally {
       setDeleting(false);
     }
-  }, [detail, refreshAll]);
+  }, [detail, refreshAll, setSelectedKey]);
 
   const deleteDetailPermanent = useCallback(async () => {
     if (!detail || detail.kind !== "capture") return;
@@ -1068,7 +1094,7 @@ export default function KnowledgeLibraryPage() {
     } finally {
       setDeleting(false);
     }
-  }, [detail, refreshAll]);
+  }, [detail, refreshAll, setSelectedKey]);
 
   const openDetailLocal = useCallback(async () => {
     if (!detail || detail.kind !== "capture" || !detail.file_path) return;
@@ -1192,6 +1218,7 @@ export default function KnowledgeLibraryPage() {
     editableTitle,
     editableTitleSource,
     refreshAll,
+    setSelectedKey,
     visibleFolderPaths,
   ]);
 
@@ -1210,12 +1237,11 @@ export default function KnowledgeLibraryPage() {
     setNotice("");
     try {
       const result = editableDraft?.id
-          ? await api.updateKnowledgeEditableCaptureDraft(editableDraft.id, {
+          ? await api.regenerateKnowledgeEditableCaptureDraft(editableDraft.id, {
             content,
             title: editableTitle,
             title_source: editableTitleSource,
             folder_path: draftFolderPath,
-            organize: true,
             existing_folders: visibleFolderPaths,
           }, { operationId: operation.operationId, signal: operation.signal })
         : await api.createKnowledgeEditableCaptureDraft({
@@ -1280,6 +1306,7 @@ export default function KnowledgeLibraryPage() {
     editableTitle,
     editableTitleSource,
     refreshAll,
+    setSelectedKey,
     visibleFolderPaths,
   ]);
 
@@ -1328,7 +1355,7 @@ export default function KnowledgeLibraryPage() {
     } finally {
       setDeleting(false);
     }
-  }, [editableDraft, editableTitle, refreshAll, selectedFolder]);
+  }, [editableDraft, editableTitle, refreshAll, selectedFolder, setSelectedKey]);
 
   const commitEditableCaptureDraft = useCallback(async () => {
     const operation = beginAiOperation("library-editable-commit");
@@ -1419,6 +1446,7 @@ export default function KnowledgeLibraryPage() {
     maybeGenerateGardenCardAfterCommit,
     refreshAll,
     saveEditableCaptureDraftSnapshot,
+    setSelectedKey,
   ]);
 
   const markArticleAiStopped = useCallback((assistantId: string, message = "已停止生成。") => {
@@ -1628,13 +1656,37 @@ export default function KnowledgeLibraryPage() {
         markArticleAiStopped(assistantId, stoppedMessage);
         return;
       }
+      // Fall back only when the stream endpoint explicitly rejected the
+      // request. A network drop or a stream error after acceptance may still
+      // be running on the service; replaying it would create a duplicate
+      // answer or draft.
+      const canFallback = err instanceof KnowledgeSelectionChatStreamError
+        && !err.requestAccepted
+        && !sawProgressEvent;
+      if (!canFallback) {
+        const message = err instanceof Error ? err.message : String(err);
+        setChatError(message);
+        setChatMessagesForMode(requestMode, (messages) =>
+          messages.map((item) =>
+            item.id === assistantId
+              ? {
+                  ...item,
+                  content: `AI 问答失败：${message}`,
+                  pending: false,
+                  warnings: uniqueStrings([...(item.warnings || []), message]),
+                }
+              : item,
+          ),
+        );
+        return;
+      }
       try {
-        const response = sawProgressEvent
-          ? null
-          : await api.selectionChatKnowledgeLibraryItem(detail.kind, detail.id, requestBody);
-        if (!response) {
-          throw err;
-        }
+        const response = await api.selectionChatKnowledgeLibraryItem(
+          detail.kind,
+          detail.id,
+          requestBody,
+          streamController.signal,
+        );
         const assistantMessage: ArticleChatMessage = {
           id: assistantId,
           role: "assistant",
@@ -1646,7 +1698,7 @@ export default function KnowledgeLibraryPage() {
           sources: response.sources,
           researchTrace: response.meta?.research_trace,
           responseMeta: response.meta,
-          warnings: [...(response.warnings || []), "实时流式连接失败，已回退到普通请求。"],
+          warnings: [...(response.warnings || []), "实时流式连接未建立，已回退到普通请求。"],
         };
         applyHistorySummaryUpdate(response.meta?.updated_history_summary, response.meta?.updated_history_summary_version);
         setChatMessagesForMode(requestMode, (messages) =>
@@ -1655,6 +1707,12 @@ export default function KnowledgeLibraryPage() {
           ),
         );
       } catch (fallbackErr) {
+        if (streamController.signal.aborted) {
+          const stoppedMessage = streamTimedOut ? "生成超时，已停止。" : "已停止生成。";
+          if (streamTimedOut) setChatError(stoppedMessage);
+          markArticleAiStopped(assistantId, stoppedMessage);
+          return;
+        }
         const message = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
         setChatError(message);
         setChatMessagesForMode(requestMode, (messages) =>
@@ -1702,18 +1760,24 @@ export default function KnowledgeLibraryPage() {
     outputType: "local_learning_note" | "knowledge_card",
   ) => {
     if (!detail || message.role !== "assistant") return;
+    const question = articleQuestionForMessage(chatMessages, message);
+    if (!question) {
+      setChatError("找不到这条回答对应的问题，无法保存。");
+      return;
+    }
     setSavingArticleAnswerId(message.id);
     setChatError("");
     try {
       const result = await api.createKnowledgeAnswerDraft({
         hermes_session_id: "knowledge-library",
-        user_message: [...chatMessages].reverse().find((item) => item.role === "user")?.content || chatQuestion || detail.title,
+        user_message: question,
         assistant_answer: message.content,
         instruction: outputType === "knowledge_card" ? "把资料库右侧 AI 回答做成卡片" : "把资料库右侧 AI 回答存成资料笔记",
         output_type: outputType,
         assistant_message_id: message.id,
         sources: articleSourcesForSave(message.sources, detail),
-        answer_source: "provided",
+        answer_source: message.responseMeta?.source_run_id ? "auto" : "provided",
+        source_run_id: message.responseMeta?.source_run_id,
         folder_path: detail.folder_path || "",
       });
       const draftId =
@@ -1730,7 +1794,7 @@ export default function KnowledgeLibraryPage() {
     } finally {
       setSavingArticleAnswerId("");
     }
-  }, [chatMessages, chatQuestion, detail, navigate, refreshAll]);
+  }, [chatMessages, detail, navigate, refreshAll]);
 
   const openKnowledgeSource = useCallback((source: KnowledgeResearchSource) => {
     const rawKind = String(source.item_kind || "").trim();
@@ -1768,13 +1832,7 @@ export default function KnowledgeLibraryPage() {
     setSelectedKey(`${kind}:${itemId}`);
     setWorkbenchMode("browse");
     switchMode("files");
-    void loadDetail((existing || {
-      id: itemId,
-      kind,
-      title: source.title || itemId,
-      folder_path: folder,
-    }) as KnowledgeLibraryItem);
-  }, [allItems, confirmLeaveCurrentWork, loadDetail, navigate, switchMode]);
+  }, [allItems, confirmLeaveCurrentWork, navigate, setSelectedKey, switchMode]);
 
   const openKnowledgeSourceLocal = useCallback(async (source: KnowledgeResearchSource) => {
     const itemId = String(source.item_id || "").trim();
@@ -1900,7 +1958,8 @@ export default function KnowledgeLibraryPage() {
 
 	        {mode === "paste" ? (
 	          <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
-	            <EditableCaptureWorkbench
+            <EditableCaptureWorkbench
+              activityPending={Boolean(aiOperation || deleting)}
               content={editableContent}
               draft={editableDraft}
               error={editableError}
@@ -1941,7 +2000,7 @@ export default function KnowledgeLibraryPage() {
               onGenerateCardChange={setEditableGenerateCard}
               onDeleteDraft={() => void deleteEditableCaptureDraft()}
               onOrganizeDraft={() => void organizeEditableCaptureDraft()}
-              onStopAiOperation={stopAiOperation}
+              onStopAiOperation={aiOperation ? stopAiOperation : undefined}
               stoppingAiOperation={Boolean(aiOperation?.stopping)}
               onSourceChange={setEditableSource}
               onSummaryChange={setEditableSummary}
@@ -1993,7 +2052,7 @@ export default function KnowledgeLibraryPage() {
 	                  onModeChange={setWorkbenchMode}
 	                  onPublish={() => void commitDraft()}
 	                  onSave={() => void saveDetail()}
-	                  onStopAiOperation={stopAiOperation}
+	                  onStopAiOperation={aiOperation ? stopAiOperation : undefined}
 	                  stoppingAiOperation={Boolean(aiOperation?.stopping)}
 	                  onSelectionContextChange={setSelectionContext}
 	                  onTitleChange={setDraftTitle}
@@ -2240,6 +2299,7 @@ function FileWorkbench({
         {mode === "edit" ? (
           <input
             value={title}
+            disabled={busy}
             onChange={(event) => onTitleChange(event.target.value)}
             className="mt-3 w-full rounded-md border border-transparent bg-transparent px-0 py-1 text-2xl font-semibold outline-none transition focus:border-border focus:bg-background/70 focus:px-3"
             placeholder="文件标题"
@@ -2255,6 +2315,7 @@ function FileWorkbench({
               <span className="shrink-0 text-muted-foreground">所在文件夹</span>
               <select
                 value={folder}
+                disabled={busy}
                 onChange={(event) => onFolderChange(event.target.value)}
                 className="min-w-0 flex-1 bg-transparent outline-none"
               >
@@ -2293,6 +2354,7 @@ function FileWorkbench({
         ) : (
           <textarea
             value={body}
+            disabled={busy}
             onChange={(event) => onBodyChange(event.target.value)}
             className="h-full min-h-[360px] w-full resize-none rounded-md border border-border bg-background/70 px-3 py-3 text-sm leading-7 outline-none focus:border-primary/40"
             placeholder="开始记录..."
@@ -2306,7 +2368,7 @@ function FileWorkbench({
             <button
               type="button"
               onClick={onSave}
-              disabled={saving || deleting}
+              disabled={busy}
               className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}

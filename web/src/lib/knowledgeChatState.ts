@@ -11,6 +11,7 @@ export interface KnowledgeMessage {
   status?: "streaming" | "complete" | "error";
   warning?: string;
   sourceHints?: KnowledgeSourceHint[];
+  sourceRunId?: string;
   searchBackend?: string;
 }
 
@@ -44,6 +45,7 @@ export interface KnowledgeChatState {
   toolSourceHints: KnowledgeSourceHint[];
   toolCandidateSourceHints: KnowledgeSourceHint[];
   toolAnswerText: string;
+  toolAnswerRunId?: string;
   error: string | null;
   currentToolName: string | null;
   turnIndex: number;
@@ -74,6 +76,7 @@ export type KnowledgeChatAction =
       inlineDiff?: string;
       progressEvents?: ToolEntry["progressEvents"];
       answerText?: string;
+      sourceRunId?: string;
       knowledgeSources?: Array<Record<string, unknown>>;
       sourceMap?: Array<Record<string, unknown>>;
       webSources?: Array<Record<string, unknown>>;
@@ -84,7 +87,6 @@ export type KnowledgeChatAction =
       type: "hydrate_messages";
       messages: KnowledgeMessage[];
       tools?: ToolEntry[];
-      toolSummaries?: string[];
     }
   | { type: "clear_messages" }
   | { type: "error"; message: string }
@@ -133,6 +135,7 @@ export function knowledgeChatReducer(
         toolCandidateSourceHints: [],
         sourceHints: [],
         toolAnswerText: "",
+        toolAnswerRunId: undefined,
         toolSearchBackend: null,
         turnIndex: state.turnIndex + 1,
         messages: [
@@ -184,6 +187,7 @@ export function knowledgeChatReducer(
 
     case "message_complete": {
       const toolSummaries = state.tools
+        .filter((tool) => tool.turnIndex === state.turnIndex)
         .map((tool) => tool.summary)
         .filter((summary): summary is string => Boolean(summary));
       const finalText = state.toolAnswerText || action.text || state.draftAssistant?.text || "";
@@ -201,6 +205,7 @@ export function knowledgeChatReducer(
         status: "complete",
         warning: action.warning,
         sourceHints: messageSourceHints,
+        sourceRunId: state.toolAnswerText ? state.toolAnswerRunId : undefined,
         searchBackend: state.toolSearchBackend || undefined,
       };
 
@@ -215,6 +220,7 @@ export function knowledgeChatReducer(
         toolSourceHints: [],
         toolCandidateSourceHints: [],
         toolAnswerText: "",
+        toolAnswerRunId: undefined,
       };
     }
 
@@ -261,6 +267,7 @@ export function knowledgeChatReducer(
       };
 
     case "tool_complete": {
+      const completed = state.tools.find((tool) => tool.tool_id === action.toolId);
       const tools = state.tools.map((tool) =>
         tool.tool_id === action.toolId
           ? {
@@ -284,6 +291,9 @@ export function knowledgeChatReducer(
           ? stillRunning[stillRunning.length - 1].name
           : null;
 
+      if (completed?.turnIndex !== state.turnIndex) {
+        return { ...state, tools, currentToolName: nextToolName };
+      }
       const parsedToolHints = mergeSourceHints([
         ...state.toolSourceHints,
         ...sourceHintsFromRawSources(action.sourceMap, "tool"),
@@ -303,20 +313,17 @@ export function knowledgeChatReducer(
         sourceHints: parsedToolHints,
         toolCandidateSourceHints: parsedCandidateHints,
         toolAnswerText: action.answerText || state.toolAnswerText,
+        toolAnswerRunId: action.answerText ? action.sourceRunId : state.toolAnswerRunId,
         toolSearchBackend: action.searchBackend ?? state.toolSearchBackend,
       };
     }
 
     case "hydrate_messages": {
-      const toolSummaries = action.toolSummaries ??
-        (action.tools ?? [])
-          .map((tool) => tool.summary)
-          .filter((summary): summary is string => Boolean(summary));
       const messages = action.messages.map((message) => {
         if (message.role !== "assistant") return message;
         const sourceHints = message.sourceHints?.length
           ? message.sourceHints
-          : buildAnswerSourceHints(message.text, toolSummaries);
+          : buildAnswerSourceHints(message.text);
         return { ...message, sourceHints };
       });
       const lastAssistant = [...messages]
@@ -332,10 +339,11 @@ export function knowledgeChatReducer(
         tools: action.tools ?? state.tools,
         sourceHints: lastAssistant?.sourceHints?.length
           ? lastAssistant.sourceHints
-          : buildAnswerSourceHints(lastAssistant?.text ?? "", toolSummaries),
+          : buildAnswerSourceHints(lastAssistant?.text ?? ""),
         toolSourceHints: [],
         toolCandidateSourceHints: [],
         toolAnswerText: "",
+        toolAnswerRunId: undefined,
         toolSearchBackend: null,
       };
     }
@@ -351,6 +359,7 @@ export function knowledgeChatReducer(
         toolSourceHints: [],
         toolCandidateSourceHints: [],
         toolAnswerText: "",
+        toolAnswerRunId: undefined,
         toolSearchBackend: null,
         tools: [],
         currentToolName: null,
@@ -393,7 +402,7 @@ export function extractSourceHints(
   return fallbackWeb.length ? mergeSourceHints([...merged, ...fallbackWeb], preferredRefs) : merged;
 }
 
-function buildAnswerSourceHints(
+export function buildAnswerSourceHints(
   answerText: string,
   toolSummaries: string[] = [],
   baseHints: KnowledgeSourceHint[] = [],

@@ -277,7 +277,7 @@ def test_direct_reply_keeps_weixin_research_preview_short():
     assert reply == "短 preview"
 
 
-def test_envelope_adapter_mentions_media_attachment_for_user_requested_artifacts():
+def test_envelope_adapter_does_not_grant_attachment_from_artifact_text():
     content = agent_result_envelope_content_for_model(
         json.dumps(
             {
@@ -305,11 +305,10 @@ def test_envelope_adapter_mentions_media_attachment_for_user_requested_artifacts
     )
 
     assert content is not None
-    assert "MEDIA:/tmp/rag.md" in content
-    assert "only if the user explicitly requested a file" in content
+    assert "MEDIA:/tmp/rag.md" not in content
 
 
-def test_direct_reply_includes_file_artifact_media_for_weixin():
+def test_direct_reply_does_not_grant_file_attachment_from_artifact_text():
     structured = {
         "status": "success",
         "agent": "rag",
@@ -346,7 +345,7 @@ def test_direct_reply_includes_file_artifact_media_for_weixin():
         platform="weixin",
     )
     assert "已生成完整报告。" in reply
-    assert "MEDIA:/tmp/rag.md" in reply
+    assert "MEDIA:/tmp/rag.md" not in reply
 
 
 def test_direct_reply_suppresses_mirrored_send_message_confirmation_for_weixin():

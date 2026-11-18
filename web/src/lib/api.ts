@@ -88,6 +88,22 @@ function withAiOperation(init: RequestInit, options?: AiOperationOptions): Reque
   };
 }
 
+/**
+ * The service accepted the streaming request but the stream could not be read
+ * to a final answer. ``requestAccepted`` is false only when the HTTP response
+ * explicitly rejected the request (4xx), which is the sole case where retrying
+ * with the plain endpoint cannot duplicate a server-side answer or draft.
+ */
+export class KnowledgeSelectionChatStreamError extends Error {
+  readonly requestAccepted: boolean;
+
+  constructor(message: string, requestAccepted: boolean) {
+    super(message);
+    this.name = "KnowledgeSelectionChatStreamError";
+    this.requestAccepted = requestAccepted;
+  }
+}
+
 async function getSessionToken(): Promise<string> {
   if (_sessionToken) return _sessionToken;
   const injected = window.__HERMES_SESSION_TOKEN__;
@@ -433,6 +449,7 @@ export const api = {
     kind: KnowledgeLibraryItemKind,
     itemId: string,
     body: KnowledgeLibrarySelectionChatRequest,
+    signal?: AbortSignal,
   ) =>
     fetchJSON<KnowledgeLibrarySelectionChatResponse>(
       `/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/selection-chat`,
@@ -440,6 +457,7 @@ export const api = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal,
       },
     ),
   streamSelectionChatKnowledgeLibraryItem: async (
@@ -454,21 +472,39 @@ export const api = {
     if (token) {
       setSessionHeader(headers, token);
     }
-    const res = await fetch(
-      `${BASE}/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/selection-chat/stream`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal,
-      },
-    );
+    let res: Response;
+    try {
+      res = await fetch(
+        `${BASE}/api/knowledge/library/items/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/selection-chat/stream`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal,
+        },
+      );
+    } catch (error) {
+      if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+        throw error;
+      }
+      // The request may have reached the service even though no response came
+      // back. Replaying it would create a second answer/draft, so only an
+      // explicit unavailable-endpoint response allows the plain-request fallback.
+      throw new KnowledgeSelectionChatStreamError(
+        error instanceof Error ? error.message : String(error),
+        true,
+      );
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText);
-      throw new Error(`${res.status}: ${text}`);
+      const requestAccepted = res.status !== 404 && res.status !== 405;
+      throw new KnowledgeSelectionChatStreamError(`${res.status}: ${text}`, requestAccepted);
     }
     if (!res.body) {
-      throw new Error("Selection chat stream returned an empty body");
+      throw new KnowledgeSelectionChatStreamError(
+        "Selection chat stream returned an empty body",
+        true,
+      );
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -492,24 +528,41 @@ export const api = {
           finalResponse = event.response;
         }
         if (event.event === "error") {
-          throw new Error(event.message || event.error || "Selection chat stream failed");
+          throw new KnowledgeSelectionChatStreamError(
+            event.message || event.error || "Selection chat stream failed",
+            true,
+          );
         }
       }
     };
     try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (value) {
-          flush(decoder.decode(value, { stream: !done }));
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (value) {
+            flush(decoder.decode(value, { stream: !done }));
+          }
+          if (done) break;
         }
-        if (done) break;
+        flush(decoder.decode());
+      } catch (error) {
+        if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+          throw error;
+        }
+        if (error instanceof KnowledgeSelectionChatStreamError) throw error;
+        throw new KnowledgeSelectionChatStreamError(
+          error instanceof Error ? error.message : String(error),
+          true,
+        );
       }
     } finally {
       reader.releaseLock();
     }
-    flush(decoder.decode());
     if (!finalResponse) {
-      throw new Error("Selection chat stream ended without a final answer");
+      throw new KnowledgeSelectionChatStreamError(
+        "Selection chat stream ended without a final answer",
+        true,
+      );
     }
     return finalResponse;
   },
@@ -562,6 +615,15 @@ export const api = {
       `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}/editable`,
       withAiOperation({
         method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }, options),
+    ),
+  regenerateKnowledgeEditableCaptureDraft: (draftId: string, body: KnowledgeEditableCaptureSuggestionRequest, options?: AiOperationOptions) =>
+    fetchJSON<Record<string, unknown>>(
+      `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}/suggestions/regenerate`,
+      withAiOperation({
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }, options),
@@ -1050,6 +1112,7 @@ export interface KnowledgeLibrarySelectionChatResponse {
   };
   warnings?: string[];
   meta?: {
+    source_run_id?: string;
     web_queries?: string[];
     query_intent?: string;
     search_quality?: Record<string, unknown>;
@@ -1171,6 +1234,14 @@ export interface KnowledgeEditableCaptureDraftUpdateRequest {
   existing_folders?: string[];
 }
 
+export interface KnowledgeEditableCaptureSuggestionRequest {
+  content: string;
+  title?: string;
+  title_source?: "ai" | "user";
+  folder_path?: string;
+  existing_folders?: string[];
+}
+
 export interface KnowledgeCaptureUpdateRequest {
   body?: string;
   title?: string;
@@ -1232,6 +1303,7 @@ export interface KnowledgeAnswerDraftRequest {
   sources: KnowledgeAnswerDraftSource[];
   target_capture_id?: string;
   answer_source?: "auto" | "provided" | "latest_rag_full_answer";
+  source_run_id?: string;
   folder_path?: string;
 }
 

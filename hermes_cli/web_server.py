@@ -4948,6 +4948,14 @@ class _KnowledgeEditableCaptureDraftBody(BaseModel):
     existing_folders: list[str] = []
 
 
+class _KnowledgeEditableCaptureSuggestionBody(BaseModel):
+    content: str
+    title: str = ""
+    title_source: str = ""
+    folder_path: str = ""
+    existing_folders: list[str] = []
+
+
 class _KnowledgeCaptureUpdateBody(BaseModel):
     body: str = ""
     title: str = ""
@@ -4964,6 +4972,7 @@ class _KnowledgeAnswerDraftBody(BaseModel):
     sources: list[dict[str, Any]] = []
     target_capture_id: str = ""
     answer_source: str = "auto"
+    source_run_id: str = ""
     folder_path: str = ""
 
 
@@ -5203,6 +5212,11 @@ def _knowledge_ai_operation_id(request: Request) -> str:
     return _normalize_ai_operation_id(request.headers.get(_AI_OPERATION_HEADER_NAME, ""))
 
 
+def _knowledge_http_operation_kwargs(request: Request) -> dict[str, str]:
+    operation_id = _knowledge_ai_operation_id(request)
+    return {"operation_id": operation_id} if operation_id else {}
+
+
 async def _run_cancellable_ai_operation(
     request: Request,
     label: str,
@@ -5245,12 +5259,12 @@ async def post_knowledge_ai_operation_cancel(request: Request, operation_id: str
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            return client.cancel_ai_operation(operation_id)
+            return await asyncio.to_thread(client.cancel_ai_operation, operation_id)
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
         finally:
@@ -6901,6 +6915,7 @@ def _knowledge_library_selection_chat_response(
         "sources": sources,
         "warnings": result.get("warnings") if isinstance(result.get("warnings"), list) else [],
         "meta": {
+            "source_run_id": meta.get("source_run_id") if isinstance(meta.get("source_run_id"), str) else "",
             "web_queries": meta.get("web_queries") if isinstance(meta.get("web_queries"), list) else [],
             "query_intent": meta.get("query_intent") or "",
             "search_quality": meta.get("search_quality") if isinstance(meta.get("search_quality"), dict) else {},
@@ -6934,14 +6949,12 @@ async def post_knowledge_library_item_selection_chat(
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            result = client.selection_chat(
-                kind, item_id, body.model_dump()
-            )
+            result = await asyncio.to_thread(client.selection_chat, kind, item_id, body.model_dump())
             return _knowledge_library_selection_chat_response(result, body)
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
@@ -6958,7 +6971,7 @@ async def post_knowledge_library_item_selection_chat(
             sync_answer = getattr(research_bridge, "web_assist_answer", None)
             if not callable(sync_answer):
                 raise HTTPException(status_code=503, detail="Web assist answer is unavailable")
-            result = sync_answer(**research_kwargs)
+            result = await asyncio.to_thread(sync_answer, **research_kwargs)
     except HTTPException:
         raise
     except Exception as exc:
@@ -6979,7 +6992,7 @@ async def post_knowledge_library_item_selection_chat_stream(
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
@@ -7415,12 +7428,15 @@ async def post_knowledge_capture_revise(
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            return client.revise_capture_note(capture_id, instruction)
+            return await asyncio.to_thread(
+                client.revise_capture_note, capture_id, instruction,
+                **_knowledge_http_operation_kwargs(request),
+            )
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
         finally:
@@ -7762,13 +7778,14 @@ async def post_knowledge_editable_capture_draft(
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            return client.call_tool(
-                "capture_bridge", "create_editable_capture_draft", kwargs=kwargs
+            return await asyncio.to_thread(
+                client.call_tool, "capture_bridge", "create_editable_capture_draft",
+                kwargs=kwargs, **_knowledge_http_operation_kwargs(request),
             )
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
@@ -7792,15 +7809,27 @@ async def patch_knowledge_editable_capture_draft(
     body: _KnowledgeEditableCaptureDraftBody,
 ):
     _require_token(request)
-    # HTTP mode: the service owns the draft row.  Server contract is
-    # PATCH /api/capture-drafts/{id} (the /editable suffix is dashboard-only).
+    # AI organization must use the editable draft workflow, not a plain row edit.
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
+        if body.organize:
+            try:
+                payload = body.model_dump(exclude_none=True)
+                if not body.folder_path.strip():
+                    payload.pop("folder_path", None)
+                return await asyncio.to_thread(
+                    client.update_editable_capture_draft, draft_id, payload,
+                    **_knowledge_http_operation_kwargs(request),
+                )
+            except KnowledgeUnavailable as exc:
+                raise _knowledge_client_operation_error(exc) from exc
+            finally:
+                client.close()
         capture_intent: dict[str, Any] = {}
         if body.folder_path.strip():
             capture_intent["folder_path"] = _knowledge_folder(body.folder_path)
@@ -7809,7 +7838,8 @@ async def patch_knowledge_editable_capture_draft(
         if body.card_suggestion is not None:
             capture_intent["card_suggestion"] = body.card_suggestion
         try:
-            return client.patch_capture_draft(
+            return await asyncio.to_thread(
+                client.patch_capture_draft,
                 draft_id,
                 title=body.title,
                 draft_text=body.content,
@@ -7843,6 +7873,62 @@ async def patch_knowledge_editable_capture_draft(
     )
 
 
+@app.post("/api/knowledge/capture-drafts/{draft_id}/suggestions/regenerate")
+async def post_knowledge_capture_draft_regenerate_suggestions(
+    request: Request,
+    draft_id: str,
+    body: _KnowledgeEditableCaptureSuggestionBody,
+):
+    _require_token(request)
+    # AI suggestion regeneration is the editable-draft workflow with
+    # organize=True (the route P1 connected), not a plain draft-row PATCH.
+    # Summary, tags and the old folder/card suggestions are deliberately not
+    # sent so the service regenerates them instead of preserving stale values.
+    from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
+
+    try:
+        client = await asyncio.to_thread(get_client)
+    except KnowledgeUnavailable as exc:
+        raise _knowledge_client_startup_error(exc) from exc
+    if client is not None:
+        payload: dict[str, Any] = {
+            "content": body.content,
+            "title": body.title,
+            "organize": True,
+        }
+        if body.title_source.strip():
+            payload["title_source"] = body.title_source.strip()
+        if body.folder_path.strip():
+            payload["folder_path"] = body.folder_path.strip()
+        if body.existing_folders:
+            payload["existing_folders"] = body.existing_folders
+        try:
+            return await asyncio.to_thread(
+                client.update_editable_capture_draft, draft_id, payload,
+                **_knowledge_http_operation_kwargs(request),
+            )
+        except KnowledgeUnavailable as exc:
+            raise _knowledge_client_operation_error(exc) from exc
+        finally:
+            client.close()
+
+    capture_bridge = _knowledge_custom_module("bridge.capture_bridge", "Capture bridge")
+    update_editable_capture_draft = capture_bridge.update_editable_capture_draft
+    return await _run_cancellable_ai_operation(
+        request,
+        "capture.editable.regenerate_suggestions",
+        lambda: update_editable_capture_draft(
+            draft_id=draft_id,
+            content=body.content,
+            title=body.title,
+            title_source=body.title_source or None,
+            folder_path=body.folder_path or None,
+            organize=True,
+            existing_folders=body.existing_folders or _knowledge_visible_folder_paths(),
+        ),
+    )
+
+
 @app.post("/api/knowledge/capture-drafts/{draft_id}/commit")
 async def post_knowledge_capture_draft_commit(request: Request, draft_id: str):
     _require_token(request)
@@ -7851,18 +7937,21 @@ async def post_knowledge_capture_draft_commit(request: Request, draft_id: str):
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            issued = client.issue_confirmation("capture-drafts", draft_id)
+            issued = await asyncio.to_thread(client.issue_confirmation, "capture-drafts", draft_id)
             token = str((issued or {}).get("token") or "").strip()
             if not token:
                 raise KnowledgeUnavailable(
                     "knowledge service did not return a capture commit token"
                 )
-            return client.commit_draft("capture-drafts", draft_id, token)
+            return await asyncio.to_thread(
+                client.commit_draft, "capture-drafts", draft_id, token,
+                **_knowledge_http_operation_kwargs(request),
+            )
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
         finally:
@@ -7895,15 +7984,17 @@ async def post_knowledge_capture_draft_revise(
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            return client.call_tool(
+            return await asyncio.to_thread(
+                client.call_tool,
                 "capture_bridge",
                 "revise_capture_draft",
                 kwargs={"draft_id": draft_id, "instruction": body.instruction},
+                **_knowledge_http_operation_kwargs(request),
             )
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
@@ -8074,14 +8165,11 @@ async def patch_knowledge_capture(
 async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDraftBody):
     _require_token(request)
 
-    # HTTP mode: the service saves the answer draft.  Unlike the local branch
-    # this is a plain request, so client-side cancellation of the AI operation is
-    # not available; the response keeps the envelope shape the local branch
-    # returns so the dashboard can consume it unchanged.
+    # The service owns the draft and its cancellation checkpoints.
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
@@ -8095,10 +8183,13 @@ async def post_knowledge_answer_draft(request: Request, body: _KnowledgeAnswerDr
             "sources": body.sources,
             "target_capture_id": body.target_capture_id,
             "answer_source": body.answer_source,
+            "source_run_id": body.source_run_id,
             "folder_path": body.folder_path,
         }
         try:
-            return client.create_answer_draft(payload)
+            return await asyncio.to_thread(
+                client.create_answer_draft, payload, **_knowledge_http_operation_kwargs(request),
+            )
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
         finally:
@@ -8165,16 +8256,18 @@ async def post_knowledge_garden_draft(request: Request, body: _KnowledgeGardenDr
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            return client.create_garden_draft(
+            return await asyncio.to_thread(
+                client.create_garden_draft,
                 capture_ids=body.capture_ids,
                 title=body.title,
                 card_kind=body.card_kind,
                 instruction=body.instruction,
+                **_knowledge_http_operation_kwargs(request),
             )
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
@@ -8251,19 +8344,21 @@ async def post_knowledge_garden_draft_commit(request: Request, draft_id: str):
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            token = _garden_confirmation_token(
-                client.issue_garden_confirmation(draft_id)
-            )
+            issued = await asyncio.to_thread(client.issue_garden_confirmation, draft_id)
+            token = _garden_confirmation_token(issued)
             if not token:
                 raise KnowledgeUnavailable(
                     "knowledge service did not return a garden confirmation token"
                 )
-            return client.commit_garden_draft(draft_id, token)
+            return await asyncio.to_thread(
+                client.commit_garden_draft, draft_id, token,
+                **_knowledge_http_operation_kwargs(request),
+            )
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
         finally:
@@ -8479,18 +8574,21 @@ async def post_knowledge_reading_draft_commit(request: Request, draft_id: str):
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            issued = client.issue_confirmation("reading/drafts", draft_id)
+            issued = await asyncio.to_thread(client.issue_confirmation, "reading/drafts", draft_id)
             token = str((issued or {}).get("token") or "").strip()
             if not token:
                 raise KnowledgeUnavailable(
                     "knowledge service did not return a reading commit token"
                 )
-            return client.commit_draft("reading/drafts", draft_id, token)
+            return await asyncio.to_thread(
+                client.commit_draft, "reading/drafts", draft_id, token,
+                **_knowledge_http_operation_kwargs(request),
+            )
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc
         finally:
@@ -8520,15 +8618,17 @@ async def post_knowledge_reading_draft_revise(
     from integrations.hermes_knowledge.client import KnowledgeUnavailable, get_client
 
     try:
-        client = get_client()
+        client = await asyncio.to_thread(get_client)
     except KnowledgeUnavailable as exc:
         raise _knowledge_client_startup_error(exc) from exc
     if client is not None:
         try:
-            return client.call_tool(
+            return await asyncio.to_thread(
+                client.call_tool,
                 "answer_bridge",
                 "revise_answer_draft",
                 kwargs={"draft_id": draft_id, "instruction": body.instruction},
+                **_knowledge_http_operation_kwargs(request),
             )
         except KnowledgeUnavailable as exc:
             raise _knowledge_client_operation_error(exc) from exc

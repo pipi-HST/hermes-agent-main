@@ -47,6 +47,8 @@ jobs:
           uv venv .venv --python 3.11
           source .venv/bin/activate
           uv pip install -e ".[all,dev]"
+          # The packaging regression builds a real wheel offline inside this venv.
+          uv pip install pip==26.3 setuptools==84.2.1 wheel==0.48.0
 
       - name: Gateway platform mock ordering
         # The unit job ignores tests/e2e. This pair catches the class of bug

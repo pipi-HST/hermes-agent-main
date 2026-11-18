@@ -650,7 +650,7 @@ def test_garden_client_methods():
     client.delete_garden_card("k 1")
 
     assert [request.method for request in seen] == ["POST", "GET", "GET", "DELETE"]
-    assert seen[0].url.path == "/api/garden/drafts"
+    assert seen[0].url.path == "/api/garden/drafts/preview"
     assert json.loads(seen[0].content) == {
         "capture_ids": ["c1", "c2"],
         "title": "T",
@@ -668,6 +668,8 @@ def test_garden_confirmation_issues_token_and_commit_sends_it():
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
+        if request.url.path == "/api/health":
+            return httpx.Response(200, json={"service": "hermes-knowledge", "contract_version": 2})
         if request.url.path.endswith("/confirmation"):
             return httpx.Response(
                 200,
@@ -685,11 +687,10 @@ def test_garden_confirmation_issues_token_and_commit_sends_it():
 
     assert issued["token"] == "gtok"
     assert result == {"ok": True}
-    assert calls[0].method == "POST"
-    assert _raw_path(calls[0]) == b"/api/garden/drafts/d%201/confirmation"
-    assert calls[1].method == "POST"
-    assert _raw_path(calls[1]) == b"/api/garden/drafts/d%201/commit"
-    assert json.loads(calls[1].content) == {"confirmation_token": "gtok"}
+    assert [call.method for call in calls] == ["GET", "POST", "POST"]
+    assert _raw_path(calls[1]) == b"/api/garden/drafts/d%201/confirmation"
+    assert _raw_path(calls[2]) == b"/api/garden/drafts/d%201/commit"
+    assert json.loads(calls[2].content) == {"confirmation_token": "gtok"}
 
 
 def test_garden_commit_issues_token_when_omitted():
@@ -697,6 +698,8 @@ def test_garden_commit_issues_token_when_omitted():
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
+        if request.url.path == "/api/health":
+            return httpx.Response(200, json={"service": "hermes-knowledge", "contract_version": 2})
         if request.url.path.endswith("/confirmation"):
             return httpx.Response(200, json={"confirmation_token": "ctok"})
         return httpx.Response(200, json={"ok": True})
@@ -704,8 +707,25 @@ def test_garden_commit_issues_token_when_omitted():
     with _client(handler) as client:
         client.commit_garden_draft("d1")
 
-    assert [request.method for request in calls] == ["POST", "POST"]
-    assert json.loads(calls[1].content) == {"confirmation_token": "ctok"}
+    assert [request.method for request in calls] == ["GET", "POST", "POST"]
+    assert json.loads(calls[2].content) == {"confirmation_token": "ctok"}
+
+
+def test_legacy_garden_routes_allow_preview_but_never_send_a_commit():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/api/health":
+            return httpx.Response(200, json={"service": "hermes-knowledge", "contract_version": 1})
+        assert request.url.path == "/api/garden/drafts/preview"
+        return httpx.Response(200, json={"status": "success", "meta": {"draft_id": "d1"}})
+
+    with _client(handler) as client:
+        assert client.create_garden_draft(capture_ids=["c1"])["meta"]["draft_id"] == "d1"
+        with pytest.raises(KnowledgeIncompatible):
+            client.commit_garden_draft("d1", "test-token")
+    assert calls == ["/api/garden/drafts/preview", "/api/health"]
 
 
 def test_graph_and_answer_client_methods():

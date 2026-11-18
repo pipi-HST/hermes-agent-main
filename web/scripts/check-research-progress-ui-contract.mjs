@@ -42,6 +42,7 @@ function loadKnowledgeChatStateModule() {
 }
 
 const {
+  buildAnswerSourceHints,
   initialKnowledgeChatState,
   knowledgeChatReducer,
 } = loadKnowledgeChatStateModule();
@@ -152,8 +153,17 @@ const historicalToolSummary = `USER_VISIBLE_REPLY:\n历史回答\nSTRUCTURED_AGE
   },
 })}`;
 
-state = knowledgeChatReducer(initialKnowledgeChatState, {
-  type: "hydrate_messages",
+function hydrateOneTurn({ messages, toolSummaries }) {
+  return knowledgeChatReducer(initialKnowledgeChatState, {
+    type: "hydrate_messages",
+    messages: messages.map((message) => ({
+      ...message,
+      sourceHints: buildAnswerSourceHints(message.text, toolSummaries),
+    })),
+  });
+}
+
+state = hydrateOneTurn({
   messages: [
     {
       id: "history-assistant",
@@ -188,8 +198,7 @@ const historicalKnowledgeSummary = JSON.stringify({
   ],
 });
 
-state = knowledgeChatReducer(initialKnowledgeChatState, {
-  type: "hydrate_messages",
+state = hydrateOneTurn({
   messages: [
     {
       id: "history-knowledge-assistant",
@@ -222,8 +231,7 @@ const webSources = Array.from({ length: 3 }, (_, index) => ({
   url: `https://official.example.com/w${index + 1}`,
 }));
 
-state = knowledgeChatReducer(initialKnowledgeChatState, {
-  type: "hydrate_messages",
+state = hydrateOneTurn({
   messages: [
     {
       id: "history-k-heavy-assistant",
@@ -250,8 +258,7 @@ assert(kHeavyHints.filter((source) => source.ref?.startsWith("K")).length === 10
 assert(kHeavyHints.filter((source) => source.ref?.startsWith("W")).length === 3, "Formal web sources should not be squeezed out by K sources");
 assert(kHeavyHints.some((source) => source.url === "https://official.example.com/w1"), "History hydrate should keep formal web source URLs even when answer cites only K");
 
-state = knowledgeChatReducer(initialKnowledgeChatState, {
-  type: "hydrate_messages",
+state = hydrateOneTurn({
   messages: [
     {
       id: "history-retrieved-fallback-assistant",
@@ -281,8 +288,7 @@ const fallbackWebHints = state.messages[0].sourceHints.filter((source) => source
 assert(fallbackWebHints.length === 4, "Retrieved web sources should provide a small clickable fallback when formal web sources are missing");
 assert(fallbackWebHints[0].url === "https://retrieved.example.com/w1", "Retrieved fallback should preserve URL order");
 
-state = knowledgeChatReducer(initialKnowledgeChatState, {
-  type: "hydrate_messages",
+state = hydrateOneTurn({
   messages: [
     {
       id: "history-knowledge-with-url",

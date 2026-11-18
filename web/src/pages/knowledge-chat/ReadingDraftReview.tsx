@@ -12,6 +12,7 @@ import {
 
 export function ReadingDraftReview({
   actionLoading,
+  busy: pending,
   detail,
   loading,
   revision,
@@ -24,6 +25,7 @@ export function ReadingDraftReview({
   stoppingAiOperation,
 }: {
   actionLoading: AnswerDraftActionLoading;
+  busy: boolean;
   detail: KnowledgeReadingDraft | null;
   loading: boolean;
   revision: string;
@@ -51,6 +53,7 @@ export function ReadingDraftReview({
         enhance_capture: "主笔记增强草稿",
       } as Record<string, string>)[detail.output_type] ?? "回答沉淀草稿";
   const canCommit = detail.status === "open";
+  const busy = pending || Boolean(actionLoading);
   const canCreateCard =
     detail.output_type === "local_learning_note"
     && detail.status === "committed"
@@ -78,7 +81,7 @@ export function ReadingDraftReview({
                 <button
                   type="button"
                   onClick={onDelete}
-                  disabled={!canCommit || Boolean(actionLoading)}
+                  disabled={!canCommit || busy}
                   className="inline-flex items-center gap-1.5 rounded-md border border-destructive/35 bg-background/60 px-3 py-2 text-sm text-destructive transition hover:bg-destructive/10 disabled:border-border disabled:text-muted-foreground disabled:opacity-50"
                 >
                   {actionLoading === "delete" ? (
@@ -90,7 +93,7 @@ export function ReadingDraftReview({
                 </button>
                 <ActionButton
                   onClick={onCommit}
-                  disabled={!canCommit || Boolean(actionLoading)}
+                  disabled={!canCommit || busy}
                   loading={actionLoading === "commit"}
                 >
                   确认保存
@@ -112,7 +115,7 @@ export function ReadingDraftReview({
               <button
                 type="button"
                 onClick={onCreateCard}
-                disabled={Boolean(actionLoading)}
+                disabled={busy}
                 className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-background/60 px-3 py-2 text-sm text-foreground transition hover:bg-primary/10 disabled:opacity-45"
               >
                 {actionLoading === "card" ? (
@@ -142,13 +145,14 @@ export function ReadingDraftReview({
           <textarea
             value={revision}
             onChange={(event) => onRevisionChange(event.target.value)}
+            disabled={busy}
             placeholder="写修改意见，比如：删掉重复段落、把第二部分展开、改成更像正式文稿..."
             className="min-h-20 flex-1 resize-none rounded-md border border-border bg-background/80 px-3 py-2 text-sm leading-6 text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
           />
           <button
             type="button"
             onClick={onRevise}
-            disabled={!revision.trim() || detail.status !== "open" || Boolean(actionLoading)}
+            disabled={!revision.trim() || detail.status !== "open" || busy}
             className="inline-flex min-h-20 items-center justify-center gap-2 rounded-md border border-primary/45 bg-primary px-4 text-sm font-medium text-primary-foreground shadow-[0_14px_34px_-22px_rgba(47,111,95,0.65)] transition hover:brightness-105 disabled:border-border disabled:bg-muted/40 disabled:text-muted-foreground"
           >
             {actionLoading === "revise" ? (

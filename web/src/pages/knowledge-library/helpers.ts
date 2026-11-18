@@ -53,6 +53,34 @@ export function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+export interface ArticleQuestionMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  requestContext?: { question?: string };
+}
+
+/**
+ * Return the question that produced this assistant message. New messages carry
+ * their own request context; older/hydrated messages may not, so fall back to
+ * the nearest preceding user turn instead of the reader's latest question.
+ */
+export function articleQuestionForMessage<T extends ArticleQuestionMessage>(
+  messages: T[],
+  message: T,
+): string {
+  const ownQuestion = stringValue(message.requestContext?.question);
+  if (ownQuestion) return ownQuestion;
+  const index = messages.findIndex((item) => item.id === message.id);
+  if (index < 0) return "";
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const candidate = messages[cursor];
+    if (candidate.role !== "user") continue;
+    return stringValue(candidate.requestContext?.question) || stringValue(candidate.content);
+  }
+  return "";
+}
+
 export function normalizeGardenCardKind(value: string): string {
   const kind = value.trim().toLowerCase();
   if (["viewpoint", "method", "fact", "risk"].includes(kind)) return kind;

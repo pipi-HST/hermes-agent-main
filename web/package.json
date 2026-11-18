@@ -14,6 +14,8 @@
     "check:knowledge-editor-workflow": "node scripts/check-knowledge-editor-workflow.mjs",
     "check:knowledge-layout-focus": "node scripts/check-knowledge-layout-focus.mjs",
     "check:knowledge-draft-routing": "node scripts/test-knowledge-draft-routing.mjs",
+    "check:knowledge-answer-binding": "node scripts/test-knowledge-answer-binding.mjs",
+    "check:knowledge-selection-stream": "node scripts/test-knowledge-selection-stream-fallback.mjs",
     "check:knowledge-outline": "node scripts/check-knowledge-outline-navigation.mjs",
     "check:permanent-delete": "node scripts/check-knowledge-permanent-delete-contract.mjs",
     "check:research-progress": "node scripts/check-research-progress-ui-contract.mjs",

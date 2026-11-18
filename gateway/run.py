@@ -638,6 +638,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from gateway.attachment_policy import AgentReply, collect_local_attachments
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -814,7 +815,7 @@ _SESSION_DOCUMENTS_MAX_SESSIONS = 512
 _SESSION_DOCUMENTS_MAX_PER_SESSION = 16
 
 
-def _session_documents_registry(owner: Any) -> "OrderedDict[str, List[tuple[str, str]]]":
+def _session_documents_registry(owner: Any) -> "OrderedDict[tuple[str, str], List[tuple[str, str]]]":
     """Return the runner's document registry, creating it for test fixtures."""
     registry = getattr(owner, "_session_documents", None)
     if not isinstance(registry, OrderedDict):
@@ -825,16 +826,16 @@ def _session_documents_registry(owner: Any) -> "OrderedDict[str, List[tuple[str,
 
 def _remember_session_documents(
     owner: Any,
-    session_key: str,
+    scope: tuple[str, str],
     documents: "List[tuple[str, str]]",
 ) -> "List[tuple[str, str]]":
-    """Record documents delivered to ``session_key`` (newest last, deduped).
+    """Record documents delivered to the lane and actual conversation ID.
 
     The registry is an LRU over sessions: touching a session moves it to the
     newest position and exceeding the cap evicts the least recently used one.
     """
     registry = _session_documents_registry(owner)
-    remembered = list(registry.get(session_key) or [])
+    remembered = list(registry.get(scope) or [])
     seen = {path for path, _mime in remembered}
     for path, mime_type in documents:
         path = str(path or "")
@@ -844,14 +845,14 @@ def _remember_session_documents(
         seen.add(path)
     if len(remembered) > _SESSION_DOCUMENTS_MAX_PER_SESSION:
         remembered = remembered[-_SESSION_DOCUMENTS_MAX_PER_SESSION:]
-    registry[session_key] = remembered
-    registry.move_to_end(session_key)
+    registry[scope] = remembered
+    registry.move_to_end(scope)
     while len(registry) > _SESSION_DOCUMENTS_MAX_SESSIONS:
         registry.popitem(last=False)
     return remembered
 
 
-def _live_session_documents(owner: Any, session_key: str) -> "List[tuple[str, str]]":
+def _live_session_documents(owner: Any, scope: tuple[str, str]) -> "List[tuple[str, str]]":
     """Return the session's documents that still exist, pruning dead entries.
 
     A file can disappear (temp cleanup, user deleted it) between the message
@@ -861,22 +862,23 @@ def _live_session_documents(owner: Any, session_key: str) -> "List[tuple[str, st
     registry = getattr(owner, "_session_documents", None)
     if not isinstance(registry, dict):
         return []
-    remembered = list(registry.get(session_key) or [])
+    remembered = list(registry.get(scope) or [])
     if not remembered:
         return []
     live = [(path, mime) for path, mime in remembered if os.path.isfile(path)]
     if live:
-        registry[session_key] = live
+        registry[scope] = live
+        registry.move_to_end(scope)
     else:
-        registry.pop(session_key, None)
+        registry.pop(scope, None)
     return live
 
 
-def _forget_session_documents(owner: Any, session_key: str) -> None:
+def _forget_session_documents(owner: Any, scope: tuple[str, str]) -> None:
     """Drop the session's document memory at a conversation boundary."""
     registry = getattr(owner, "_session_documents", None)
     if isinstance(registry, dict):
-        registry.pop(session_key, None)
+        registry.pop(scope, None)
 
 
 _DOCUMENT_CONTEXT_RE = re.compile(
@@ -7275,6 +7277,7 @@ class GatewayRunner:
         event: MessageEvent,
         source: SessionSource,
         history: List[Dict[str, Any]],
+        session_id: Optional[str] = None,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent.
 
@@ -7297,6 +7300,9 @@ class GatewayRunner:
         # matches the consume key at the run_conversation site — even if the
         # session store overrides build_session_key's default behavior.
         session_key = self._session_key_for_source(source)
+        # Routing keys survive expiry, compression, and /resume. None is not
+        # a usable conversation scope, so never remember or inherit docs then.
+        document_scope = (session_key, session_id) if session_id else None
         # Reset only this session's per-call buffer; other sessions may be
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
@@ -7414,20 +7420,21 @@ class GatewayRunner:
                         )
                 message_text = f"{context_note}\n\n{message_text}"
 
-            if _delivered_documents:
+            if _delivered_documents and document_scope:
                 # Register every attachment for this session so a later
                 # follow-up can reference all of them, not just the last one.
-                _remember_session_documents(self, session_key, _delivered_documents)
+                _remember_session_documents(self, document_scope, _delivered_documents)
 
         if (
-            not event.media_urls
+            document_scope
+            and not event.media_urls
             and _looks_like_document_followup_request(message_text)
             and "[User sent a document:" not in message_text
         ):
             # Only trust documents the gateway itself received for this session.
             # Re-parsing a "path:" out of chat history let user-authored text (or
             # prompt-injected content) point the agent at an arbitrary file.
-            remembered_documents = _live_session_documents(self, session_key)
+            remembered_documents = _live_session_documents(self, document_scope)
             if remembered_documents:
                 recent_documents = "\n".join(
                     _format_document_context_note(path, mime_type)
@@ -8101,6 +8108,7 @@ class GatewayRunner:
             event=event,
             source=source,
             history=history,
+            session_id=session_entry.session_id,
         )
         if message_text is None:
             return
@@ -8136,6 +8144,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                attachment_request="" if event.internal else (event.text or ""),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -8357,13 +8366,13 @@ class GatewayRunner:
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
                 )
+                _forget_session_documents(self, (session_key, session_entry.session_id))
                 self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
-                _forget_session_documents(self, session_key)
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
                     "maximum context size and could not be compressed further. "
@@ -8469,19 +8478,19 @@ class GatewayRunner:
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
-            # If streaming already delivered the response, extract and
-            # deliver any MEDIA: files before returning None.  Streaming
-            # sends raw text chunks that include MEDIA: tags — the normal
-            # post-processing in _process_message_background is skipped
-            # when already_sent is True, so media files would never be
-            # delivered without this.
+            response = AgentReply(
+                response or "",
+                agent_result.get("attachments", ()) if not agent_failed_early else (),
+            )
+            # Streaming already delivered the text, but must still deliver
+            # out-of-band local attachments before skipping the normal send.
             #
             # Never skip when the agent failed — the error message is new
             # content the user hasn't seen (streaming only sent earlier
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
-                if response:
+                if response.attachments:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
                         await self._deliver_media_from_response(
@@ -8743,7 +8752,8 @@ class GatewayRunner:
 
         # Forget documents attached to the expired conversation — a follow-up
         # after /new must not inherit the previous session's files.
-        _forget_session_documents(self, session_key)
+        if old_entry:
+            _forget_session_documents(self, (session_key, old_entry.session_id))
 
         # Clear session-scoped dangerous-command approvals and /yolo state.
         # /new is a conversation-boundary operation — approval state from the
@@ -10835,11 +10845,11 @@ class GatewayRunner:
 
     async def _deliver_media_from_response(
         self,
-        response: str,
+        response: AgentReply,
         event: MessageEvent,
         adapter,
     ) -> None:
-        """Extract MEDIA: tags and local file paths from a response and deliver them.
+        """Deliver only the authorized local files carried by an agent reply.
 
         Called after streaming has already sent the text to the user, so the
         text itself is already delivered — this only handles file attachments
@@ -10849,15 +10859,9 @@ class GatewayRunner:
         from urllib.parse import quote as _quote
 
         try:
-            # Capture [[as_document]] before extract_media strips it, so the
-            # dispatch partition below can route image-extension files
-            # through send_document (preserving bytes) instead of
-            # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
-            force_document_attachments = "[[as_document]]" in response
-
-            media_files, _ = adapter.extract_media(response)
-            _, cleaned = adapter.extract_images(response)
-            local_files, _ = adapter.extract_local_files(cleaned)
+            if not isinstance(response, AgentReply):
+                return
+            media_files = response.local_media()
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
@@ -10867,27 +10871,15 @@ class GatewayRunner:
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
             # Partition out images so they can be sent as a single batch
-            # (e.g. Signal's multi-attachment RPC). When [[as_document]] was
-            # set, image-extension files skip the photo path and route to
-            # send_document below — preserving original bytes.
+            # (e.g. Signal's multi-attachment RPC).
             image_paths: list = []
             non_image_media: list = []
             for media_path, is_voice in media_files:
                 ext = Path(media_path).suffix.lower()
-                if (ext in _IMAGE_EXTS
-                        and not is_voice
-                        and not force_document_attachments):
+                if ext in _IMAGE_EXTS and not is_voice:
                     image_paths.append(media_path)
                 else:
                     non_image_media.append((media_path, is_voice))
-
-            non_image_local: list = []
-            for file_path in local_files:
-                if (Path(file_path).suffix.lower() in _IMAGE_EXTS
-                        and not force_document_attachments):
-                    image_paths.append(file_path)
-                else:
-                    non_image_local.append(file_path)
 
             if image_paths:
                 try:
@@ -10924,26 +10916,8 @@ class GatewayRunner:
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
-            for file_path in non_image_local:
-                try:
-                    ext = Path(file_path).suffix.lower()
-                    if ext in _VIDEO_EXTS:
-                        await adapter.send_video(
-                            chat_id=event.source.chat_id,
-                            video_path=file_path,
-                            metadata=_thread_meta,
-                        )
-                    else:
-                        await adapter.send_document(
-                            chat_id=event.source.chat_id,
-                            file_path=file_path,
-                            metadata=_thread_meta,
-                        )
-                except Exception as e:
-                    logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
-
         except Exception as e:
-            logger.warning("Post-stream media extraction failed: %s", e)
+            logger.warning("Post-stream media delivery failed: %s", e)
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
@@ -11138,10 +11112,14 @@ class GatewayRunner:
                     fallback_model=self._fallback_model,
                 )
                 try:
-                    return agent.run_conversation(
-                        user_message=enriched_prompt,
-                        task_id=task_id,
-                    )
+                    with collect_local_attachments(prompt) as attachments:
+                        result = agent.run_conversation(
+                            user_message=enriched_prompt,
+                            task_id=task_id,
+                        )
+                    if result and not result.get("failed") and not result.get("interrupted"):
+                        result["attachments"] = tuple(attachments.values())
+                    return result
                 finally:
                     self._cleanup_agent_resources(agent)
 
@@ -11151,9 +11129,10 @@ class GatewayRunner:
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
 
-            # Extract media files from the response
             if response:
-                media_files, response = adapter.extract_media(response)
+                authorized_reply = AgentReply(response, result.get("attachments", ()))
+                media_files = authorized_reply.local_media()
+                _, response = adapter.extract_media(response)
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
@@ -15005,6 +14984,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        attachment_request: str = "",
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -15968,19 +15948,6 @@ class GatewayRunner:
                         entry = _build_replay_entry(role, content, msg)
                         agent_history.append(entry)
             
-            # Collect MEDIA paths already in history so we can exclude them
-            # from the current turn's extraction. This is compression-safe:
-            # even if the message list shrinks, we know which paths are old.
-            _history_media_paths: set = set()
-            for _hm in agent_history:
-                if _hm.get("role") in {"tool", "function"}:
-                    _hc = _hm.get("content", "")
-                    if "MEDIA:" in _hc:
-                        for _match in re.finditer(r'MEDIA:(\S+)', _hc):
-                            _p = _match.group(1).strip().rstrip('",}')
-                            if _p:
-                                _history_media_paths.add(_p)
-            
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
             # The callback bridges sync→async to send the approval request
@@ -16192,7 +16159,10 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
-                result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+                with collect_local_attachments(attachment_request) as attachments:
+                    result = agent.run_conversation(
+                        _run_message, conversation_history=agent_history, task_id=session_id
+                    )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -16247,41 +16217,6 @@ class GatewayRunner:
                     "model": _resolved_model,
                     "context_length": _context_length,
                 }
-            
-            # Scan tool results for MEDIA:<path> tags that need to be delivered
-            # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
-            # in its JSON response, but the model's final text reply usually
-            # doesn't include them.  We collect unique tags from tool results and
-            # append any that aren't already present in the final response, so the
-            # adapter's extract_media() can find and deliver the files exactly once.
-            #
-            # Uses path-based deduplication against _history_media_paths (collected
-            # before run_conversation) instead of index slicing. This is safe even
-            # when context compression shrinks the message list. (Fixes #160)
-            if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                for msg in result.get("messages", []):
-                    if msg.get("role") in {"tool", "function"}:
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            for match in re.finditer(r'MEDIA:(\S+)', content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
-                
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
-                    if has_voice_directive:
-                        unique_tags.insert(0, "[[audio_as_voice]]")
-                    final_response = final_response + "\n" + "\n".join(unique_tags)
             
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).
@@ -16350,6 +16285,10 @@ class GatewayRunner:
 
             return {
                 "final_response": final_response,
+                "attachments": (
+                    tuple(attachments.values())
+                    if not result.get("failed") and not result.get("interrupted") else ()
+                ),
                 "last_reasoning": result.get("last_reasoning"),
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
@@ -16831,9 +16770,10 @@ class GatewayRunner:
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
+                            _, first_text = adapter.extract_media(first_response)
                             await adapter.send(
                                 source.chat_id,
-                                first_response,
+                                first_text,
                                 metadata=_status_thread_metadata,
                             )
                         except Exception as e:
@@ -16842,6 +16782,14 @@ class GatewayRunner:
                         logger.info(
                             "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed.",
                             session_key or "?",
+                        )
+                    if adapter and result.get("attachments") and (
+                        run_generation is None or self._is_session_run_current(session_key, run_generation)
+                    ):
+                        await self._deliver_media_from_response(
+                            AgentReply(first_response, result["attachments"]),
+                            MessageEvent(text="", source=source, message_id=event_message_id),
+                            adapter,
                         )
                     # Release deferred bg-review notifications now that the
                     # first response has been delivered.  Pop from the
@@ -16877,6 +16825,7 @@ class GatewayRunner:
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_session_id = result.get("session_id") or session_id
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -16889,6 +16838,7 @@ class GatewayRunner:
                         event=pending_event,
                         source=next_source,
                         history=updated_history,
+                        session_id=next_session_id,
                     )
                     if next_message is None:
                         return result
@@ -16913,12 +16863,16 @@ class GatewayRunner:
                     context_prompt=context_prompt,
                     history=updated_history,
                     source=next_source,
-                    session_id=session_id,
+                    session_id=next_session_id,
                     session_key=session_key,
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    attachment_request=(
+                        (pending_event.text or "")
+                        if pending_event is not None and not pending_event.internal else ""
+                    ),
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

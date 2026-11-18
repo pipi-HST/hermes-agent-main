@@ -3132,9 +3132,12 @@ class BasePlatformAdapter(ABC):
                     session_key,
                 )
                 response = None
-            if not response:
+            from gateway.attachment_policy import AgentReply
+
+            authorized_reply = isinstance(response, AgentReply)
+            if not response and not (authorized_reply and response.attachments):
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
-            if response:
+            else:
                 # Capture [[as_document]] before extract_media strips it, so the
                 # dispatch partition below can route image-extension files
                 # through send_document instead of send_multiple_images. Used
@@ -3143,7 +3146,12 @@ class BasePlatformAdapter(ABC):
                 force_document_attachments = "[[as_document]]" in response
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
-                media_files, response = self.extract_media(response)
+                if authorized_reply:
+                    media_files = response.local_media()
+                    _, response = self.extract_media(response)
+                    force_document_attachments = False
+                else:
+                    media_files, response = self.extract_media(response)
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -3156,7 +3164,9 @@ class BasePlatformAdapter(ABC):
 
                 # Auto-detect bare local file paths for native media delivery
                 # (helps small models that don't use MEDIA: syntax)
-                local_files, text_content = self.extract_local_files(text_content)
+                local_files = []
+                if not authorized_reply:
+                    local_files, text_content = self.extract_local_files(text_content)
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 

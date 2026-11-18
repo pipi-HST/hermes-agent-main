@@ -85,6 +85,7 @@ def test_text_followup_after_document_includes_recent_document_path(tmp_path):
         ),
         source=source,
         history=[],
+        session_id="session-1",
     ))
 
     result = asyncio.run(runner._prepare_inbound_message_text(
@@ -94,6 +95,7 @@ def test_text_followup_after_document_includes_recent_document_path(tmp_path):
         ),
         source=source,
         history=[{"role": "user", "content": _format_document_context_note(str(doc), "text/markdown")}],
+        session_id="session-1",
     ))
 
     assert "Recent document available for this request" in result
@@ -183,6 +185,7 @@ def test_multiple_document_attachments_are_remembered_for_followups(tmp_path):
             event=_document_event(source, [first, second]),
             source=source,
             history=[],
+            session_id="session-1",
         )
     )
     result = asyncio.run(
@@ -190,6 +193,7 @@ def test_multiple_document_attachments_are_remembered_for_followups(tmp_path):
             event=_text_event(source, "把这两份文档合并整理一下"),
             source=source,
             history=[],
+            session_id="session-1",
         )
     )
 
@@ -213,9 +217,10 @@ def test_vanished_document_is_not_injected_and_is_pruned(tmp_path):
             event=_document_event(source, [doc]),
             source=source,
             history=[],
+            session_id="session-1",
         )
     )
-    session_key = runner._session_key_for_source(source)
+    session_key = (runner._session_key_for_source(source), "session-1")
     assert str(doc) in {path for path, _mime in runner._session_documents[session_key]}
 
     doc.unlink()
@@ -225,12 +230,35 @@ def test_vanished_document_is_not_injected_and_is_pruned(tmp_path):
             event=_text_event(source, "把这份文档整理一下"),
             source=source,
             history=[],
+            session_id="session-1",
         )
     )
 
     assert "Recent document available" not in result
     assert "已删除" not in result
     assert session_key not in runner._session_documents
+
+
+def test_same_chat_different_session_does_not_inherit_documents(tmp_path):
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    doc = tmp_path / "doc_session.md"
+    doc.write_text("content", encoding="utf-8")
+    source = SessionSource(platform=Platform.WEIXIN, chat_id="same-chat", chat_type="dm", user_id="u1")
+    runner = _make_prepare_runner()
+    runner._session_key_for_source = lambda _source: "lane"
+
+    asyncio.run(runner._prepare_inbound_message_text(
+        event=_document_event(source, [doc]), source=source, history=[], session_id="old-session",
+    ))
+    assert ("lane", "old-session") in runner._session_documents
+    result = asyncio.run(runner._prepare_inbound_message_text(
+        event=_text_event(source, "整理文档"), source=source, history=[], session_id="new-session",
+    ))
+
+    assert str(doc) not in result
+    assert ("lane", "old-session") in runner._session_documents
 
 
 def test_session_document_registry_evicts_least_recently_used_session(tmp_path, monkeypatch):
@@ -244,19 +272,19 @@ def test_session_document_registry_evicts_least_recently_used_session(tmp_path, 
     for name in ("s1", "s2", "s3"):
         path = tmp_path / f"{name}.md"
         path.write_text("x", encoding="utf-8")
-        gateway_run._remember_session_documents(owner, name, [(str(path), "text/markdown")])
+        gateway_run._remember_session_documents(owner, (name, name), [(str(path), "text/markdown")])
 
-    assert list(owner._session_documents) == ["s2", "s3"]
+    assert list(owner._session_documents) == [("s2", "s2"), ("s3", "s3")]
 
     # Re-recording a session refreshes its LRU position.
     gateway_run._remember_session_documents(
-        owner, "s2", [(str(tmp_path / "s2.md"), "text/markdown")]
+        owner, ("s2", "s2"), [(str(tmp_path / "s2.md"), "text/markdown")]
     )
     gateway_run._remember_session_documents(
-        owner, "s4", [(str(tmp_path / "s4.md"), "text/markdown")]
+        owner, ("s4", "s4"), [(str(tmp_path / "s4.md"), "text/markdown")]
     )
 
-    assert list(owner._session_documents) == ["s2", "s4"]
+    assert list(owner._session_documents) == [("s2", "s2"), ("s4", "s4")]
 
 
 def test_session_document_registry_dedupes_and_caps_per_session(tmp_path, monkeypatch):
@@ -268,20 +296,20 @@ def test_session_document_registry_dedupes_and_caps_per_session(tmp_path, monkey
     owner = SimpleNamespace()
 
     gateway_run._remember_session_documents(
-        owner, "s1", [(str(tmp_path / "a.md"), "text/markdown")]
+        owner, ("s1", "sid1"), [(str(tmp_path / "a.md"), "text/markdown")]
     )
     # Duplicate path is ignored.
     gateway_run._remember_session_documents(
-        owner, "s1", [(str(tmp_path / "a.md"), "text/markdown")]
+        owner, ("s1", "sid1"), [(str(tmp_path / "a.md"), "text/markdown")]
     )
-    assert [path for path, _mime in owner._session_documents["s1"]] == [str(tmp_path / "a.md")]
+    assert [path for path, _mime in owner._session_documents[("s1", "sid1")]] == [str(tmp_path / "a.md")]
 
     for name in ("b", "c"):
         gateway_run._remember_session_documents(
-            owner, "s1", [(str(tmp_path / f"{name}.md"), "text/markdown")]
+            owner, ("s1", "sid1"), [(str(tmp_path / f"{name}.md"), "text/markdown")]
         )
 
-    remembered = [path for path, _mime in owner._session_documents["s1"]]
+    remembered = [path for path, _mime in owner._session_documents[("s1", "sid1")]]
     assert remembered == [str(tmp_path / "b.md"), str(tmp_path / "c.md")]
 
 
@@ -297,10 +325,11 @@ def test_new_session_clears_remembered_documents(tmp_path):
     session_key = runner._session_key_for_source(source)
     doc = tmp_path / "doc_ddd_旧材料.md"
     doc.write_text("x", encoding="utf-8")
-    _remember_session_documents(runner, session_key, [(str(doc), "text/markdown")])
-    assert session_key in runner._session_documents
+    scoped_key = (session_key, "sess-old")
+    _remember_session_documents(runner, scoped_key, [(str(doc), "text/markdown")])
+    assert scoped_key in runner._session_documents
 
     with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
         asyncio.run(runner._handle_reset_command(_make_event("/new")))
 
-    assert session_key not in runner._session_documents
+    assert scoped_key not in runner._session_documents

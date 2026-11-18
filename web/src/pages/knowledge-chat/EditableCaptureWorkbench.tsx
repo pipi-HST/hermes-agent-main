@@ -16,6 +16,7 @@ export type EditableCaptureStatus =
 export type EditableCardCommitStatus = "idle" | "generating" | "drafted" | "generated" | "skipped" | "failed";
 
 export function EditableCaptureWorkbench({
+  activityPending = false,
   content,
   draft,
   error,
@@ -50,6 +51,7 @@ export function EditableCaptureWorkbench({
   onTagsTextChange,
   onTitleChange,
 }: {
+  activityPending?: boolean;
   content: string;
   draft: KnowledgeCaptureDraft | null;
   error: string;
@@ -88,7 +90,8 @@ export function EditableCaptureWorkbench({
   const organizing = status === "organizing";
   const committing = status === "committing";
   const locked = status === "committed";
-  const busy = saving || organizing || committing;
+  const busy = activityPending || saving || organizing || committing;
+  const fieldsDisabled = busy || locked;
   const canStop = (organizing || committing) && Boolean(onStopAiOperation);
   const canSave = Boolean(content.trim()) && !busy && !locked;
   const canCommit = Boolean(draft?.id) && !busy && status !== "committed";
@@ -184,7 +187,7 @@ export function EditableCaptureWorkbench({
               <input
                 value={source}
                 onChange={(event) => onSourceChange(event.target.value)}
-                disabled={locked || Boolean(draft)}
+                disabled={fieldsDisabled || Boolean(draft)}
                 placeholder="链接、公众号、小红书或手动记录"
                 className="w-full rounded-md border border-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
               />
@@ -196,7 +199,7 @@ export function EditableCaptureWorkbench({
               <input
                 value={title}
                 onChange={(event) => onTitleChange(event.target.value)}
-                disabled={locked}
+                disabled={fieldsDisabled}
                 placeholder={draft?.title || "可选，不填则 Hermes 自动生成"}
                 className="w-full rounded-md border border-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
               />
@@ -209,7 +212,7 @@ export function EditableCaptureWorkbench({
                 <select
                   value={folderPath || "Inbox"}
                   onChange={(event) => onFolderChange?.(event.target.value)}
-                  disabled={locked}
+                  disabled={fieldsDisabled}
                   className="w-full rounded-md border border-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
                 >
                   {folderOptions.map((folder) => (
@@ -225,7 +228,7 @@ export function EditableCaptureWorkbench({
           <textarea
             value={content}
             onChange={(event) => onContentChange(event.target.value)}
-            disabled={locked}
+            disabled={fieldsDisabled}
             placeholder="粘贴或写下要保存到资料库的内容"
             className="min-h-[420px] flex-1 resize-none bg-background/72 p-4 text-sm leading-7 text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-70"
           />
@@ -239,7 +242,7 @@ export function EditableCaptureWorkbench({
                 <input
                   value={title}
                   onChange={(event) => onTitleChange(event.target.value)}
-                  disabled={locked}
+                  disabled={fieldsDisabled}
                   className="mt-2 w-full rounded-md border border-current/10 bg-background/55 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary/50 disabled:opacity-60"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -253,7 +256,7 @@ export function EditableCaptureWorkbench({
                 <textarea
                   value={summary}
                   onChange={(event) => onSummaryChange?.(event.target.value)}
-                  disabled={locked}
+                  disabled={fieldsDisabled}
                   className="mt-2 min-h-24 w-full resize-none rounded-md border border-current/10 bg-background/55 px-3 py-2 text-sm leading-6 text-foreground outline-none transition focus:border-primary/50 disabled:opacity-60"
                 />
               </section>
@@ -262,7 +265,7 @@ export function EditableCaptureWorkbench({
                 <input
                   value={tagsText}
                   onChange={(event) => onTagsTextChange?.(event.target.value)}
-                  disabled={locked}
+                  disabled={fieldsDisabled}
                   placeholder="用逗号分隔"
                   className="mt-2 w-full rounded-md border border-current/10 bg-background/55 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary/50 disabled:opacity-60"
                 />
@@ -273,7 +276,7 @@ export function EditableCaptureWorkbench({
                   <button
                     type="button"
                     onClick={() => onFolderSuggestionModeChange?.("existing")}
-                    disabled={locked}
+                    disabled={fieldsDisabled}
                     className={cn(
                       "rounded-md border px-2 py-1.5 text-xs transition disabled:opacity-60",
                       folderSuggestionMode === "existing"
@@ -286,7 +289,7 @@ export function EditableCaptureWorkbench({
                   <button
                     type="button"
                     onClick={() => onFolderSuggestionModeChange?.("new")}
-                    disabled={locked}
+                    disabled={fieldsDisabled}
                     className={cn(
                       "rounded-md border px-2 py-1.5 text-xs transition disabled:opacity-60",
                       folderSuggestionMode === "new"
@@ -300,13 +303,13 @@ export function EditableCaptureWorkbench({
                 <input
                   value={folderPath || "Inbox"}
                   onChange={(event) => onFolderChange?.(event.target.value)}
-                  disabled={locked}
+                  disabled={fieldsDisabled}
                   className="mt-2 w-full rounded-md border border-current/10 bg-background/55 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary/50 disabled:opacity-60"
                 />
                 <textarea
                   value={folderSuggestionReason}
                   onChange={(event) => onFolderSuggestionReasonChange?.(event.target.value)}
-                  disabled={locked}
+                  disabled={fieldsDisabled}
                   placeholder="建议理由"
                   className="mt-2 min-h-20 w-full resize-none rounded-md border border-current/10 bg-background/55 px-3 py-2 text-sm leading-6 text-foreground outline-none transition focus:border-primary/50 disabled:opacity-60"
                 />
@@ -318,21 +321,21 @@ export function EditableCaptureWorkbench({
                     type="checkbox"
                     checked={generateCard}
                     onChange={(event) => onGenerateCardChange?.(event.target.checked)}
-                    disabled={locked}
+                    disabled={fieldsDisabled}
                     className="h-4 w-4 accent-primary"
                   />
                 </label>
                 <textarea
                   value={cardReason}
                   onChange={(event) => onCardReasonChange?.(event.target.value)}
-                  disabled={locked}
+                  disabled={fieldsDisabled}
                   placeholder="卡片建议理由"
                   className="mt-2 min-h-20 w-full resize-none rounded-md border border-current/10 bg-background/55 px-3 py-2 text-sm leading-6 text-foreground outline-none transition focus:border-primary/50 disabled:opacity-60"
                 />
                 <textarea
                   value={cardSuggestionsText}
                   onChange={(event) => onCardSuggestionsTextChange?.(event.target.value)}
-                  disabled={locked}
+                  disabled={fieldsDisabled}
                   placeholder="建议生成哪些卡。每行一张：标题 | 类型 | 原因"
                   className="mt-2 min-h-24 w-full resize-none rounded-md border border-current/10 bg-background/55 px-3 py-2 text-sm leading-6 text-foreground outline-none transition focus:border-primary/50 disabled:opacity-60"
                 />

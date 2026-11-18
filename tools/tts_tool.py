@@ -1854,6 +1854,10 @@ def text_to_speech_tool(
         file_size = os.path.getsize(file_str)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
 
+        from gateway.attachment_policy import register_generated_audio
+
+        register_generated_audio(file_str, is_voice=voice_compatible)
+
         # Build response with MEDIA tag for platform delivery
         media_tag = f"MEDIA:{file_str}"
         if voice_compatible:

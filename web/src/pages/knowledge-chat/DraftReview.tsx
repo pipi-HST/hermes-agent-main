@@ -17,6 +17,7 @@ import {
 
 export function DraftReview({
   actionLoading,
+  busy,
   detail,
   detailLoading,
   revision,
@@ -32,6 +33,7 @@ export function DraftReview({
   onViewChange,
 }: {
   actionLoading: "commit" | "revise" | "card" | "delete" | null;
+  busy: boolean;
   detail: KnowledgeCaptureDraft | null;
   detailLoading: boolean;
   revision: string;
@@ -51,6 +53,7 @@ export function DraftReview({
   return (
     <DraftReviewLoaded
       actionLoading={actionLoading}
+      busy={busy || Boolean(actionLoading)}
       detail={detail}
       revision={revision}
       view={view}
@@ -69,6 +72,7 @@ export function DraftReview({
 
 function DraftReviewLoaded({
   actionLoading,
+  busy,
   detail,
   revision,
   view,
@@ -83,6 +87,7 @@ function DraftReviewLoaded({
   onViewChange,
 }: {
   actionLoading: "commit" | "revise" | "card" | "delete" | null;
+  busy: boolean;
   detail: KnowledgeCaptureDraft;
   revision: string;
   view: DraftView;
@@ -139,7 +144,7 @@ function DraftReviewLoaded({
                 <button
                   type="button"
                   onClick={onDelete}
-                  disabled={!isOpenDraft || Boolean(actionLoading)}
+                  disabled={!isOpenDraft || busy}
                   className="inline-flex items-center gap-1.5 rounded-md border border-destructive/35 bg-background/60 px-3 py-2 text-sm text-destructive transition hover:bg-destructive/10 disabled:border-border disabled:text-muted-foreground disabled:opacity-50"
                 >
                   {actionLoading === "delete" ? (
@@ -151,7 +156,7 @@ function DraftReviewLoaded({
                 </button>
                 <ActionButton
                   onClick={onCommit}
-                  disabled={!isOpenDraft || Boolean(actionLoading)}
+                  disabled={!isOpenDraft || busy}
                   loading={actionLoading === "commit"}
                 >
                   {actionLoading === "commit" && needsFinalization ? "正在整理..." : commitLabel}
@@ -182,7 +187,7 @@ function DraftReviewLoaded({
             <button
               type="button"
               onClick={onOpenCardFlow}
-              disabled={!canCreateCard || Boolean(actionLoading)}
+              disabled={!canCreateCard || busy}
               className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-background/60 px-3 py-2 text-sm text-foreground transition hover:bg-primary/10 disabled:opacity-45"
             >
               {actionLoading === "card" ? (
@@ -255,13 +260,14 @@ function DraftReviewLoaded({
             <textarea
               value={revision}
               onChange={(event) => onRevisionChange(event.target.value)}
+              disabled={busy}
               placeholder="写修改意见，比如：把第二部分展开，保留更多原文例子，删掉模板化表达..."
               className="min-h-20 flex-1 resize-none rounded-md border border-border bg-background/80 px-3 py-2 text-sm leading-6 text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
             />
           <button
             type="button"
             onClick={onRevise}
-              disabled={!revision.trim() || !isOpenDraft || Boolean(actionLoading)}
+              disabled={!revision.trim() || !isOpenDraft || busy}
               className="inline-flex min-h-20 items-center justify-center gap-2 rounded-md border border-primary/45 bg-primary px-4 text-sm font-medium text-primary-foreground shadow-[0_14px_34px_-22px_rgba(47,111,95,0.65)] transition hover:brightness-105 disabled:border-border disabled:bg-muted/40 disabled:text-muted-foreground"
             >
               {actionLoading === "revise" ? (

@@ -50,6 +50,9 @@ jobs:
           npm run check:knowledge-editor-workflow
           npm run check:knowledge-layout-focus
           npm run check:knowledge-draft-routing
+          npm run check:knowledge-answer-binding
+          npm run check:knowledge-selection-stream
+          node scripts/check-knowledge-ai-stop-contract.mjs
           npm run check:knowledge-outline
           npm run check:permanent-delete
           npm run check:research-progress

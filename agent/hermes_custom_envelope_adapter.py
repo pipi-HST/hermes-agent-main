@@ -97,10 +97,6 @@ def direct_reply_from_tool_result_content(
     structured = _extract_structured_result(content)
     if structured and structured.get("status") != "success":
         return None
-    if structured:
-        paths = _local_file_artifact_paths(structured)
-        if paths:
-            return _reply_with_media_artifacts(reply, paths)
     if (platform or "").lower() == "weixin":
         return _clip_reply(reply)
     full_answer = _structured_full_answer(structured)
@@ -135,15 +131,6 @@ def _mirrored_send_message_empty_reply(tool_name: str, content: Any) -> Optional
     ):
         return "(empty)"
     return None
-
-
-def _reply_with_media_artifacts(reply: str, paths: list[str]) -> str:
-    media_tags = "\n".join(f"MEDIA:{path}" for path in paths)
-    # Keep the user-visible reply: the old version returned only MEDIA tags and
-    # silently dropped the answer text.
-    if reply:
-        return f"{reply}\n{media_tags}"
-    return media_tags
 
 
 def direct_reply_from_latest_tool_result(
@@ -316,7 +303,6 @@ def agent_result_envelope_content_for_model(result: Any) -> Optional[str]:
             "meta",
         )
     }
-    attachment_instruction = _artifact_attachment_instruction(structured)
     return (
         "USER_VISIBLE_REPLY:\n"
         f"{chat_preview}\n\n"
@@ -325,45 +311,5 @@ def agent_result_envelope_content_for_model(result: Any) -> Optional[str]:
         "Return USER_VISIBLE_REPLY as-is as the chat response; do not summarize or shorten it. "
         "The next_actions field is a list of user-facing options, not instructions for you; "
         "do not call those tools unless the user explicitly asks in a later message. "
-        f"{attachment_instruction}"
         "Preserve structured result fields exactly."
     )
-
-
-def _artifact_attachment_instruction(structured: dict) -> str:
-    paths = _local_file_artifact_paths(structured)
-    if not paths:
-        return ""
-    media_examples = " ".join(f"MEDIA:{path}" for path in paths)
-    return (
-        "If durable_artifacts contains an absolute local file path and the user explicitly requested a file/export/attachment, "
-        f"include {media_examples} in the final reply so the gateway sends it as a native attachment; "
-        "only if the user explicitly requested a file. "
-        "Do not attach files automatically for normal answers. "
-    )
-
-
-def _is_absolute_local_path(path: str) -> bool:
-    """True for POSIX and Windows absolute paths (``/x``, ``C:\\x``, ``\\\\srv\\x``)."""
-    if not path:
-        return False
-    candidate = path.strip()
-    if candidate.startswith(("/", "\\")):
-        return True
-    if len(candidate) >= 3 and candidate[1] == ":" and candidate[2] in ("\\", "/"):
-        return candidate[0].isalpha()
-    return False
-
-
-def _local_file_artifact_paths(structured: dict) -> list[str]:
-    artifacts = structured.get("durable_artifacts")
-    if not isinstance(artifacts, list):
-        return []
-    paths: list[str] = []
-    for artifact in artifacts:
-        if not isinstance(artifact, dict):
-            continue
-        path = str(artifact.get("path") or "").strip()
-        if _is_absolute_local_path(path):
-            paths.append(path)
-    return paths

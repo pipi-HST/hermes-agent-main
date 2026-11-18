@@ -894,6 +894,61 @@ to avoid false-positive reinstalls on every launch.
 """
 
 
+def _npm_lock_needs_install(root: Path) -> bool:
+    """True when ``node_modules`` is missing or behind ``package-lock.json``.
+
+    Compares the root lockfile against npm's hidden
+    ``node_modules/.package-lock.json`` by **content**, because git checkouts
+    and npm rewrites can bump the root lockfile's timestamp even when the
+    installed tree already matches.  Falls back to mtime when either lockfile
+    is unparseable.
+    """
+    lock = root / "package-lock.json"
+    marker = root / "node_modules" / ".package-lock.json"
+    if not lock.is_file():
+        return False
+    if not marker.is_file():
+        return True
+
+    try:
+        wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
+        installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return lock.stat().st_mtime > marker.stat().st_mtime
+
+    def comparable(pkg: dict) -> dict:
+        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+
+    for name, pkg in wanted.items():
+        if not name or not isinstance(pkg, dict):
+            continue
+        if name not in installed:
+            if pkg.get("optional") or pkg.get("peer"):
+                continue
+            return True
+        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
+            installed[name]
+        ):
+            return True
+
+    return False
+
+
+def _resolve_npm() -> str | None:
+    """Return a runnable ``npm`` executable path.
+
+    On Windows ``shutil.which("npm")`` can return the extensionless Unix
+    launcher (e.g. ``C:\\Program Files\\nodejs\\npm``), which CreateProcessW
+    refuses with WinError 193.  Prefer the ``.cmd`` / ``.exe`` shims there.
+    """
+    candidates = ("npm.cmd", "npm.exe", "npm") if _is_windows() else ("npm",)
+    for name in candidates:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
@@ -929,42 +984,8 @@ def _tui_need_npm_install(root: Path) -> bool:
     ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True
-    if not lock.is_file():
-        return False
-    marker = root / "node_modules" / ".package-lock.json"
-    if not marker.is_file():
-        return True
 
-    # Compare lockfile contents, not mtimes: git checkouts and npm rewrites
-    # can bump the root lockfile timestamp even when installed deps already
-    # match. Fall back to mtime when either file is unparseable.
-    try:
-        wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
-        installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return lock.stat().st_mtime > marker.stat().st_mtime
-
-    def comparable(pkg: dict) -> dict:
-        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
-
-    for name, pkg in wanted.items():
-        if not name:
-            continue
-
-        if not isinstance(pkg, dict):
-            continue
-
-        if name not in installed:
-            if pkg.get("optional") or pkg.get("peer"):
-                continue
-            return True
-
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
-            installed[name]
-        ):
-            return True
-
-    return False
+    return _npm_lock_needs_install(root)
 
 
 def _ensure_tui_node() -> None:
@@ -5780,6 +5801,13 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
     return False
 
 
+def _web_ui_need_npm_install(web_dir: Path) -> bool:
+    """True when the web UI's node_modules is missing or behind its lockfile."""
+    if not (web_dir / "node_modules").is_dir():
+        return True
+    return _npm_lock_needs_install(web_dir)
+
+
 def _run_npm_install_deterministic(
     npm: str,
     cwd: Path,
@@ -5852,7 +5880,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             encoding = getattr(sys.stdout, "encoding", None) or "ascii"
             print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
-    npm = shutil.which("npm")
+    npm = _resolve_npm()
     if not npm:
         if fatal:
             _say("Web UI frontend not built and npm is not available.")
@@ -5875,16 +5903,17 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             if text:
                 _say(text)
 
-    r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
-    if r1.returncode != 0:
-        _say(
-            f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
-            + ("" if fatal else " (hermes web will not be available)")
-        )
-        _relay(r1)
-        if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
-        return False
+    if _web_ui_need_npm_install(web_dir):
+        r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
+        if r1.returncode != 0:
+            _say(
+                f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
+                + ("" if fatal else " (hermes web will not be available)")
+            )
+            _relay(r1)
+            if fatal:
+                _say("  Run manually:  cd web && npm install && npm run build")
+            return False
     # First attempt
     r2 = subprocess.run(
         [npm, "run", "build"],
@@ -6373,11 +6402,13 @@ def _update_via_zip(args):
     pip_cmd = [sys.executable, "-m", "pip"]
     uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = _uv_install_env()
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+        _install_python_dependencies_with_optional_fallback(
+            _uv_pip_prefix(uv_bin), env=uv_env
+        )
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -6960,13 +6991,70 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _detect_update_venv() -> Path | None:
+    """Return the virtualenv the running ``hermes`` belongs to, if any.
+
+    Checkouts differ: installers use ``venv``, developers and ``uv`` commonly
+    use ``.venv``, and worktrees may share an environment elsewhere.  Prefer
+    the interpreter's own environment, then ``VIRTUAL_ENV``, and only then
+    probe the project's conventional directory names.
+    """
+    if sys.prefix != sys.base_prefix:
+        venv = Path(sys.prefix)
+        if venv.is_dir():
+            return venv
+
+    virtual_env = os.environ.get("VIRTUAL_ENV")
+    if virtual_env:
+        venv = Path(virtual_env)
+        if venv.is_dir():
+            return venv
+
+    for candidate in (".venv", "venv"):
+        venv = PROJECT_ROOT / candidate
+        if venv.is_dir():
+            return venv
+
+    return None
+
+
 def _venv_scripts_dir() -> Path | None:
-    """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
-    if not venv_dir.is_dir():
+    """Return the active venv's scripts dir, or None when not inside one."""
+    venv_dir = _detect_update_venv()
+    if venv_dir is None:
         return None
     scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
     return scripts if scripts.is_dir() else None
+
+
+def _uv_install_env() -> dict[str, str]:
+    """Environment for ``uv pip install`` during update.
+
+    Point ``VIRTUAL_ENV`` at the environment actually running hermes instead
+    of assuming ``PROJECT_ROOT/venv`` exists.  A stale value makes uv fail
+    (or, worse, target the wrong environment), and checkouts that use
+    ``.venv`` would otherwise never be updated.
+    """
+    env = {**os.environ}
+    venv = _detect_update_venv()
+    if venv is not None:
+        env["VIRTUAL_ENV"] = str(venv)
+    else:
+        env.pop("VIRTUAL_ENV", None)
+    return env
+
+
+def _uv_pip_prefix(uv_bin: str) -> list[str]:
+    """Build the ``uv pip`` prefix for update installs.
+
+    Normally the detected ``VIRTUAL_ENV`` is enough.  Without one, point uv
+    at the interpreter running hermes so it never creates or targets a
+    different environment.
+    """
+    prefix = [uv_bin, "pip"]
+    if _detect_update_venv() is None:
+        prefix += ["--python", sys.executable]
+    return prefix
 
 
 def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
@@ -7260,7 +7348,7 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
 
 
 def _update_node_dependencies() -> None:
-    npm = shutil.which("npm")
+    npm = _resolve_npm()
     if not npm:
         return
 
@@ -8054,7 +8142,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = _uv_install_env()
+            uv_prefix = _uv_pip_prefix(uv_bin)
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)
@@ -8062,9 +8151,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("  → Termux detected: using uv + curated termux-all optional profile...")
             if _is_termux_env(uv_env) and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
+                _install_psutil_android_compat(uv_prefix, env=uv_env)
             _install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
+                uv_prefix, env=uv_env, group=install_group
             )
         else:
             # Use sys.executable to explicitly call the venv's pip module,
@@ -9741,8 +9830,8 @@ def cmd_dashboard(args):
         print(
             f"Re-install the package into this interpreter so metadata updates apply:\n"
             f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
+            f'  {sys.executable} -m pip install -e ".[web]"\n'
+            "If `pip` is missing in this venv, use:  uv sync --extra web"
         )
         print(f"Import error: {e}")
         sys.exit(1)

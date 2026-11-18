@@ -70,13 +70,27 @@ for (const [label, source] of [
 ]) {
   assert(source.includes("organizeEditableCaptureDraft"), `${label} should have an explicit AI organize path`);
   assert(source.includes("saveEditableCaptureDraftSnapshot"), `${label} should have a non-AI snapshot save path`);
-  assert(source.includes("organize: true"), `${label} organize path should request organize: true`);
+  assert(
+    source.includes("regenerateKnowledgeEditableCaptureDraft"),
+    `${label} should regenerate existing draft suggestions through the dedicated workspace call`,
+  );
+  assert(source.includes("organize: true"), `${label} create path should request organize: true`);
   assert(source.includes("organize: false"), `${label} snapshot path should request organize: false`);
   assert(source.includes("editableTitleSource"), `${label} should track whether the title is AI-owned or user-owned`);
   assert(source.includes("title_source: editableTitleSource"), `${label} should pass title_source to editable draft APIs`);
   assert(source.includes("setEditableTitleSource(\"user\")"), `${label} should mark manually edited titles as user-owned`);
   assert(source.includes("editableDraftTitleSource(draft)"), `${label} should derive title ownership from the loaded draft`);
   assert(source.includes("isGenericEditableTitle"), `${label} should not preserve generic placeholder titles as user-owned`);
+
+  const organizeBody = functionBody(source, "organizeEditableCaptureDraft");
+  assert(
+    organizeBody.includes("regenerateKnowledgeEditableCaptureDraft"),
+    `${label} regenerate action should call the dedicated editable suggestion workflow`,
+  );
+  assert(
+    !organizeBody.includes("updateKnowledgeEditableCaptureDraft"),
+    `${label} regenerate action should not use the generic editable draft PATCH`,
+  );
 
   const commitBody = functionBody(source, "commitEditableCaptureDraft");
   assert(

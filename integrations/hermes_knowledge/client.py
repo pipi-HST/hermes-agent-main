@@ -45,12 +45,18 @@ from integrations.hermes_knowledge import KnowledgeIncompatible, KnowledgeUnavai
 
 SERVICE_NAME = "hermes-knowledge"
 MIN_CONTRACT_VERSION = 1
+GARDEN_CONFIRMATION_CONTRACT_VERSION = 2
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
 # Only idempotent reads are retried; POST/DELETE must never be replayed.
 _RETRYABLE_METHODS = frozenset({"GET", "HEAD"})
 _RETRY_ATTEMPTS = 2
 _RETRY_BACKOFF_SECONDS = 0.2
+
+
+def _operation_headers(operation_id: str) -> dict[str, str] | None:
+    value = str(operation_id or "").strip()
+    return {"X-Hermes-AI-Operation-Id": value} if value else None
 
 
 # ``KnowledgeUnavailable`` / ``KnowledgeIncompatible`` are re-exported from the
@@ -349,11 +355,15 @@ class KnowledgeClient:
         """``resource`` is e.g. ``capture-drafts`` or ``reading/drafts``."""
         return self.request("POST", f"/api/{resource}/{resource_id}/confirmation")
 
-    def commit_draft(self, resource: str, resource_id: str, confirmation_token: str) -> dict[str, Any]:
+    def commit_draft(
+        self, resource: str, resource_id: str, confirmation_token: str, *,
+        operation_id: str = "",
+    ) -> dict[str, Any]:
         return self.request(
             "POST",
             f"/api/{resource}/{resource_id}/commit",
             json={"confirmation_token": confirmation_token},
+            headers=_operation_headers(operation_id),
         )
 
     def issue_library_delete_confirmation(self, kind: str, item_id: str) -> dict[str, Any]:
@@ -455,11 +465,14 @@ class KnowledgeClient:
             json=dict(payload),
         )
 
-    def revise_capture_note(self, capture_id: str, instruction: str) -> dict[str, Any]:
+    def revise_capture_note(
+        self, capture_id: str, instruction: str, *, operation_id: str = "",
+    ) -> dict[str, Any]:
         return self.request(
             "POST",
             f"/api/captures/{quote(str(capture_id), safe='')}/revise",
             json={"instruction": instruction},
+            headers=_operation_headers(operation_id),
         )
 
     def cancel_ai_operation(self, operation_id: str) -> dict[str, Any]:
@@ -557,6 +570,14 @@ class KnowledgeClient:
             json=payload,
         )
 
+    def update_editable_capture_draft(
+        self, draft_id: str, payload: dict[str, Any], *, operation_id: str = "",
+    ) -> dict[str, Any]:
+        return self.request(
+            "PATCH", f"/api/capture-drafts/{quote(str(draft_id), safe='')}/editable",
+            json=payload, headers=_operation_headers(operation_id),
+        )
+
     def delete_capture_draft(self, draft_id: str) -> dict[str, Any]:
         """Abandon a capture draft through the service."""
         return self.request(
@@ -593,6 +614,7 @@ class KnowledgeClient:
         title: str = "",
         card_kind: str = "",
         instruction: str = "",
+        operation_id: str = "",
     ) -> dict[str, Any]:
         """Run garden synthesis through the service.
 
@@ -601,13 +623,12 @@ class KnowledgeClient:
         :meth:`issue_garden_confirmation` for the returned draft id, then
         :meth:`commit_garden_draft` with the one-time token.
         """
-        payload = {
-            "capture_ids": [str(item) for item in (capture_ids or [])],
-            "title": title,
-            "card_kind": card_kind,
-            "instruction": instruction,
-        }
-        return self.request("POST", "/api/garden/drafts", json=payload)
+        # The old unqualified endpoint defaulted to a durable write. The
+        # preview endpoint is draft-only even with a legacy service or cache.
+        return self.preview_garden_draft(
+            capture_ids=capture_ids, title=title, card_kind=card_kind,
+            instruction=instruction, operation_id=operation_id,
+        )
 
     def preview_garden_draft(
         self,
@@ -616,6 +637,7 @@ class KnowledgeClient:
         title: str = "",
         card_kind: str = "",
         instruction: str = "",
+        operation_id: str = "",
     ) -> dict[str, Any]:
         return self.request(
             "POST",
@@ -626,6 +648,7 @@ class KnowledgeClient:
                 "card_kind": card_kind,
                 "instruction": instruction,
             },
+            headers=_operation_headers(operation_id),
         )
 
     def list_garden_drafts(self, *, limit: int = 50, status: str = "draft_ready") -> dict[str, Any]:
@@ -634,6 +657,14 @@ class KnowledgeClient:
             params["status"] = status
         return self.request("GET", "/api/garden/drafts", params=params)
 
+    def _require_garden_confirmation_contract(self) -> None:
+        if self.contract_version is None:
+            ensure_compatible(self)
+        if (self.contract_version or 0) < GARDEN_CONFIRMATION_CONTRACT_VERSION:
+            raise KnowledgeIncompatible(
+                "saving Knowledge Cards requires Knowledge Service contract v2 or newer"
+            )
+
     def issue_garden_confirmation(self, draft_id: str) -> dict[str, Any]:
         """Ask the service for a garden-draft commit confirmation token.
 
@@ -641,6 +672,7 @@ class KnowledgeClient:
         ``confirmation_token``) and normalises the value under ``token`` so
         callers do not depend on the wire spelling.
         """
+        self._require_garden_confirmation_contract()
         payload = self.request(
             "POST",
             f"/api/garden/drafts/{quote(str(draft_id), safe='')}/confirmation",
@@ -657,7 +689,7 @@ class KnowledgeClient:
         return normalized
 
     def commit_garden_draft(
-        self, draft_id: str, confirmation_token: str = ""
+        self, draft_id: str, confirmation_token: str = "", *, operation_id: str = ""
     ) -> dict[str, Any]:
         """Commit a garden draft with a confirmation token.
 
@@ -665,6 +697,7 @@ class KnowledgeClient:
         is omitted the client issues one first, matching the
         :meth:`issue_garden_confirmation` + commit handshake.
         """
+        self._require_garden_confirmation_contract()
         token = str(confirmation_token or "").strip()
         if not token:
             issued = self.issue_garden_confirmation(draft_id)
@@ -677,6 +710,7 @@ class KnowledgeClient:
             "POST",
             f"/api/garden/drafts/{quote(str(draft_id), safe='')}/commit",
             json={"confirmation_token": token},
+            headers=_operation_headers(operation_id),
         )
 
     def discard_garden_draft(self, draft_id: str) -> dict[str, Any]:
@@ -715,9 +749,14 @@ class KnowledgeClient:
     def refresh_graph(self) -> dict[str, Any]:
         return self.request("POST", "/api/knowledge/graph/refresh")
 
-    def create_answer_draft(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_answer_draft(
+        self, payload: dict[str, Any], *, operation_id: str = "",
+    ) -> dict[str, Any]:
         """Save an answer draft through the service (same envelope as local)."""
-        return self.request("POST", "/api/knowledge/answer-drafts", json=dict(payload))
+        return self.request(
+            "POST", "/api/knowledge/answer-drafts", json=dict(payload),
+            headers=_operation_headers(operation_id),
+        )
 
     # -- tool dispatch ------------------------------------------------------
     def call_tool(
@@ -736,11 +775,6 @@ class KnowledgeClient:
         (including its own ``{"error": ...}`` shape — the tool layer already
         wraps results in the envelope).
         """
-        headers = (
-            {"X-Hermes-AI-Operation-Id": str(operation_id)}
-            if str(operation_id or "").strip()
-            else None
-        )
         return self.request(
             "POST",
             f"/api/tools/{quote(str(module_name), safe='')}/{quote(str(function_name), safe='')}",
@@ -748,7 +782,7 @@ class KnowledgeClient:
                 "args": list(args or []),
                 "kwargs": dict(kwargs or {}),
             },
-            headers=headers,
+            headers=_operation_headers(operation_id),
         )
 
 

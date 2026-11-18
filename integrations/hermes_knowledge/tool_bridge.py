@@ -81,10 +81,18 @@ def dispatch(module_name: str, function_name: str, *args, **kwargs) -> Any:
     """
     client = get_client()
     if client is None:
-        ensure_custom_path()
+        root = ensure_custom_path()
         module = importlib.import_module(f"bridge.{module_name}")
         function = getattr(module, function_name)
-        return function(*args, **kwargs)
+        result = function(*args, **kwargs)
+        try:
+            from gateway.attachment_policy import register_knowledge_exports
+        except ImportError:
+            # CLI/tool-only processes do not load the gateway package; an
+            # export there is still written, just not delivered by chat.
+            return result
+        register_knowledge_exports(root, module_name, function_name, kwargs, result)
+        return result
 
     try:
         safe_args, safe_kwargs = _normalise_call(module_name, function_name, args, kwargs)
