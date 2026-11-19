@@ -126,7 +126,7 @@ test("Capture 待审草稿可以从历史会话确认保存", async ({ page }) =
   await page.goto(`/knowledge-chat?session=${state.sessionId}`);
   await page.getByRole("button", { name: "确认保存" }).click();
 
-  await expect(page.getByText("这份材料已保存。需要调整内容时，请进入知识库编辑页。")).toBeVisible();
+  await expect(page.getByText("这份材料已保存。需要调整内容时，请进入资料库编辑页。")).toBeVisible();
   expect(state.captureDrafts[0].status).toBe("committed");
   expect(probe.requests).toContainEqual({ method: "POST", path: `/api/knowledge/capture-drafts/${state.captureDrafts[0].id}/commit` });
   assertCleanBrowser(probe);
@@ -161,7 +161,7 @@ test("用户从输入框触发 Capture 工具后进入待审草稿", async ({ pa
   const probe = await installKnowledgeBrowserFixture(page, state);
 
   await page.goto(`/knowledge-chat?session=${state.sessionId}`);
-  const composer = page.getByRole("textbox", { name: /直接问知识库/ });
+  const composer = page.getByRole("textbox", { name: /直接问资料库/ });
   await composer.fill("请把这篇文章全文保存");
   await page.getByRole("button", { name: "发送" }).click();
 
@@ -225,7 +225,7 @@ test("用户通过 Gateway 发起 RAG 后页面展示带引用答案", async ({ 
   const probe = await installKnowledgeBrowserFixture(page, state);
 
   await page.goto(`/knowledge-chat?session=${state.sessionId}`);
-  const composer = page.getByRole("textbox", { name: /直接问知识库/ });
+  const composer = page.getByRole("textbox", { name: /直接问资料库/ });
   await composer.fill("知识库 Pipeline 应该怎样验收？");
   await page.getByRole("button", { name: "发送" }).click();
 

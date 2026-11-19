@@ -3045,7 +3045,9 @@ def _(rid, params: dict) -> dict:
 
 @method("session.set_toolsets")
 def _(rid, params: dict) -> dict:
-    session, err = _sess_nowait(params, rid)
+    # The deferred startup build can otherwise publish the original agent
+    # after the user has already switched toolsets.
+    session, err = _sess(params, rid)
     if err:
         return err
     if session.get("running"):

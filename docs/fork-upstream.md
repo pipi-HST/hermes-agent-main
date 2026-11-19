@@ -125,7 +125,7 @@ run `python scripts/fork_delta.py --write` after rebasing/merging.
 | `tests/run_agent/test_run_agent.py` | modified | +207 / -3 |
 | `tests/run_agent/test_streaming.py` | modified | +54 / -0 |
 | `tests/test_toolsets.py` | modified | +40 / -0 |
-| `tests/test_tui_gateway_server.py` | modified | +243 / -2 |
+| `tests/test_tui_gateway_server.py` | modified | +275 / -2 |
 | `tests/tools/test_local_interrupt_cleanup.py` | modified | +78 / -86 |
 | `tests/tools/test_managed_browserbase_and_modal.py` | modified | +3 / -1 |
 | `tests/tools/test_search_hidden_dirs.py` | modified | +8 / -2 |
@@ -148,7 +148,7 @@ run `python scripts/fork_delta.py --write` after rebasing/merging.
 | `tools/tts_tool.py` | modified | +4 / -0 |
 | `tools/web_tools.py` | modified | +115 / -8 |
 | `toolsets.py` | modified | +94 / -5 |
-| `tui_gateway/server.py` | modified | +635 / -16 |
+| `tui_gateway/server.py` | modified | +637 / -16 |
 | `uv.lock` | modified | +51 / -5 |
 | `web/eslint.config.js` | modified | +22 / -0 |
 | `web/package-lock.json` | modified | +233 / -126 |

@@ -79,6 +79,38 @@ def test_dispatch_rejects_non_object_params():
     }
 
 
+def test_set_toolsets_cannot_be_overwritten_by_deferred_startup(monkeypatch):
+    startup_agent, switched_agent = object(), object()
+    session = {
+        "agent": None,
+        "session_key": "key",
+        "enabled_toolsets_override": ["knowledge-research"],
+    }
+    monkeypatch.setitem(server._sessions, "sid", session)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_: None)
+
+    def finish_startup(current, _rid):
+        current["agent"] = startup_agent
+
+    def build_switched_agent(*_args, **kwargs):
+        assert session["agent"] is startup_agent
+        assert kwargs["enabled_toolsets"] == ["knowledge-local"]
+        return switched_agent
+
+    monkeypatch.setattr(server, "_wait_agent", finish_startup)
+    monkeypatch.setattr(server, "_make_agent", build_switched_agent)
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"switched": agent is switched_agent})
+    monkeypatch.setattr(server, "_emit", lambda *_: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_: None)
+    result = server.handle_request({
+        "id": "toolsets",
+        "method": "session.set_toolsets",
+        "params": {"session_id": "sid", "enabled_toolsets": ["knowledge-local"]},
+    })
+    assert result["result"] == {"switched": True}
+    assert session["agent"] is switched_agent
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,
