@@ -347,7 +347,7 @@ def test_update_uv_install_targets_detected_venv(mock_args, tmp_path):
         patch.object(hm, "_update_node_dependencies"),
         patch.object(hm, "_build_web_ui"),
     ):
-        cmd_update(mock_args)
+        hm.cmd_update(mock_args)
 
     assert captured["prefix"] == ["/usr/bin/uv", "pip"]
     assert captured["env"]["VIRTUAL_ENV"] == str(dot_venv)
