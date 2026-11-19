@@ -123,7 +123,7 @@ class TestCmdUpdateBranchFallback:
             # on whether the checkout has an already-populated web/node_modules.
             patch.object(hm, "_web_ui_need_npm_install", return_value=True),
         ):
-            cmd_update(mock_args)
+            hm.cmd_update(mock_args)
 
         npm_calls = [
             (call.args[0], call.kwargs.get("cwd"))

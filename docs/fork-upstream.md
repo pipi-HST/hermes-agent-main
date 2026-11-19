@@ -110,7 +110,7 @@ run `python scripts/fork_delta.py --write` after rebasing/merging.
 | `tests/gateway/test_status.py` | modified | +17 / -0 |
 | `tests/gateway/test_tts_media_routing.py` | modified | +45 / -20 |
 | `tests/hermes_cli/test_aux_config.py` | modified | +0 / -8 |
-| `tests/hermes_cli/test_cmd_update.py` | modified | +79 / -1 |
+| `tests/hermes_cli/test_cmd_update.py` | modified | +80 / -2 |
 | `tests/hermes_cli/test_dashboard_lifecycle_flags.py` | modified | +146 / -11 |
 | `tests/hermes_cli/test_gateway_runtime_health.py` | modified | +43 / -0 |
 | `tests/hermes_cli/test_gateway_service.py` | modified | +27 / -0 |
