@@ -15,7 +15,6 @@ import pytest
 
 from hermes_cli.main import (
     _build_web_ui,
-    _resolve_npm,
     _run_npm_install_deterministic,
     _web_ui_build_needed,
     _web_ui_need_npm_install,
@@ -183,15 +182,17 @@ class TestNpmResolution:
             "npm": r"C:\Program Files\nodejs\npm",
             "npm.cmd": r"C:\Program Files\nodejs\npm.cmd",
         }
-        with patch("hermes_cli.main.shutil.which", side_effect=shims.get):
-            assert _resolve_npm() == shims["npm.cmd"]
+        with patch.object(hm.shutil, "which", side_effect=shims.get) as which:
+            assert hm._resolve_npm() == shims["npm.cmd"]
+        which.assert_called_once_with("npm.cmd")
 
     def test_uses_plain_npm_elsewhere(self, monkeypatch):
         from hermes_cli import main as hm
 
         monkeypatch.setattr(hm, "_is_windows", lambda: False)
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"):
-            assert _resolve_npm() == "/usr/bin/npm"
+        with patch.object(hm.shutil, "which", return_value="/usr/bin/npm") as which:
+            assert hm._resolve_npm() == "/usr/bin/npm"
+        which.assert_called_once_with("npm")
 
 
 class TestWebUINpmInstallNeeded:

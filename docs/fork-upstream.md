@@ -118,7 +118,7 @@ run `python scripts/fork_delta.py --write` after rebasing/merging.
 | `tests/hermes_cli/test_opencode_go_flat_namespace.py` | modified | +23 / -3 |
 | `tests/hermes_cli/test_update_stale_dashboard.py` | modified | +25 / -0 |
 | `tests/hermes_cli/test_web_server.py` | modified | +4249 / -77 |
-| `tests/hermes_cli/test_web_ui_build.py` | modified | +84 / -1 |
+| `tests/hermes_cli/test_web_ui_build.py` | modified | +85 / -1 |
 | `tests/plugins/model_providers/test_deepseek_profile.py` | modified | +9 / -4 |
 | `tests/plugins/test_kanban_dashboard_plugin.py` | modified | +1 / -1 |
 | `tests/plugins/web/test_web_search_provider_plugins.py` | modified | +3 / -1 |
