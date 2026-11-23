@@ -1115,6 +1115,7 @@ Launch the web dashboard — a browser-based UI for managing configuration, API 
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--tui` | off | Enable the in-browser Chat tab by running `hermes --tui` behind a PTY/WebSocket bridge. Requires `pip install 'hermes-agent[web,pty]'` and a POSIX PTY environment such as Linux, macOS, or WSL2. |
+| `--skip-build` | off | Serve an existing frontend build without rebuilding it. |
 | `--insecure` | off | Allow binding to non-localhost hosts. Exposes dashboard credentials on the network; use only behind trusted network controls. |
 | `--stop` | — | Stop running `hermes dashboard` processes and exit. |
 | `--status` | — | Show the macOS service state, when installed, and list running dashboard processes. |

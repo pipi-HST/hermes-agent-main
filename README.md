@@ -104,7 +104,7 @@ For the full command lists, see the [CLI guide](https://hermes-agent.nousresearc
 Hermes can delegate its Knowledge dashboard and tools to the standalone Hermes Knowledge service. HTTP mode is the supported production shape: set `HERMES_KNOWLEDGE_URL` (and `HERMES_KNOWLEDGE_TOKEN`) and the runtime stays a message entry point, tool registry, and delivery layer.
 
 - `HERMES_KNOWLEDGE_LOCAL_ROOT` (legacy `HERMES_CUSTOM_ROOT`) imports a local checkout for development and offline debugging only. It is not a production deployment option. The fallback stays in the code, but new integrations must not expand it.
-- `HERMES_KNOWLEDGE_DB` and `HERMES_KNOWLEDGE_VAULT` are a known exception for dashboard read routes that still inspect SQLite/vault directly in HTTP mode. They are not required HTTP-mode settings; when unset, those reads use the conventional `~/Hermes/knowledge` paths.
+- The Dashboard's **Open local file** action reads SQLite and opens the Markdown file on the Runtime host. If the service uses different paths, set `HERMES_KNOWLEDGE_DB` and `HERMES_KNOWLEDGE_VAULT` to match the service's database and Vault settings. In HTTP mode without a local checkout, the default paths are `~/Hermes/knowledge/data/captures.db` and `~/Hermes/knowledge`.
 
 See [docs/local-capability-projects.md](docs/local-capability-projects.md) for the local capability projects and dev-only smoke commands.
 

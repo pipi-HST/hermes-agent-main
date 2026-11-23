@@ -10,7 +10,7 @@ Knowledge 的推荐生产形态是 HTTP 模式：设置 `HERMES_KNOWLEDGE_URL`�
 |------|------|----------|
 | `HERMES_KNOWLEDGE_URL` + token | HTTP 模式，Dashboard 与工具委托 service | 是，推荐 |
 | `HERMES_KNOWLEDGE_LOCAL_ROOT`（旧名 `HERMES_CUSTOM_ROOT`） | runtime 把本地 checkout 插入 `sys.path`，直接 import bridge 模块 | 否，仅开发和离线调试 |
-| `HERMES_KNOWLEDGE_DB` / `HERMES_KNOWLEDGE_VAULT` | Dashboard 少数读路由直接读取 SQLite / vault 的路径 | 已知例外，不是 HTTP 模式必需配置 |
+| `HERMES_KNOWLEDGE_DB` / `HERMES_KNOWLEDGE_VAULT` | Dashboard 打开本地文件时定位 SQLite 和 Vault | 按功能配置 |
 
 ### Local fallback 仅限开发
 
@@ -18,14 +18,16 @@ Knowledge 的推荐生产形态是 HTTP 模式：设置 `HERMES_KNOWLEDGE_URL`�
 
 local fallback 仍然保留，现有开发和离线流程可以继续用；但新代码不得扩大它：新增 Knowledge 能力应走 HTTP service contract，不要增加新的本地模块导入或文件读写入口。
 
-### Dashboard 读路由的已知例外
+### 打开本地文件和检查服务
 
-HTTP 模式下大多数 Knowledge 读写已经委托给 service，但仍有少数路径会解析或读取本地 SQLite / vault（例如 automation-boundaries 的路径展示，以及 service 未覆盖时的本地兼容分支）。这些路径的例外配置是：
+HTTP 模式下，资料列表、卡片、草稿和伴读等业务请求由 Knowledge Service 处理。Dashboard 的「打开本地文件」在 Runtime 主机上查询 SQLite，并打开对应的资料 Markdown。在用到此功能时，确保 Runtime 能访问服务使用的路径：
 
 - `HERMES_KNOWLEDGE_DB`：指向与 service 相同的 `captures.db`。
 - `HERMES_KNOWLEDGE_VAULT`：指向与 service 相同的 vault 目录。
 
-它们不是 HTTP 模式的必需配置。未设置时，这些读路径使用 `~/Hermes/knowledge` 下的约定路径；文件不存在时对应路由返回 404，不会因此关闭整个 Knowledge 功能。只有在命中这些读路由、且需要读取 service 之外的真实数据时，才需要显式设置。
+HTTP 模式下，未指定变量且没有本地 checkout 时，Runtime 使用 `~/Hermes/knowledge/data/captures.db` 和 `~/Hermes/knowledge`。需要打开本地文件的请求在找不到数据库或目标文件时会失败。自动化清单 `automation-boundaries` 也会解析 Vault 路径供展示。
+
+`GET /api/knowledge/runtime-check` 在 HTTP 模式下只报告传输方式。检查服务连通性和依赖状态时，直接请求 Knowledge Service 的 `GET /api/health`，按服务配置带上 Bearer 令牌并查看响应中的 `status`。
 
 ### Garden 卡片草稿确认
 
@@ -46,14 +48,14 @@ Hermes runtime 只负责消息入口、工具注册和投递；业务逻辑分�
 ## Life 工具导入检查
 
 ```bash
-cd /Users/pipi/Downloads/hermes-agent-main
+cd "<repos>/hermes-agent-main"
 .venv/bin/python -m pytest tests/tools/test_life_tools_imports.py -q
 ```
 
 ## 直接 smoke
 
 ```bash
-cd /Users/pipi/Downloads/hermes-agent-main
+cd "<repos>/hermes-agent-main"
 .venv/bin/python - <<'PY'
 from tools.record_life_event_tool import _handler as record_handler
 from tools.life_tick_tool import _handler as tick_handler

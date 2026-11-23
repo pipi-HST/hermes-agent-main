@@ -1,26 +1,26 @@
 # Hermes Agent — Web UI
 
-Browser-based dashboard for managing Hermes Agent configuration, API keys, and monitoring active sessions.
+Browser-based dashboard for the Knowledge workspace, sessions, configuration, API keys, and other Hermes Agent settings.
 
 ## Stack
 
 - **Vite** + **React 19** + **TypeScript**
-- **Tailwind CSS v4** with custom dark theme
-- **shadcn/ui**-style components (hand-rolled, no CLI dependency)
+- **Tailwind CSS v4** with Hermes Paper as the default theme
+- **Nous Research UI** components and local UI primitives
 
 ## Development
 
 ```bash
-# Start the backend API server
-cd ../
-python -m hermes_cli.main web --no-open
+# From the repository root, start the Dashboard backend
+python -m hermes_cli.main dashboard --no-open
 
-# In another terminal, start the Vite dev server (with HMR + API proxy)
+# In another terminal at the repository root, start Vite with HMR
 cd web/
+npm ci
 npm run dev
 ```
 
-The Vite dev server proxies `/api` requests to `http://127.0.0.1:9119` (the FastAPI backend).
+The Vite dev server defaults to the FastAPI backend at `http://127.0.0.1:9119`. Set `HERMES_DASHBOARD_URL` before starting Vite if the backend uses a different address.
 
 ## Build
 
@@ -39,7 +39,9 @@ src/
 │   ├── api.ts       # API client — typed fetch wrappers for all backend endpoints
 │   └── utils.ts     # cn() helper for Tailwind class merging
 ├── pages/
-│   ├── StatusPage   # Agent status, active/recent sessions
+│   ├── KnowledgeChatPage        # Topic workbench and default landing page
+│   ├── KnowledgeLibraryPage     # Library and assisted reading
+│   ├── KnowledgeCardsBoardPage  # Knowledge card gallery
 │   ├── ConfigPage   # Dynamic config editor (reads schema from backend)
 │   └── EnvPage      # API key management with save/clear
 ├── App.tsx          # Main layout and navigation

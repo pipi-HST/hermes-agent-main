@@ -135,6 +135,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 |-------|-------------|------|
 | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian) | Read, search, create, and edit notes in the Obsidian vault. | `note-taking/obsidian` |
 
+## personal-assistant
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`personal-assistant`](/docs/user-guide/skills/bundled/personal-assistant/personal-assistant-personal-assistant) | 个人知识库调度器：围绕「资料 → 卡片 → 专题」路由伴读解惑、好文收集、卡片沉淀、资料库检索与联网联合研究。 | `personal-assistant` |
+
 ## productivity
 
 | Skill | Description | Path |

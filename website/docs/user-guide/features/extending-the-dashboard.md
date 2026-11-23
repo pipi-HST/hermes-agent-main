@@ -8,7 +8,7 @@ description: "Build themes and plugins for the Hermes web dashboard — palettes
 
 The Hermes web dashboard (`hermes dashboard`) is built to be reskinned and extended without forking the codebase. Three layers are exposed:
 
-1. **Themes** — YAML files that repaint the dashboard's palette, typography, layout, and per-component chrome. Drop a file in `~/.hermes/dashboard-themes/`; it appears in the theme switcher.
+1. **Themes** — YAML files that customize the dashboard's palette, typography, layout, and components. Place a file in `~/.hermes/dashboard-themes/` and set `dashboard.theme` in the active profile's `config.yaml`.
 2. **UI plugins** — a directory with `manifest.json` + a JavaScript bundle that registers a tab, replaces a built-in page, augments one via page-scoped slots, or injects components into named shell slots.
 3. **Backend plugins** — a Python file inside that plugin directory that exposes a FastAPI `router`; routes are mounted under `/api/plugins/<name>/` and called from the plugin's UI.
 
@@ -73,7 +73,7 @@ palette:
   midground: "#ff00ff"
 ```
 
-Refresh the dashboard. Click the palette icon in the header and pick **Neon**. The background goes black, text and accents go magenta, and every derived color (card, border, muted, ring, etc.) is recomputed from that 2-color triplet via `color-mix()` in CSS.
+Set `dashboard.theme` to `neon` in `config.yaml` and reload the dashboard. The background goes black, text and accents go magenta, and derived colors such as borders and focus rings update through `color-mix()` in CSS.
 
 That's the whole onboarding: one file, two colors. Everything below is optional refinement.
 
@@ -264,15 +264,16 @@ Each built-in ships its own palette, typography, and layout — switching produc
 
 | Theme | Palette | Typography | Layout |
 |-------|---------|------------|--------|
-| **Hermes Teal** (`default`) | Dark teal + cream | System stack, 15px | 0.5rem radius, comfortable |
-| **Hermes Teal (Large)** (`default-large`) | Same as default | System stack, 18px, line-height 1.65 | 0.5rem radius, spacious |
+| **Hermes Paper** (`default`) | Light paper + dark text | System stack, 16px | 0.75rem radius, comfortable |
+| **Hermes Paper (Large)** (`default-large`) | Same as default | System stack, 18px | 0.75rem radius, spacious |
+| **Hermes Teal** (`hermes-teal`) | Dark teal + cream | System stack, 16px | 0.5rem radius, comfortable |
 | **Midnight** (`midnight`) | Deep blue-violet | Inter + JetBrains Mono, 14px | 0.75rem radius, comfortable |
 | **Ember** (`ember`) | Warm crimson + bronze | Spectral (serif) + IBM Plex Mono, 15px | 0.25rem radius, comfortable |
 | **Mono** (`mono`) | Grayscale | IBM Plex Sans + IBM Plex Mono, 13px | 0 radius, compact |
 | **Cyberpunk** (`cyberpunk`) | Neon green on black | Share Tech Mono everywhere, 14px | 0 radius, compact |
 | **Rosé** (`rose`) | Pink + ivory | Fraunces (serif) + DM Mono, 16px | 1rem radius, spacious |
 
-Themes that reference Google Fonts (all except Hermes Teal) load the stylesheet on demand — the first time you switch to them a `<link>` tag is injected into `<head>`.
+Themes that reference Google Fonts load the stylesheet on demand when first applied. Both paper variants and Hermes Teal use system fonts.
 
 ### Full theme YAML reference
 
@@ -335,7 +336,7 @@ customCSS: |
   /* Any additional selector-level tweaks */
 ```
 
-Refresh the dashboard after creating the file. Switch themes live from the header bar — click the palette icon. Selection persists to `config.yaml` under `dashboard.theme` and is restored on reload.
+Select the theme by setting `dashboard.theme` to its YAML `name` in the active profile's `config.yaml`, or use the [theme API](#theme-endpoints). Reload the dashboard to apply it.
 
 ---
 
@@ -842,7 +843,7 @@ cp hermes-example-plugins/strike-freedom-cockpit/theme/strike-freedom.yaml \
 cp -r hermes-example-plugins/strike-freedom-cockpit ~/.hermes/plugins/
 ```
 
-Open the dashboard, pick **Strike Freedom** from the theme switcher. The cockpit sidebar appears, the crest shows in the header, the tagline replaces the footer. Switch back to **Hermes Teal** and the plugin remains installed but invisible (the `sidebar` slot only renders under the `cockpit` layout variant).
+Select the Strike Freedom theme by setting `dashboard.theme` to `strike-freedom` and reloading the dashboard. The theme selects the cockpit layout. To return to the classic dark theme, set `dashboard.theme` to `hermes-teal` and reload.
 
 Read the plugin source (`strike-freedom-cockpit/dashboard/dist/index.js` in the companion repo) to see how it reads CSS vars, guards against older dashboards without slot support, and registers three slots from one bundle.
 
@@ -851,6 +852,8 @@ Read the plugin source (`strike-freedom-cockpit/dashboard/dist/index.js` in the 
 ## API reference
 
 ### Theme endpoints
+
+Both endpoints require the [Dashboard session token](./web-dashboard#rest-api).
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -878,7 +881,7 @@ Read the plugin source (`strike-freedom-cockpit/dashboard/dist/index.js` in the 
 
 ## Troubleshooting
 
-**My theme doesn't appear in the picker.**
+**The theme API does not list my theme.**
 Check that the file is in `~/.hermes/dashboard-themes/` and ends in `.yaml` or `.yml`. Refresh the page. Run `curl http://127.0.0.1:9119/api/dashboard/themes` — your theme should be in the response. If the YAML has a parse error, the dashboard logs to `errors.log` under `~/.hermes/logs/`.
 
 **My plugin's tab doesn't show up.**
@@ -898,7 +901,7 @@ The `sidebar` slot only renders when the active theme has `layoutVariant: cockpi
 4. Tail `~/.hermes/logs/errors.log` for `Failed to load plugin <name> API routes` — import errors are logged there.
 
 **Theme change drops my color overrides.**
-`colorOverrides` are scoped to the active theme and cleared on theme switch — that's by design. If you want overrides that persist, put them in your theme's YAML, not in the live switcher.
+`colorOverrides` are scoped to the active theme and cleared when a different theme loads. Define persistent overrides in the theme's YAML.
 
 **Theme customCSS gets truncated.**
 The `customCSS` block is capped at 32 KiB per theme. Split large stylesheets across multiple themes, or switch to a plugin that injects a full stylesheet via its `css` field (no size cap).

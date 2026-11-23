@@ -27,9 +27,11 @@ Capabilities exposed: session creation, prompt submission, streaming agent messa
 Full lifecycle, event bridge, and approval flow: [ACP Internals](./acp-internals).
 
 ```bash
+hermes acp --check          # verify ACP dependencies and adapter imports
 hermes acp                  # serve ACP on stdio
-hermes acp --bootstrap      # print install snippet for an ACP-capable IDE
 ```
+
+For editor-specific installation and configuration, see the [ACP user guide](/docs/user-guide/features/acp).
 
 ---
 

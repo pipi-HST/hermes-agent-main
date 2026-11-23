@@ -24,7 +24,7 @@ If you haven't installed Hermes Agent yet, begin with the [Installation guide](/
 |---|---|---|---|
 | **Beginner** | Get up and running, have basic conversations, use built-in tools | [Installation](/docs/getting-started/installation) → [Quickstart](/docs/getting-started/quickstart) → [CLI Usage](/docs/user-guide/cli) → [Configuration](/docs/user-guide/configuration) | ~1 hour |
 | **Intermediate** | Set up messaging bots, use advanced features like memory, cron jobs, and skills | [Sessions](/docs/user-guide/sessions) → [Messaging](/docs/user-guide/messaging) → [Tools](/docs/user-guide/features/tools) → [Skills](/docs/user-guide/features/skills) → [Memory](/docs/user-guide/features/memory) → [Cron](/docs/user-guide/features/cron) | ~2–3 hours |
-| **Advanced** | Build custom tools, create skills, train models with RL, contribute to the project | [Architecture](/docs/developer-guide/architecture) → [Adding Tools](/docs/developer-guide/adding-tools) → [Creating Skills](/docs/developer-guide/creating-skills) → [RL Training](/docs/user-guide/features/rl-training) → [Contributing](/docs/developer-guide/contributing) | ~4–6 hours |
+| **Advanced** | Build custom tools, create skills, generate training data, contribute to the project | [Architecture](/docs/developer-guide/architecture) → [Adding Tools](/docs/developer-guide/adding-tools) → [Creating Skills](/docs/developer-guide/creating-skills) → [Training Data Generation](/docs/user-guide/features/batch-processing#training-data-generation) → [Contributing](/docs/developer-guide/contributing) | ~4–6 hours |
 
 ## By Use Case
 
@@ -94,19 +94,15 @@ For most custom tool creation, start with plugins. The [Adding Tools](/docs/deve
 page is for built-in Hermes core development, not the usual user/custom-tool path.
 :::
 
-### "I want to train models"
+### "I want to generate training data"
 
-Use reinforcement learning to fine-tune model behavior with Hermes Agent's built-in RL training pipeline.
+Use Hermes Agent's batch runner to generate conversation trajectories for training and evaluation.
 
 1. [Quickstart](/docs/getting-started/quickstart)
 2. [Configuration](/docs/user-guide/configuration)
-3. [RL Training](/docs/user-guide/features/rl-training)
-4. [Provider Routing](/docs/user-guide/features/provider-routing)
-5. [Architecture](/docs/developer-guide/architecture)
-
-:::tip
-RL training works best when you already understand the basics of how Hermes Agent handles conversations and tool calls. Run through the Beginner path first if you're new.
-:::
+3. [Training Data Generation](/docs/user-guide/features/batch-processing#training-data-generation)
+4. [Trajectory Format](/docs/developer-guide/trajectory-format)
+5. [Provider Routing](/docs/user-guide/features/provider-routing)
 
 ### "I want to use it as a Python library"
 
@@ -136,7 +132,7 @@ Not sure what's available? Here's a quick directory of major features:
 | **Browser** | Web browsing and scraping | [Browser](/docs/user-guide/features/browser) |
 | **Hooks** | Event-driven callbacks and middleware | [Hooks](/docs/user-guide/features/hooks) |
 | **Batch Processing** | Process multiple inputs in bulk | [Batch Processing](/docs/user-guide/features/batch-processing) |
-| **RL Training** | Fine-tune models with reinforcement learning | [RL Training](/docs/user-guide/features/rl-training) |
+| **Training data** | Generate conversation trajectories with the batch runner | [Training Data Generation](/docs/user-guide/features/batch-processing#training-data-generation) |
 | **Provider Routing** | Route requests across multiple LLM providers | [Provider Routing](/docs/user-guide/features/provider-routing) |
 
 ## What to Read Next

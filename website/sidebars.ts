@@ -284,6 +284,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'personal-assistant',
+                  key: 'skills-bundled-personal-assistant',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/personal-assistant/personal-assistant-personal-assistant',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'productivity',
                   key: 'skills-bundled-productivity',
                   collapsed: true,

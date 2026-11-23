@@ -14,7 +14,7 @@ The web dashboard is a browser-based UI for managing your Hermes Agent installat
 hermes dashboard
 ```
 
-This starts a local web server and opens `http://127.0.0.1:9119` in your browser. The dashboard runs entirely on your machine — no data leaves localhost.
+This starts a web server bound to localhost and opens `http://127.0.0.1:9119` in your browser. Features backed by a configured Knowledge Service or model provider send their requests to that service.
 
 ### Options
 
@@ -25,6 +25,7 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
 | `--tui` | off | Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). Alternatively set `HERMES_DASHBOARD_TUI=1`. |
+| `--skip-build` | off | Serve the existing frontend build without rebuilding it. |
 | `--status` | — | Show launchd state on macOS and list running Dashboard processes. |
 | `--stop` | — | Stop the launchd service on macOS and any remaining manual Dashboard processes. |
 | `--install-service` | — | macOS: install and start a profile-scoped launchd service. Uses `--host`, `--port`, and `--tui`; only loopback hosts are accepted. |
@@ -35,9 +36,6 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 ```bash
 # Custom port
 hermes dashboard --port 8080
-
-# Bind to all interfaces (use with caution on shared networks)
-hermes dashboard --host 0.0.0.0
 
 # Start without opening browser
 hermes dashboard --no-open
@@ -80,22 +78,15 @@ pip install 'hermes-agent[web,pty]'
 
 The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `pip install hermes-agent[all]` includes both extras and is the easiest path if you also want messaging/voice/etc.
 
-When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
+The first launch from a source checkout can build the frontend automatically when Node.js and npm are available. If a frontend build already exists, `--skip-build` serves it directly.
 
 The Chat tab is intentionally off for a plain `hermes dashboard` launch. Start the dashboard with `hermes dashboard --tui` or set `HERMES_DASHBOARD_TUI=1` when you want the embedded browser chat pane.
 
 ## Pages
 
-### Status
+### Knowledge workspace
 
-The landing page shows a live overview of your installation:
-
-- **Agent version** and release date
-- **Gateway status** — running/stopped, PID, connected platforms and their state
-- **Active sessions** — count of sessions active in the last 5 minutes
-- **Recent sessions** — list of the 20 most recent sessions with model, message count, token usage, and a preview of the conversation
-
-The status page auto-refreshes every 5 seconds.
+The dashboard opens the topic workbench (**专题输出**, `/knowledge-chat`). The sidebar also links to **资料伴读** (`/knowledge-library`) for reading and working with saved material and **知识卡片** (`/cards-board`) for reviewing and editing cards. The repository's `docs/local-capability-projects.md` describes how to connect the Knowledge Service. Use **Sessions** for session history, or query `GET /api/status` for the runtime status.
 
 ### Chat
 
@@ -212,7 +203,7 @@ Browse, search, and toggle skills and toolsets. Skills are loaded from `~/.herme
 - **Toolsets** — a separate section shows built-in toolsets (file operations, web browsing, etc.) with their active/inactive status, setup requirements, and list of included tools
 
 :::warning Security
-The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. If you bind to `0.0.0.0`, anyone on your network can view and modify your credentials. The dashboard has no authentication of its own.
+The web dashboard manages sensitive settings, including the API keys in your `.env` file. Keep the default bind address of `127.0.0.1` for local access. Non-loopback binding requires an explicit `--insecure` opt-in and independent network access controls. The per-process Dashboard token authenticates API requests from the frontend. For user-level access control, use an authenticated reverse proxy.
 :::
 
 ## `/reload` Slash Command
@@ -228,7 +219,7 @@ This re-reads `~/.hermes/.env` into the running process's environment. Useful wh
 
 ## REST API
 
-The web dashboard exposes a REST API that the frontend consumes. You can also call these endpoints directly for automation:
+Most Dashboard REST endpoints require the Dashboard session token. Send it in the `X-Hermes-Session-Token` header or as `Authorization: Bearer <token>`. The token is specific to the current Dashboard process and changes on restart. Requests without a valid token return `401` on protected endpoints. `GET /api/status` is public.
 
 ### GET /api/status
 
@@ -356,20 +347,21 @@ The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-
 
 ## Automatic Build on Update
 
-When you run `hermes update`, the web frontend is automatically rebuilt if `npm` is available. This keeps the dashboard in sync with code updates. If `npm` isn't installed, the update skips the frontend build and `hermes dashboard` will build it on first launch.
+When you run `hermes update`, the web frontend is rebuilt if npm is available. If the update skips the build, install Node.js and npm before starting Dashboard from source.
 
 ## Themes & plugins
 
-The dashboard ships with six built-in themes and can be extended with user-defined themes, plugin tabs, and backend API routes — all drop-in, no repo clone needed.
+The dashboard ships with eight built-in themes and can be extended with user-defined themes, plugin tabs, and backend API routes.
 
-**Switch themes live** from the header bar — click the palette icon next to the language switcher. Selection persists to `config.yaml` under `dashboard.theme` and is restored on page load.
+Set `dashboard.theme` in the active profile's `config.yaml` or use the [theme API](./extending-the-dashboard#theme-endpoints), then reload the dashboard.
 
 Built-in themes:
 
 | Theme | Character |
 |-------|-----------|
-| **Hermes Teal** (`default`) | Dark teal + cream, system fonts, comfortable spacing |
-| **Hermes Teal (Large)** (`default-large`) | Same as default with 18px text and roomier spacing |
+| **Hermes Paper** (`default`) | Light paper background, dark text, system fonts |
+| **Hermes Paper (Large)** (`default-large`) | Hermes Paper with 18px text and roomier spacing |
+| **Hermes Teal** (`hermes-teal`) | Classic dark teal and cream |
 | **Midnight** (`midnight`) | Deep blue-violet, Inter + JetBrains Mono |
 | **Ember** (`ember`) | Warm crimson + bronze, Spectral serif + IBM Plex Mono |
 | **Mono** (`mono`) | Grayscale, IBM Plex, compact |
