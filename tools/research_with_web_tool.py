@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from typing import Any
 
@@ -20,13 +21,46 @@ WEB_CONTEXT_ANSWER_STYLE_CONTRACT = (
 async def async_web_assist_answer(**kwargs):
     """Research entry point: local checkout or the knowledge service.
 
-    In HTTP mode the service runs the async bridge in its threadpool, so the
-    blocking client call is pushed off this event loop.  Older checkouts only
-    ship ``async_light_web_answer``; that case is a 404 from the dispatcher and
-    an ``AttributeError`` in local mode.
+    In HTTP mode, prefer ``POST /api/knowledge/research/stream`` when an
+    ``event_callback`` is attached so stage progress and synthesis
+    ``answer_delta`` tokens stream live to the UI instead of blocking silently.
+    Older services without the streaming route return 404 and fall back cleanly
+    to the standard ``call_custom_bridge`` dispatcher.
     """
-    from integrations.hermes_knowledge.client import KnowledgeNotFound
+    from integrations.hermes_knowledge.client import KnowledgeNotFound, get_client
     from tools.hermes_custom_envelope import call_custom_bridge
+
+    event_callback = kwargs.get("event_callback")
+    client = get_client()
+    if client is not None and callable(event_callback):
+        stream_payload = {
+            k: v
+            for k, v in kwargs.items()
+            if not callable(v) and k != "event_callback"
+        }
+        try:
+            final_result: dict[str, Any] | None = None
+            async for event in client.astream_research(stream_payload):
+                ev_kind = event.get("event")
+                if ev_kind == "progress":
+                    inner = {k: v for k, v in event.items() if k != "event"}
+                    res = event_callback(inner)
+                    if asyncio.iscoroutine(res):
+                        await res
+                elif ev_kind == "complete":
+                    raw = event.get("result")
+                    if isinstance(raw, dict):
+                        final_result = raw
+                elif ev_kind == "error":
+                    raise RuntimeError(str(event.get("message") or "research stream failed"))
+            if final_result is not None:
+                return final_result
+        except KnowledgeNotFound:
+            pass
+        finally:
+            client.close()
+    elif client is not None:
+        client.close()
 
     try:
         return await asyncio.to_thread(
@@ -94,20 +128,34 @@ RESEARCH_WITH_WEB_SCHEMA = {
 }
 
 
+def _current_research_channel() -> str:
+    env_platform = (os.environ.get("HERMES_PLATFORM") or "").strip().lower()
+    if env_platform:
+        return env_platform
+    try:
+        from gateway.session_context import get_session_env
+
+        return (get_session_env("HERMES_SESSION_PLATFORM") or "").strip().lower()
+    except Exception:
+        return ""
+
+
 def _handler(args: dict, **kw) -> str:
     try:
         progress_callback = kw.get("tool_progress_callback")
-        result = _run_research_coro(
-            _async_research_entry(
-                query=args.get("query", ""),
-                mode=args.get("mode", "local_web"),
-                article_context=args.get("article_context") or None,
-                selection_context=args.get("selection_context") or None,
-                export_file=bool(args.get("export_file", False)),
-                force_web=bool(args.get("force_web", False)),
-                event_callback=_research_event_callback(progress_callback),
-            )
-        )
+        entry_kwargs: dict[str, Any] = {
+            "query": args.get("query", ""),
+            "mode": args.get("mode", "local_web"),
+            "article_context": args.get("article_context") or None,
+            "selection_context": args.get("selection_context") or None,
+            "export_file": bool(args.get("export_file", False)),
+            "force_web": bool(args.get("force_web", False)),
+            "event_callback": _research_event_callback(progress_callback),
+        }
+        channel = _current_research_channel()
+        if channel == "weixin":
+            entry_kwargs["channel"] = "weixin"
+        result = _run_research_coro(_async_research_entry(**entry_kwargs))
         result["meta"] = {
             **result.get("meta", {}),
             "handler_instruction": (
@@ -150,6 +198,20 @@ def _run_research_coro(coro):
 def _research_event_callback(progress_callback):
     async def _on_event(event: dict[str, Any]) -> None:
         if not progress_callback:
+            return
+        event_type = str(event.get("type") or "")
+        if event_type == "answer_delta":
+            delta = str(event.get("delta") or "")
+            if delta:
+                try:
+                    progress_callback(
+                        "research.answer_delta",
+                        "research_with_web",
+                        delta,
+                        None,
+                    )
+                except Exception:
+                    pass
             return
         label = _research_event_label(event)
         if not label:

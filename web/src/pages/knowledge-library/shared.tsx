@@ -4,17 +4,23 @@ import type { KnowledgeLibraryItem } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export function StatusBadge({ item }: { item: KnowledgeLibraryItem }) {
-  const label = item.kind === "capture" ? "已保存" : "草稿";
+  const label = item.kind === "capture" ? "已归档" : "草稿";
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[0.68rem] font-medium",
+        "inline-flex shrink-0 items-center gap-1 text-[11px] font-medium",
         item.kind === "capture"
-          ? "bg-emerald-500/10 text-emerald-700"
-          : "bg-amber-500/10 text-amber-700",
+          ? "text-muted-foreground"
+          : "text-amber-700 dark:text-amber-300",
       )}
     >
-      {label}
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          item.kind === "capture" ? "bg-foreground/35" : "bg-amber-500",
+        )}
+      />
+      {item.kind === "capture" ? "已保存" : label}
     </span>
   );
 }

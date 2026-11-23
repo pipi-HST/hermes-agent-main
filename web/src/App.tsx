@@ -14,12 +14,12 @@ import {
   useLocation,
 } from "react-router-dom";
 import {
+  BookOpen,
   ChevronRight,
-  Database,
   Layers3,
   Menu,
   PanelLeftClose,
-  Sparkles,
+  PenLine,
   X,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -68,20 +68,20 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
 // in learning order: read the source material, distill cards, then output a topic.
 const KNOWLEDGE_LIBRARY_NAV_ITEM: NavItem = {
   path: "/knowledge-library",
-  label: "📄 资料伴读",
-  icon: Database,
+  label: "资料伴读",
+  icon: BookOpen,
 };
 
 const CARDS_BOARD_NAV_ITEM: NavItem = {
   path: "/cards-board",
-  label: "🗂️ 知识卡片",
+  label: "知识卡片",
   icon: Layers3,
 };
 
 const WORKBENCH_NAV_ITEM: NavItem = {
   path: "/knowledge-chat",
-  label: "🧭 专题输出",
-  icon: Sparkles,
+  label: "专题输出",
+  icon: PenLine,
 };
 
 /**
@@ -350,15 +350,15 @@ export default function App() {
             id="app-sidebar"
             aria-label={t.app.navigation}
             className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
-              "border-r border-border/80",
+              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-52 min-h-0 flex-col",
+              "border-r border-border/70",
               "bg-background/95 backdrop-blur-md",
               "transition-[width,transform] duration-200 ease-out",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0",
               sidebarCollapsed
-                ? "lg:w-2 lg:overflow-visible lg:border-r lg:border-border/70 lg:bg-transparent lg:backdrop-blur-0"
-                : "lg:w-64",
+                ? "lg:w-2 lg:overflow-visible lg:border-r lg:border-border/60 lg:bg-transparent lg:backdrop-blur-0"
+                : "lg:w-52",
             )}
             style={{
               background: sidebarCollapsed ? "transparent" : "var(--component-sidebar-background)",
@@ -369,7 +369,6 @@ export default function App() {
             <div
               className={cn(
                 "relative flex h-14 shrink-0 items-center justify-between gap-2 px-4",
-                "border-b border-border/80",
                 sidebarCollapsed && "lg:h-0 lg:overflow-visible lg:border-0 lg:p-0",
               )}
             >
@@ -377,11 +376,9 @@ export default function App() {
                 <PluginSlot name="header-left" />
 
                 <Typography
-                  className="text-base font-semibold leading-tight tracking-normal text-foreground"
+                  className="text-[15px] font-semibold tracking-tight text-foreground"
                 >
                   Hermes
-                  <br />
-                  Knowledge
                 </Typography>
               </div>
 
@@ -413,15 +410,12 @@ export default function App() {
 
             <nav
               className={cn(
-                "min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden py-3",
+                "min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden py-2",
                 sidebarCollapsed && "lg:hidden",
               )}
               aria-label={t.app.navigation}
             >
-              <ul className="flex flex-col">
-                <li className="px-5 pb-1.5 pt-0.5 text-[0.68rem] font-medium uppercase tracking-[0.16em] text-muted-foreground/80">
-                  学习闭环 · 三步沉淀
-                </li>
+              <ul className="flex flex-col gap-0.5 px-2.5">
                 {KNOWLEDGE_NAV_ITEMS.map((item) => (
                   <SidebarNavLink
                     closeMobile={closeMobile}
@@ -523,14 +517,14 @@ function SidebarNavLink({ closeMobile, collapsed, item, t }: SidebarNavLinkProps
         title={collapsed ? navLabel : undefined}
         className={({ isActive }) =>
           cn(
-            "group relative flex items-center gap-3",
-            "mx-2 rounded-md px-3 py-2",
-            "text-sm font-medium tracking-normal",
+            "group relative flex items-center gap-2.5",
+            "rounded-lg px-3 py-2",
+            "text-[13.5px] tracking-normal",
             "whitespace-nowrap transition cursor-pointer",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20",
             isActive
-              ? "bg-primary/10 text-foreground"
-              : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
+              ? "bg-white font-medium text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.06)] ring-1 ring-black/[0.06] dark:bg-card"
+              : "text-muted-foreground hover:bg-black/[0.04] hover:text-foreground",
             collapsed && "lg:justify-center lg:px-2",
           )
         }
@@ -540,20 +534,8 @@ function SidebarNavLink({ closeMobile, collapsed, item, t }: SidebarNavLinkProps
       >
         {({ isActive }) => (
           <>
-            <Icon className="h-4 w-4 shrink-0" />
+            <Icon className={cn("h-4 w-4 shrink-0", isActive ? "text-foreground" : "text-muted-foreground")} />
             <span className={cn("truncate", collapsed && "lg:hidden")}>{navLabel}</span>
-
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-y-1 left-1 rounded-full bg-primary opacity-0 transition-opacity duration-200 group-hover:opacity-20"
-            />
-
-            {isActive && (
-              <span
-                aria-hidden
-                className="absolute bottom-2 left-0 top-2 w-0.5 rounded-full bg-primary"
-              />
-            )}
           </>
         )}
       </NavLink>

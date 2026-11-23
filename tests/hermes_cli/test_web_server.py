@@ -161,7 +161,7 @@ class _FakeKnowledgeServiceClient:
     def create_answer_draft(self, payload):
         return self._respond("create_answer_draft", payload)
 
-    def update_capture(self, capture_id, *, body="", title="", folder_path=None):
+    def update_capture(self, capture_id, *, body="", title="", folder_path=None, expected_revision=None):
         if self.error is not None:
             raise self.error
         self.update_calls.append(
@@ -170,6 +170,7 @@ class _FakeKnowledgeServiceClient:
                 "body": body,
                 "title": title,
                 "folder_path": folder_path,
+                **({"expected_revision": expected_revision} if expected_revision is not None else {}),
             }
         )
         return self.update_result
@@ -1239,7 +1240,13 @@ class TestWebServerEndpoints:
             "title": "用户标题",
             "title_source": "",
             "organize": True,
-            "existing_folders": ["Inbox", "AI 产品", "数据 Agent", "待读", "临时"],
+            "existing_folders": [
+                "Inbox",
+                "AI 产品面试",
+                "Agent 与大模型",
+                "行业与产品拆解",
+                "读书与随笔",
+            ],
         }
 
     def test_knowledge_ai_operation_header_and_cancel_endpoint(self, monkeypatch, tmp_path):
@@ -1360,7 +1367,13 @@ class TestWebServerEndpoints:
             "folder_suggestion": None,
             "card_suggestion": None,
             "organize": True,
-            "existing_folders": ["Inbox", "AI 产品", "数据 Agent", "待读", "临时"],
+            "existing_folders": [
+                "Inbox",
+                "AI 产品面试",
+                "Agent 与大模型",
+                "行业与产品拆解",
+                "读书与随笔",
+            ],
         }
 
     def test_knowledge_regenerate_capture_draft_suggestions_delegates_to_bridge(self, monkeypatch, tmp_path):
@@ -2350,7 +2363,7 @@ class TestWebServerEndpoints:
 
         resp = self.client.patch(
             "/api/knowledge/captures/cap-1",
-            json={"body": "new body", "title": "changed", "folder_path": "Inbox"},
+            json={"body": "new body", "title": "changed", "folder_path": "Inbox", "expected_revision": "opened"},
         )
 
         assert resp.status_code == 200
@@ -2361,6 +2374,7 @@ class TestWebServerEndpoints:
                 "body": "new body",
                 "title": "changed",
                 "folder_path": "Inbox",
+                "expected_revision": "opened",
             }
         ]
         assert fake.closed is True
@@ -2386,12 +2400,129 @@ class TestWebServerEndpoints:
             assert resp.status_code == expected, (type(error).__name__, resp.status_code)
             assert fake.closed is True
 
+    @pytest.mark.parametrize("path", [
+        "/api/knowledge/captures/cap-1",
+        "/api/knowledge/library/items/capture/cap-1",
+    ])
+    def test_capture_revision_conflict_reaches_browser(self, monkeypatch, path):
+        import httpx
+
+        from integrations.hermes_knowledge import client as knowledge_client
+
+        detail = {"code": "capture_revision_conflict", "message": "edited elsewhere"}
+
+        def handler(request):
+            if request.url.path == "/api/health":
+                return httpx.Response(200, json={"service": "hermes-knowledge", "contract_version": 3})
+            assert request.method == "PATCH"
+            assert json.loads(request.content)["expected_revision"] == "opened"
+            return httpx.Response(409, json={"detail": detail})
+
+        client = knowledge_client.KnowledgeClient(
+            knowledge_client.KnowledgeConfig("http://knowledge.test"),
+            transport=httpx.MockTransport(handler),
+        )
+        monkeypatch.setattr(knowledge_client, "get_client", lambda: client)
+        resp = self.client.patch(path, json={"body": "stale edit", "expected_revision": "opened"})
+        assert resp.status_code == 409
+        assert resp.json() == {"detail": detail}
+
     # ── HTTP-mode delegation: library items / folders / drafts ──────────────
 
     def _patch_knowledge_client(self, monkeypatch, fake):
         import integrations.hermes_knowledge.client as knowledge_client
 
         monkeypatch.setattr(knowledge_client, "get_client", lambda transport=None: fake)
+
+    def test_selection_chat_stream_relays_service_deltas(self, monkeypatch):
+        class _StreamingClient:
+            def __init__(self):
+                self.closed = False
+                self.calls = []
+
+            async def astream_selection_chat(self, kind, item_id, payload):
+                self.calls.append((kind, item_id, payload))
+                yield {"event": "progress", "type": "answer_delta", "delta": "第一段"}
+                yield {"event": "progress", "type": "answer_delta", "delta": "第二段"}
+                yield {
+                    "event": "complete",
+                    "result": {
+                        "chat_preview": "第一段第二段",
+                        "warnings": [],
+                        "meta": {"mode": "local_web"},
+                    },
+                }
+
+            def close(self):
+                self.closed = True
+
+        fake = _StreamingClient()
+        self._patch_knowledge_client(monkeypatch, fake)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://knowledge.test")
+
+        resp = self.client.post(
+            "/api/knowledge/library/items/capture/cap-1/selection-chat/stream",
+            json={"question": "这是什么", "mode": "local_web"},
+        )
+
+        assert resp.status_code == 200
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in resp.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert [event["event"] for event in events] == [
+            "start",
+            "progress",
+            "progress",
+            "complete",
+        ]
+        assert events[1] == {"event": "progress", "type": "answer_delta", "delta": "第一段"}
+        assert events[2] == {"event": "progress", "type": "answer_delta", "delta": "第二段"}
+        assert events[-1]["response"]["answer"] == "第一段第二段"
+        assert len(fake.calls) == 1
+        kind, item_id, payload = fake.calls[0]
+        assert (kind, item_id) == ("capture", "cap-1")
+        assert payload["question"] == "这是什么"
+        assert fake.closed is True
+
+    def test_selection_chat_stream_falls_back_for_older_service(self, monkeypatch):
+        import integrations.hermes_knowledge.client as knowledge_client
+
+        class _BlockingClient:
+            def __init__(self):
+                self.closed = False
+
+            async def astream_selection_chat(self, kind, item_id, payload):
+                raise knowledge_client.KnowledgeNotFound(
+                    "missing", status_code=404, detail="Not Found"
+                )
+                yield  # pragma: no cover - keeps this an async generator
+
+            def selection_chat(self, kind, item_id, payload):
+                return {"chat_preview": "旧服务回答", "warnings": [], "meta": {}}
+
+            def close(self):
+                self.closed = True
+
+        fake = _BlockingClient()
+        self._patch_knowledge_client(monkeypatch, fake)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_URL", "http://knowledge.test")
+
+        resp = self.client.post(
+            "/api/knowledge/library/items/capture/cap-1/selection-chat/stream",
+            json={"question": "这是什么", "mode": "local_web"},
+        )
+
+        assert resp.status_code == 200
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in resp.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert [event["event"] for event in events] == ["start", "complete"]
+        assert events[-1]["response"]["answer"] == "旧服务回答"
+        assert fake.closed is True
 
     def test_library_folders_get_delegates_to_service(self, monkeypatch):
         fake = _FakeKnowledgeServiceClient(

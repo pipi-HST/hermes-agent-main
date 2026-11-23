@@ -31,12 +31,13 @@ flattening every error into a 502: 404 -> :class:`KnowledgeNotFound`, 409 ->
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, AsyncIterator
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -46,6 +47,7 @@ from integrations.hermes_knowledge import KnowledgeIncompatible, KnowledgeUnavai
 SERVICE_NAME = "hermes-knowledge"
 MIN_CONTRACT_VERSION = 1
 GARDEN_CONFIRMATION_CONTRACT_VERSION = 2
+CAPTURE_REVISION_CONTRACT_VERSION = 3
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
 # Only idempotent reads are retried; POST/DELETE must never be replayed.
@@ -159,11 +161,50 @@ _CONTRACT_CACHE_LOCK = threading.Lock()
 # One probe lock per service base_url; see _probe_lock().
 _CONTRACT_PROBE_LOCKS: dict[str, threading.Lock] = {}
 
+# Process-wide connection pools keyed by (base_url, token, timeout).
+# Creating a new httpx.Client per dashboard request enumerates the OS SSL root
+# store on Windows (~300ms per call) and discards keep-alive sockets.
+_SHARED_HTTP_CLIENTS: dict[tuple[str, str, float], httpx.Client] = {}
+_SHARED_CLIENT_LOCK = threading.Lock()
+
+
+def _get_shared_http_client(config: KnowledgeConfig) -> httpx.Client:
+    key = (config.base_url, config.token, float(config.timeout))
+    with _SHARED_CLIENT_LOCK:
+        existing = _SHARED_HTTP_CLIENTS.get(key)
+        if existing is not None and not existing.is_closed:
+            return existing
+        headers = {"User-Agent": "hermes-agent/knowledge-client"}
+        if config.token:
+            headers["Authorization"] = f"Bearer {config.token}"
+        client = httpx.Client(
+            base_url=config.base_url,
+            headers=headers,
+            timeout=config.timeout,
+            limits=httpx.Limits(max_connections=24, max_keepalive_connections=12),
+            trust_env=False,
+        )
+        _SHARED_HTTP_CLIENTS[key] = client
+        return client
+
+
+def close_shared_clients() -> None:
+    """Close and drop pooled HTTP clients (used by tests and shutdown)."""
+    with _SHARED_CLIENT_LOCK:
+        clients = list(_SHARED_HTTP_CLIENTS.values())
+        _SHARED_HTTP_CLIENTS.clear()
+    for client in clients:
+        try:
+            client.close()
+        except Exception:
+            pass
+
 
 def clear_contract_cache() -> None:
-    """Drop cached contract checks (tests and post-upgrade diagnostics)."""
+    """Drop cached contract checks and pooled clients (tests and diagnostics)."""
     with _CONTRACT_CACHE_LOCK:
         _CONTRACT_CACHE.clear()
+    close_shared_clients()
 
 
 def _probe_lock(base_url: str) -> threading.Lock:
@@ -207,22 +248,38 @@ def cached_contract_status(base_url: str) -> dict[str, Any] | None:
 
 
 class KnowledgeClient:
-    def __init__(self, config: KnowledgeConfig, *, transport: httpx.BaseTransport | None = None):
+    def __init__(
+        self,
+        config: KnowledgeConfig,
+        *,
+        transport: httpx.BaseTransport | None = None,
+        async_transport: httpx.AsyncBaseTransport | None = None,
+        _shared_client: httpx.Client | None = None,
+    ):
         self._config = config
         # Set by ensure_compatible() once the service contract was validated.
         self.contract_version: int | None = None
+        if _shared_client is not None and transport is None:
+            self._client = _shared_client
+            self._owns_client = False
+        else:
+            # trust_env=False: a local HTTP(S)_PROXY must never receive the bearer
+            # token meant for the knowledge service (which is often on loopback).
+            self._client = httpx.Client(
+                base_url=config.base_url,
+                headers=self._default_headers(),
+                timeout=config.timeout,
+                transport=transport,
+                trust_env=False,
+            )
+            self._owns_client = True
+        self._async_transport = async_transport
+
+    def _default_headers(self) -> dict[str, str]:
         headers = {"User-Agent": "hermes-agent/knowledge-client"}
-        if config.token:
-            headers["Authorization"] = f"Bearer {config.token}"
-        # trust_env=False: a local HTTP(S)_PROXY must never receive the bearer
-        # token meant for the knowledge service (which is often on loopback).
-        self._client = httpx.Client(
-            base_url=config.base_url,
-            headers=headers,
-            timeout=config.timeout,
-            transport=transport,
-            trust_env=False,
-        )
+        if self._config.token:
+            headers["Authorization"] = f"Bearer {self._config.token}"
+        return headers
 
     @property
     def base_url(self) -> str:
@@ -230,7 +287,8 @@ class KnowledgeClient:
         return self._config.base_url
 
     def close(self) -> None:
-        self._client.close()
+        if self._owns_client:
+            self._client.close()
 
     def __enter__(self) -> "KnowledgeClient":
         return self
@@ -290,6 +348,10 @@ class KnowledgeClient:
         if status == 404:
             raise KnowledgeNotFound(message, status_code=status, detail=detail)
         if status == 409:
+            if isinstance(detail, dict):
+                nested = detail.get("detail")
+                if isinstance(nested, dict) and nested.get("code") == "capture_revision_conflict":
+                    detail = nested
             raise KnowledgeConflict(message, status_code=status, detail=detail)
         if status < 500:
             raise KnowledgeInvalid(message, status_code=status, detail=detail)
@@ -465,6 +527,63 @@ class KnowledgeClient:
             json=dict(payload),
         )
 
+    async def _astream_sse(
+        self, path: str, payload: dict[str, Any]
+    ) -> AsyncIterator[dict[str, Any]]:
+        # The service can stay silent for a while during web research, so only
+        # the connect/write phases are bounded; the caller owns the total cap.
+        timeout = httpx.Timeout(self._config.timeout, read=None)
+        async with httpx.AsyncClient(
+            base_url=self._config.base_url,
+            headers=self._default_headers(),
+            timeout=timeout,
+            transport=self._async_transport,
+            trust_env=False,
+        ) as client:
+            async with client.stream(
+                "POST",
+                path,
+                json=dict(payload),
+                headers={"Accept": "text/event-stream"},
+            ) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    self._raise_for_status(response, "POST", path)
+                async for line in response.aiter_lines():
+                    text = line.strip()
+                    if not text.startswith("data:"):
+                        continue
+                    try:
+                        event = json.loads(text[5:].strip())
+                    except ValueError:
+                        continue
+                    if isinstance(event, dict):
+                        yield event
+
+    async def astream_selection_chat(
+        self, kind: str, item_id: str, payload: dict[str, Any]
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield the service SSE events for one selection-chat answer.
+
+        The service emits ``answer_delta`` progress events while the synthesis
+        LLM writes, then one ``complete`` event carrying the final envelope.
+        Services older than this endpoint answer 404; callers can catch
+        :class:`KnowledgeNotFound` and fall back to :meth:`selection_chat`.
+        """
+        path = (
+            f"/api/knowledge/library/items/{quote(str(kind), safe='')}/"
+            f"{quote(str(item_id), safe='')}/selection-chat/stream"
+        )
+        async for event in self._astream_sse(path, payload):
+            yield event
+
+    async def astream_research(
+        self, payload: dict[str, Any]
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield the service SSE events for one ``research_with_web`` run."""
+        async for event in self._astream_sse("/api/knowledge/research/stream", payload):
+            yield event
+
     def revise_capture_note(
         self, capture_id: str, instruction: str, *, operation_id: str = "",
     ) -> dict[str, Any]:
@@ -488,11 +607,13 @@ class KnowledgeClient:
         body: str = "",
         title: str = "",
         folder_path: str | None = None,
+        expected_revision: str | None = None,
     ) -> dict[str, Any]:
-        """Save an edited capture note through the service (contract v1).
+        """Save an edited capture note through the service.
 
         The service owns the vault and the SQLite row, so the dashboard must
         not write the Markdown file itself when HTTP mode is configured.
+        Conditional edits require contract v3; older callers can omit the revision.
         """
         payload: dict[str, Any] = {}
         if body:
@@ -501,7 +622,19 @@ class KnowledgeClient:
             payload["title"] = title
         if folder_path is not None:
             payload["folder_path"] = folder_path
+        if expected_revision is not None:
+            self._require_capture_revision_contract()
+            payload["expected_revision"] = expected_revision
         return self.request("PATCH", f"/api/captures/{quote(str(capture_id), safe='')}", json=payload)
+
+    def _require_capture_revision_contract(self) -> None:
+        # Recheck rather than trust the startup cache: a rolled-back service
+        # would silently ignore the new field and overwrite the current note.
+        version = self.health().get("contract_version")
+        if type(version) is not int or version < CAPTURE_REVISION_CONTRACT_VERSION:
+            raise KnowledgeIncompatible(
+                "保存资料笔记需要 Knowledge Service 契约 v3 或以上，请先升级服务。"
+            )
 
     # -- library items ------------------------------------------------------
     def create_library_item(
@@ -533,6 +666,8 @@ class KnowledgeClient:
         fields the user actually edited.
         """
         payload = {key: value for key, value in fields.items() if value is not None}
+        if kind == "capture" and "expected_revision" in payload:
+            self._require_capture_revision_contract()
         return self.request(
             "PATCH",
             f"/api/library/items/{quote(str(kind), safe='')}/{quote(str(item_id), safe='')}",
@@ -719,11 +854,44 @@ class KnowledgeClient:
             f"/api/garden/drafts/{quote(str(draft_id), safe='')}",
         )
 
+    def update_garden_draft(
+        self, draft_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self.request(
+            "PATCH",
+            f"/api/garden/drafts/{quote(str(draft_id), safe='')}",
+            json=dict(updates),
+        )
+
+    def revise_garden_draft(
+        self, draft_id: str, instruction: str, *, operation_id: str = ""
+    ) -> dict[str, Any]:
+        return self.request(
+            "POST",
+            f"/api/garden/drafts/{quote(str(draft_id), safe='')}/revise",
+            json={"instruction": instruction},
+            headers=_operation_headers(operation_id),
+        )
+
     def list_garden_cards(self, *, limit: int = 100, status: str = "") -> dict[str, Any]:
         params: dict[str, Any] = {"limit": limit}
         if status:
             params["status"] = status
         return self.request("GET", "/api/garden/cards", params=params)
+
+    def get_garden_card(self, card_id: str) -> dict[str, Any]:
+        return self.request(
+            "GET", f"/api/garden/cards/{quote(str(card_id), safe='')}"
+        )
+
+    def update_garden_card(
+        self, card_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self.request(
+            "PATCH",
+            f"/api/garden/cards/{quote(str(card_id), safe='')}",
+            json=dict(updates),
+        )
 
     def delete_garden_card(self, card_id: str) -> dict[str, Any]:
         return self.request(
@@ -791,13 +959,14 @@ def get_client(transport: httpx.BaseTransport | None = None) -> KnowledgeClient 
 
     ``None`` means HTTP mode is not configured (local/disabled knowledge).  A
     service that is unreachable or speaks an incompatible contract raises
-    :class:`KnowledgeUnavailable` / :class:`KnowledgeIncompatible`; the client
-    is closed before the error propagates so no connection is leaked.
+    :class:`KnowledgeUnavailable` / :class:`KnowledgeIncompatible`; unpooled
+    clients are closed before the error propagates so no connection is leaked.
     """
     config = load_config()
     if config is None:
         return None
-    client = KnowledgeClient(config, transport=transport)
+    shared = _get_shared_http_client(config) if transport is None else None
+    client = KnowledgeClient(config, transport=transport, _shared_client=shared)
     try:
         ensure_compatible(client)
     except Exception:

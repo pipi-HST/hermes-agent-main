@@ -6,17 +6,18 @@ import {
   Compass,
   Copy,
   FileText,
+  Globe,
   Image as ImageIcon,
+  Layers3,
   Lightbulb,
   Loader2,
   Paperclip,
-  Radar,
   RefreshCw,
-  Sparkles,
   SquareStop,
   X,
 } from "lucide-react";
 import { KnowledgeAnswerView, type KnowledgeAnswerSource } from "@/components/KnowledgeAnswerView";
+import type { ToolEntry } from "@/components/ToolCall";
 import type { ConnectionState } from "@/lib/gatewayClient";
 import { isKnowledgeSourceHint, type KnowledgeMessage, type KnowledgeSourceHint } from "@/lib/knowledgeChatState";
 import type { KnowledgeChatResearchMode } from "@/lib/api";
@@ -27,62 +28,21 @@ const SCAN_TOPIC_PROMPT =
   "扫描最近保存的内容，看看有没有可以整理成知识卡片或输出选题的跨篇关联";
 
 const PROMPT_STARTERS = [
-  "基于资料库回答这个问题：",
-  "展开最近的 Capture 草稿",
+  "结合我的知识卡片和资料库，帮我梳理一个专题框架：",
+  "对比资料库里关于这个问题的不同观点：",
   SCAN_TOPIC_PROMPT,
 ];
 
-type TopicKey = "all" | "interview" | "agent" | "industry";
-
-const TOPIC_FILTERS: Array<{ key: TopicKey; label: string }> = [
-  { key: "all", label: "全部专题" },
-  { key: "interview", label: "🎯 AI 产品面试" },
-  { key: "agent", label: "🤖 Agent 与大模型" },
-  { key: "industry", label: "🌱 行业与产品拆解" },
-];
-
-const TOPIC_FALLBACK_PROMPT =
-  "请结合我的知识卡片与资料库资料，帮我找出最近可以整理成专题输出的跨篇关联，并给出一个选题与输出提纲。";
-
-interface TopicInspiration {
-  key: Exclude<TopicKey, "all">;
-  topicLabel: string;
+export interface AttachedTopicCard {
+  id: string;
   title: string;
-  insight: string;
-  prompt: string;
+  summary?: string;
+  theme?: string;
 }
 
-const TOPIC_INSPIRATIONS: TopicInspiration[] = [
-  {
-    key: "interview",
-    topicLabel: "🎯 专题：AI 产品面试",
-    title: "《如何向面试官证明你的 AI 功能不是“为了 AI 而 AI”的伪需求？》",
-    insight:
-      "串联《真伪需求判断三步法》方法卡与《高频输入切忌人工审批卡点》避坑卡，对比高频收集与低频决策的交互边界。",
-    prompt:
-      "请结合我资料库中关于“真伪需求判断”和“高频输入审批卡点”的卡片与资料，帮我梳理一份 AI 产品经理面试高分回答框架：《如何辨别并重构“为了 AI 而 AI”的伪需求？》",
-  },
-  {
-    key: "agent",
-    topicLabel: "🤖 专题：Agent 与大模型",
-    title: "《破除多级 Agent 的“大模型传话筒效应”与 130 秒延迟优化复盘》",
-    insight:
-      "结合《大模型传话筒效应》新知卡、《130 秒延迟复盘》洞察卡与《MCP 工具收敛》资料，总结控制流与数据流分离的架构范式。",
-    prompt:
-      "请结合我资料库中关于“大模型传话筒效应”、“130秒重型研究管线复盘”和“Model Routing”的卡片与资料，生成一份结构化的项目亮点复盘手稿。",
-  },
-  {
-    key: "industry",
-    topicLabel: "🌱 专题：行业与产品拆解",
-    title: "《为什么 90% 的个人资料库沦为“吃灰收藏夹”？从 RAG 证据分层谈破局》",
-    insight:
-      "对比 Notion AI、NotebookLM、腾讯 IMA 与本项目的“资料(Evidence) → 卡片(Viewpoint) → 专题(Topic)”三阶内化模型。",
-    prompt:
-      "请结合我资料库中的《PKM 竞品拆解》资料与《区分原文证据与个人观点》卡片，帮我撰写一篇关于个人资料库产品破局思路的深度分析提纲。",
-  },
-];
-
 export function GatewayChat({
+  activeTurnTools = [],
+  attachedCards = [],
   attachments,
   canSend,
   composerPlaceholder,
@@ -90,14 +50,19 @@ export function GatewayChat({
   draftAssistant,
   fileInputRef,
   input,
+  liveStatusText = "",
+  liveThinking = "",
   messages,
   researchMode,
   interruptRequested,
   running,
   transcriptRef,
+  turnStartedAt = null,
   uploading,
   onInputChange,
   onPickPrompt,
+  onRemoveAttachedCard,
+  onSubmitPrompt,
   onResearchModeChange,
   onRemoveAttachment,
   onSaveAnswer,
@@ -106,6 +71,8 @@ export function GatewayChat({
   onSubmit,
   onUploadFiles,
 }: {
+  activeTurnTools?: ToolEntry[];
+  attachedCards?: AttachedTopicCard[];
   attachments: ComposerAttachment[];
   canSend: boolean;
   composerPlaceholder: string;
@@ -113,14 +80,19 @@ export function GatewayChat({
   draftAssistant: KnowledgeMessage | null;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   input: string;
+  liveStatusText?: string;
+  liveThinking?: string;
   messages: KnowledgeMessage[];
   researchMode: KnowledgeChatResearchMode;
   interruptRequested: boolean;
   running: boolean;
   transcriptRef: React.RefObject<HTMLDivElement | null>;
+  turnStartedAt?: number | null;
   uploading: boolean;
   onInputChange: (value: string) => void;
   onPickPrompt: (value: string) => void;
+  onRemoveAttachedCard?: (id: string) => void;
+  onSubmitPrompt: (value: string) => void;
   onResearchModeChange: (mode: KnowledgeChatResearchMode) => void;
   onRemoveAttachment: (id: string) => void;
   onSaveAnswer: (message: KnowledgeMessage, outputType: AnswerOutputType) => void;
@@ -136,25 +108,20 @@ export function GatewayChat({
       : "停止生成"
     : "发送";
   const startThemeScan = (prompt: string = SCAN_TOPIC_PROMPT) => {
-    onResearchModeChange("theme_scan");
     onPickPrompt(prompt);
+    onSubmitPrompt(prompt);
   };
 
   return (
     <>
       <div
         ref={transcriptRef}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6"
+        className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-10"
       >
         {messages.length === 0 && !draftAssistant ? (
           <EmptyState onPick={onPickPrompt} onScan={startThemeScan} />
         ) : (
-          <div className="space-y-5">
-            <TopicInspirationRadar
-              collapsed
-              onPick={onPickPrompt}
-              onScan={startThemeScan}
-            />
+          <div className="mx-auto max-w-[780px] space-y-7">
             {messages.map((message) => (
               <TranscriptMessage
                 key={message.id}
@@ -164,16 +131,27 @@ export function GatewayChat({
                 sourceHints={message.sourceHints ?? []}
               />
             ))}
-            {draftAssistant && (
+            {running && (
+              <LiveWorkingCard
+                hasVisibleAnswer={Boolean(draftAssistant?.text.trim())}
+                interruptRequested={interruptRequested}
+                liveStatusText={liveStatusText}
+                liveThinking={liveThinking}
+                researchMode={researchMode}
+                tools={activeTurnTools}
+                turnStartedAt={turnStartedAt}
+              />
+            )}
+            {draftAssistant && draftAssistant.text.trim() && (
               <TranscriptMessage message={draftAssistant} onSourceOpen={onSourceOpen} streaming />
             )}
           </div>
         )}
       </div>
 
-      <footer className="shrink-0 border-t border-border/80 bg-background/82 p-3">
+      <footer className="shrink-0 px-5 pb-5 pt-2 sm:px-10">
         <div
-          className="rounded-lg border border-border/80 bg-background/62 p-2"
+          className="mx-auto max-w-[780px] rounded-2xl border border-black/[0.1] bg-[#fafaf8] p-3 transition focus-within:border-foreground/30 focus-within:bg-white focus-within:shadow-[0_10px_30px_-18px_rgba(0,0,0,0.14)] dark:border-border dark:bg-background"
           onDragOver={(event) => {
             event.preventDefault();
           }}
@@ -182,8 +160,34 @@ export function GatewayChat({
             onUploadFiles(event.dataTransfer.files);
           }}
         >
+          {attachedCards.length > 0 && (
+            <div className="mb-2.5 flex flex-wrap items-center gap-1.5 border-b border-border/55 pb-2.5">
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                <Layers3 className="h-3.5 w-3.5 text-foreground/70" />
+                已带入卡片
+              </span>
+              {attachedCards.map((card) => (
+                <span
+                  key={card.id}
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-black/[0.08] bg-white px-2.5 py-0.5 text-xs text-foreground shadow-2xs dark:border-border dark:bg-card"
+                >
+                  <span className="max-w-[220px] truncate">{card.title}</span>
+                  {onRemoveAttachedCard ? (
+                    <button
+                      type="button"
+                      onClick={() => onRemoveAttachedCard(card.id)}
+                      className="rounded p-0.5 text-muted-foreground transition hover:text-foreground"
+                      aria-label={`移除卡片 ${card.title}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  ) : null}
+                </span>
+              ))}
+            </div>
+          )}
           {attachments.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-2">
+            <div className="mb-2.5 flex flex-wrap gap-2">
               {attachments.map((attachment) => (
                 <AttachmentChip
                   key={attachment.id}
@@ -193,69 +197,67 @@ export function GatewayChat({
               ))}
             </div>
           )}
-          <ComposerQuickActions
-            disabled={inputDisabled}
-            mode={researchMode}
-            onScan={() => startThemeScan()}
-            onChange={onResearchModeChange}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              if (event.currentTarget.files) {
+                onUploadFiles(event.currentTarget.files);
+              }
+              event.currentTarget.value = "";
+            }}
           />
-          <div className="flex gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(event) => {
-                if (event.currentTarget.files) {
-                  onUploadFiles(event.currentTarget.files);
-                }
-                event.currentTarget.value = "";
-              }}
-            />
+          <textarea
+            value={input}
+            onChange={(event) => onInputChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                onSubmit();
+              }
+            }}
+            rows={2}
+            placeholder={composerPlaceholder}
+            className="min-h-[56px] max-h-44 w-full resize-none bg-transparent px-1.5 py-1 text-[14.5px] leading-6 text-foreground outline-none placeholder:text-muted-foreground"
+          />
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 pt-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={inputDisabled}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-black/[0.08] bg-white text-muted-foreground transition hover:border-foreground/25 hover:text-foreground disabled:opacity-45 dark:border-border dark:bg-card"
+                aria-label="上传文件"
+                title="上传文件"
+              >
+                {uploading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Paperclip className="h-3.5 w-3.5" />
+                )}
+              </button>
+              <ComposerQuickActions
+                disabled={inputDisabled}
+                mode={researchMode}
+                onScan={() => startThemeScan()}
+                onChange={onResearchModeChange}
+              />
+            </div>
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={inputDisabled}
-              className={cn(
-                "flex h-16 w-12 shrink-0 items-center justify-center rounded-md border text-sm transition",
-                inputDisabled
-                  ? "border-border bg-muted/40 text-muted-foreground"
-                  : "border-border bg-background/80 text-foreground hover:border-primary/45 hover:bg-primary/10",
-              )}
-              aria-label="上传文件"
-              title="上传文件"
-            >
-              {uploading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Paperclip className="h-4 w-4" />
-              )}
-            </button>
-            <textarea
-              value={input}
-              onChange={(event) => onInputChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  onSubmit();
-                }
-              }}
-              placeholder={composerPlaceholder}
-              className="min-h-16 flex-1 resize-none rounded-md border border-border bg-background/80 px-3 py-2 text-sm leading-6 text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
-            />
-            <button
-              type="button"
-              onClick={running ? onStop : onSubmit}
+              onClick={running ? onStop : () => onSubmit()}
               disabled={running ? interruptRequested : !canSend}
               className={cn(
-                "flex h-16 w-12 shrink-0 items-center justify-center rounded-md border text-sm transition",
+                "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition",
                 running
                   ? interruptRequested
-                    ? "border-border bg-muted/40 text-muted-foreground"
-                    : "border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15"
+                    ? "bg-muted text-muted-foreground"
+                    : "border border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15"
                   : canSend
-                  ? "border-primary/50 bg-primary text-primary-foreground shadow-[0_14px_34px_-22px_rgba(47,111,95,0.65)] hover:brightness-105"
-                  : "border-border bg-muted/40 text-muted-foreground",
+                    ? "bg-foreground text-background hover:opacity-90"
+                    : "bg-muted/70 text-muted-foreground/60",
               )}
               aria-label={submitLabel}
               title={submitLabel}
@@ -264,7 +266,7 @@ export function GatewayChat({
                 interruptRequested ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <SquareStop className="h-4 w-4" />
+                  <SquareStop className="h-3.5 w-3.5" />
                 )
               ) : (
                 <ArrowUp className="h-4 w-4" />
@@ -290,7 +292,7 @@ function ComposerQuickActions({
 }) {
   const webEnabled = mode === "local_web";
   return (
-    <div className="mb-2 flex flex-wrap items-center gap-2">
+    <>
       <button
         type="button"
         disabled={disabled}
@@ -299,35 +301,33 @@ function ComposerQuickActions({
         title={
           webEnabled
             ? "关闭联网搜索，仅检索个人资料库"
-            : "开启 DeepSeek 联网搜索，与个人资料库联合解答"
+            : "开启联网搜索，与个人资料库联合解答"
         }
         className={cn(
-          "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition",
+          "inline-flex h-7 items-center gap-1.5 rounded-lg border px-2.5 text-xs transition",
           webEnabled
-            ? "border-primary/50 bg-primary/15 font-medium text-primary"
-            : "border-border bg-background/80 text-muted-foreground hover:border-primary/40 hover:text-foreground",
+            ? "border-foreground bg-foreground font-medium text-background"
+            : "border-black/[0.08] bg-white text-muted-foreground hover:border-foreground/25 hover:text-foreground dark:border-border dark:bg-card",
           disabled && "opacity-45",
         )}
       >
-        🌐 联网搜索{webEnabled ? " · 已开启" : ""}
+        <Globe className="h-3 w-3" />
+        {webEnabled ? "联网 + 资料库" : "仅个人资料库"}
       </button>
-      <span className="text-[11px] leading-5 text-muted-foreground">
-        {webEnabled ? "⚡ DeepSeek 联网搜索 + 个人资料库联合解答" : "📚 默认检索个人资料库（卡片 + 资料）"}
-      </span>
       <button
         type="button"
         disabled={disabled}
         onClick={onScan}
         className={cn(
-          "ml-auto inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/8 px-2.5 py-1 text-xs font-medium text-primary transition hover:border-primary/50 hover:bg-primary/12",
+          "inline-flex h-7 items-center gap-1.5 rounded-lg border border-black/[0.08] bg-white px-2.5 text-xs text-muted-foreground transition hover:border-foreground/25 hover:text-foreground dark:border-border dark:bg-card",
           disabled && "opacity-45",
         )}
-        title="让 Hermes 扫描最近保存的卡片与资料，找出可以整理成输出选题的跨篇关联"
+        title="扫描最近保存的卡片与资料，发现跨篇输出选题"
       >
-        <RefreshCw className="h-3.5 w-3.5" />
-        🔄 扫描跨篇新灵感
+        <RefreshCw className="h-3 w-3" />
+        扫描跨篇关联
       </button>
-    </div>
+    </>
   );
 }
 
@@ -339,180 +339,42 @@ function EmptyState({
   onScan: (prompt?: string) => void;
 }) {
   return (
-    <div className="flex min-h-full items-start justify-center py-4">
-      <div className="w-full max-w-5xl">
-        <div className="rounded-xl border border-primary/20 bg-[linear-gradient(135deg,rgba(95,153,142,0.10),rgba(255,255,255,0)_60%)] p-4 sm:p-5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex min-w-0 items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-primary">
-                <Radar className="h-5 w-5" />
-              </div>
-              <div className="min-w-0">
-                <h2 className="text-lg font-semibold tracking-normal text-foreground">
-                  ✨ 专题灵感雷达 & RAG 输出专区
-                </h2>
-                <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                  先看跨篇灵感，再选一个选题进输出台：Hermes 会结合你的知识卡片与资料，合成一篇有出处的专题文稿。
-                </p>
-              </div>
-            </div>
-            <span className="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-full border border-border bg-background/70 px-2.5 py-1 text-[11px] text-muted-foreground">
-              <Sparkles className="h-3.5 w-3.5 text-primary/80" />
-              卡片 → 选题 → 输出
-            </span>
-          </div>
+    <div className="flex min-h-full items-center justify-center py-10">
+      <div className="w-full max-w-[680px]">
+        <h2 className="text-2xl font-semibold tracking-tight text-foreground">
+          开始一个新的专题研究
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          结合你的知识卡片、个人资料与联网证据，梳理结构、碰撞观点或直接成稿。
+        </p>
 
-          <div className="mt-4">
-            <TopicInspirationRadar onPick={onPick} onScan={onScan} />
-          </div>
-        </div>
-
-        <div className="mt-4">
-          <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <Compass className="h-3.5 w-3.5" />
-            或者，直接开始
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {PROMPT_STARTERS.map((starter) => (
-              <button
-                key={starter}
-                type="button"
-                onClick={() => (starter === SCAN_TOPIC_PROMPT ? onScan(starter) : onPick(starter))}
-                className="rounded-md border border-current/10 bg-background/60 px-3 py-2 text-left text-sm leading-5 text-foreground transition hover:border-primary/40 hover:bg-primary/10"
-              >
-                {starter}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TopicInspirationRadar({
-  collapsed = false,
-  onPick,
-  onScan,
-}: {
-  collapsed?: boolean;
-  onPick: (text: string) => void;
-  onScan: (prompt?: string) => void;
-}) {
-  const [topic, setTopic] = React.useState<TopicKey>("all");
-  const visible = TOPIC_INSPIRATIONS.filter((item) => topic === "all" || item.key === topic);
-
-  const body = (
-    <div>
-      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-foreground">
-        <Lightbulb className="h-3.5 w-3.5 text-primary/80" />
-        💡 示例选题模板（点击右侧「扫描跨篇新灵感」基于最新资料实时生成）
-      </div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {TOPIC_FILTERS.map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            onClick={() => setTopic(item.key)}
-            className={cn(
-              "rounded-full border px-2.5 py-1 text-xs font-medium transition",
-              topic === item.key
-                ? "border-primary/45 bg-primary/12 text-primary"
-                : "border-border bg-background/60 text-muted-foreground hover:border-primary/30 hover:text-foreground",
-            )}
-          >
-            {item.label}
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={() => onScan()}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-border bg-background/60 px-2.5 py-1 text-xs font-medium text-foreground transition hover:border-primary/40 hover:bg-primary/10"
-        >
-          🔄 扫描跨篇新灵感
-        </button>
-      </div>
-
-      <div className="mt-3 grid gap-3 lg:grid-cols-3">
-        {visible.length ? (
-          visible.map((item) => (
-            <TopicInspirationCard key={item.key} inspiration={item} onPick={onPick} />
-          ))
-        ) : (
-          <div className="rounded-lg border border-dashed border-border bg-background/55 p-4 lg:col-span-3">
-            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-              <Lightbulb className="h-4 w-4 text-primary/80" />
-              暂无预置选题，先扫描你的资料库
-            </h3>
-            <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
-              让 Hermes 扫描最近保存的卡片与资料，自动找出可以整理成专题输出的跨篇关联。
-            </p>
+        <div className="mt-7 grid gap-2.5 sm:grid-cols-3">
+          {PROMPT_STARTERS.map((starter) => (
             <button
+              key={starter}
               type="button"
-              onClick={() => onScan(TOPIC_FALLBACK_PROMPT)}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-primary/35 bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:border-primary/55 hover:bg-primary/15"
+              onClick={() => (starter === SCAN_TOPIC_PROMPT ? onScan(starter) : onPick(starter))}
+              className="rounded-xl border border-black/[0.08] bg-[#fafaf8] px-4 py-3.5 text-left text-[13px] leading-5 text-foreground/85 transition hover:border-foreground/25 hover:bg-white hover:text-foreground dark:border-border dark:bg-background"
             >
-              <Sparkles className="h-3.5 w-3.5 text-primary/80" />
-              生成一个跨篇输出选题
+              {starter}
             </button>
-          </div>
-        )}
+          ))}
+        </div>
       </div>
     </div>
   );
-
-  if (!collapsed) return body;
-
-  return (
-    <details className="group rounded-lg border border-border bg-background/55 px-3 py-2">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-medium text-muted-foreground">
-        <span className="inline-flex min-w-0 items-center gap-1.5">
-          <Radar className="h-3.5 w-3.5 shrink-0 text-primary/80" />
-          <span className="truncate">✨ 专题灵感雷达 · 3 个跨篇输出选题</span>
-        </span>
-        <ChevronDown className="h-3.5 w-3.5 shrink-0 transition group-open:rotate-180" />
-      </summary>
-      <div className="mt-3">{body}</div>
-    </details>
-  );
 }
 
-function TopicInspirationCard({
-  inspiration,
-  onPick,
-}: {
-  inspiration: TopicInspiration;
-  onPick: (text: string) => void;
-}) {
-  return (
-    <article className="flex flex-col rounded-lg border border-border bg-background/75 p-3.5 shadow-[0_12px_30px_-26px_rgba(24,40,35,0.4)] transition hover:border-primary/35">
-      <div className="text-[0.7rem] font-medium text-primary">{inspiration.topicLabel}</div>
-      <h3 className="mt-1.5 text-sm font-semibold leading-6 text-foreground">
-        {inspiration.title}
-      </h3>
-      <p className="mt-2 text-xs leading-5 text-muted-foreground">
-        <span className="font-medium text-foreground/80">跨篇关联洞察：</span>
-        {inspiration.insight}
-      </p>
-      <details className="mt-2 rounded border border-border/70 bg-background/60 px-2 py-1.5">
-        <summary className="cursor-pointer list-none text-[11px] font-medium text-muted-foreground">
-          查看一键输出 Prompt
-        </summary>
-        <p className="mt-1.5 text-[11px] leading-5 text-muted-foreground">{inspiration.prompt}</p>
-      </details>
-      <div className="mt-auto pt-3">
-        <button
-          type="button"
-          onClick={() => onPick(inspiration.prompt)}
-          className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/35 bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:border-primary/55 hover:bg-primary/15"
-        >
-          <Sparkles className="h-3.5 w-3.5 text-primary/80" />
-          ✍️ 选为输出主题，填入输出台
-        </button>
-      </div>
-    </article>
-  );
-}
+const TOPIC_ANSWER_PROSE_CLASSES =
+  "[&_[data-markdown-root]]:space-y-4 [&_[data-markdown-root]]:text-[15px] [&_[data-markdown-root]]:leading-[1.85] [&_[data-markdown-root]]:text-foreground/90 " +
+  "[&_[data-markdown-root]_h1]:pt-2 [&_[data-markdown-root]_h1]:text-lg [&_[data-markdown-root]_h1]:font-semibold [&_[data-markdown-root]_h1]:tracking-tight " +
+  "[&_[data-markdown-root]_h2]:pt-2 [&_[data-markdown-root]_h2]:text-[16px] [&_[data-markdown-root]_h2]:font-semibold [&_[data-markdown-root]_h2]:tracking-tight " +
+  "[&_[data-markdown-root]_h3]:pt-1.5 [&_[data-markdown-root]_h3]:text-[15px] [&_[data-markdown-root]_h3]:font-semibold " +
+  "[&_[data-markdown-root]_ul]:space-y-2 [&_[data-markdown-root]_ul]:pl-5 [&_[data-markdown-root]_ul]:text-[15px] " +
+  "[&_[data-markdown-root]_ol]:space-y-2 [&_[data-markdown-root]_ol]:pl-5 [&_[data-markdown-root]_ol]:text-[15px] " +
+  "[&_[data-markdown-root]_li]:leading-[1.8] " +
+  "[&_[data-markdown-root]_strong]:font-semibold [&_[data-markdown-root]_strong]:text-foreground " +
+  "[&_[data-markdown-root]_blockquote]:rounded-xl [&_[data-markdown-root]_blockquote]:border-0 [&_[data-markdown-root]_blockquote]:bg-muted/45 [&_[data-markdown-root]_blockquote]:px-4 [&_[data-markdown-root]_blockquote]:py-3 [&_[data-markdown-root]_blockquote]:text-[14px] [&_[data-markdown-root]_blockquote]:leading-[1.75] [&_[data-markdown-root]_blockquote]:text-foreground/80";
 
 function TranscriptMessage({
   message,
@@ -552,66 +414,272 @@ function TranscriptMessage({
     window.setTimeout(() => setCopied(false), 1400);
   }, [message.text]);
 
-  return (
-    <article className={cn("flex", isUser ? "justify-end" : "justify-start")}>
-      <div
-        className={cn(
-          "min-w-0 rounded-lg border px-4 py-3 shadow-[0_10px_26px_-24px_rgba(24,40,35,0.32)]",
-          isUser
-            ? "max-w-[min(760px,85%)] border-primary/25 bg-primary/12"
-            : "w-full border-border bg-background/72",
-        )}
-      >
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <span className="text-[0.68rem] font-medium uppercase tracking-[0.16em] text-muted-foreground">
-            {isUser ? "You" : "Hermes"}
-          </span>
-          {message.warning ? (
-            <span className="text-xs text-warning">{message.warning}</span>
-          ) : null}
-          {!streaming && !isUser && onSaveAnswer ? (
-            <div className="flex shrink-0 items-center gap-1">
-              <button
-                type="button"
-                onClick={() => void copyAnswer()}
-                className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground transition hover:border-primary/30 hover:text-foreground"
-                title="复制回答"
-                aria-label="复制回答"
-              >
-                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                {copied ? "已复制" : "复制"}
-              </button>
-              <button
-                type="button"
-                onClick={() => onSaveAnswer(message, "local_learning_note")}
-                className="rounded border border-border px-2 py-1 text-xs text-muted-foreground transition hover:border-primary/30 hover:text-foreground"
-              >
-                存为笔记
-              </button>
-              <button
-                type="button"
-                onClick={() => onSaveAnswer(message, "knowledge_card")}
-                className="rounded border border-border px-2 py-1 text-xs text-muted-foreground transition hover:border-primary/30 hover:text-foreground"
-              >
-                做成卡片
-              </button>
-            </div>
-          ) : null}
+  if (isUser) {
+    return (
+      <article className="flex justify-end">
+        <div className="max-w-[min(640px,85%)] rounded-2xl bg-muted/70 px-4 py-2.5 text-[14.5px] leading-7 text-foreground">
+          <p className="whitespace-pre-wrap break-words">{message.text}</p>
         </div>
+      </article>
+    );
+  }
 
-        {isUser ? (
-          <p className="whitespace-pre-wrap text-sm leading-6 text-foreground">
-            {message.text}
-          </p>
-        ) : (
-          <KnowledgeAnswerView
-            content={message.text}
-            onSourceOpen={onSourceOpen}
-            sources={answerSources}
-            streaming={streaming}
-            searchBackend={message.searchBackend}
-          />
-        )}
+  return (
+    <article className="min-w-0 border-b border-border/45 pb-6 last:border-b-0">
+      {message.warning ? (
+        <div className="mb-2 text-xs text-warning">{message.warning}</div>
+      ) : null}
+
+      {!streaming && message.reasoning ? (
+        <details className="mb-3 rounded-xl bg-muted/40 px-3.5 py-2 text-xs text-muted-foreground">
+          <summary className="cursor-pointer select-none font-medium text-foreground/75">
+            查看思考过程
+          </summary>
+          <div className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap border-t border-border/40 pt-2 leading-5">
+            {message.reasoning}
+          </div>
+        </details>
+      ) : null}
+
+      <div className={TOPIC_ANSWER_PROSE_CLASSES}>
+        <KnowledgeAnswerView
+          content={message.text}
+          onSourceOpen={onSourceOpen}
+          sources={answerSources}
+          streaming={streaming}
+          searchBackend={message.searchBackend}
+        />
+      </div>
+
+      {!streaming && onSaveAnswer ? (
+        <div className="mt-4 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+          <button
+            type="button"
+            onClick={() => void copyAnswer()}
+            className="inline-flex h-7 items-center gap-1 rounded-md px-2 transition hover:bg-muted/70 hover:text-foreground"
+            title="复制回答"
+            aria-label="复制回答"
+          >
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? "已复制" : "复制"}
+          </button>
+          <button
+            type="button"
+            onClick={() => onSaveAnswer(message, "local_learning_note")}
+            className="inline-flex h-7 items-center rounded-md px-2 transition hover:bg-muted/70 hover:text-foreground"
+          >
+            存为笔记
+          </button>
+          <button
+            type="button"
+            onClick={() => onSaveAnswer(message, "knowledge_card")}
+            className="inline-flex h-7 items-center rounded-md px-2 transition hover:bg-muted/70 hover:text-foreground"
+          >
+            做成卡片
+          </button>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+const TOOL_DISPLAY_LABELS: Record<string, string> = {
+  research_with_web: "检索资料库并联网搜索",
+  search_my_notes: "检索个人资料库与知识卡片",
+  continue_rag_answer: "展开更多资料细节",
+  theme_scan: "扫描跨篇专题灵感",
+  capture_content: "提取并整理输入材料",
+  synthesize_garden: "提炼可复用知识卡片",
+  start_reading_session: "建立伴读上下文",
+  discuss_reading: "结合原文深度解惑",
+  audit_library: "巡检资料库索引状态",
+};
+
+function toolActionLabel(name: string): string {
+  return TOOL_DISPLAY_LABELS[name] ?? `执行工具：${name}`;
+}
+
+function formatDurationSeconds(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds));
+  if (safe < 60) return `${safe}s`;
+  const mins = Math.floor(safe / 60);
+  const rem = safe % 60;
+  return `${mins}m ${rem}s`;
+}
+
+function LiveWorkingCard({
+  hasVisibleAnswer,
+  interruptRequested,
+  liveStatusText,
+  liveThinking,
+  researchMode,
+  tools,
+  turnStartedAt,
+}: {
+  hasVisibleAnswer: boolean;
+  interruptRequested: boolean;
+  liveStatusText: string;
+  liveThinking: string;
+  researchMode: KnowledgeChatResearchMode;
+  tools: ToolEntry[];
+  turnStartedAt: number | null;
+}) {
+  const [now, setNow] = React.useState(() => Date.now());
+  const [userExpanded, setUserExpanded] = React.useState<boolean | null>(null);
+  const thinkingBoxRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  React.useEffect(() => {
+    if (thinkingBoxRef.current) {
+      thinkingBoxRef.current.scrollTop = thinkingBoxRef.current.scrollHeight;
+    }
+  }, [liveThinking]);
+
+  const elapsedSeconds = turnStartedAt ? Math.max(0, Math.floor((now - turnStartedAt) / 1000)) : 0;
+  const runningTool = [...tools].reverse().find((tool) => tool.status === "running");
+  const expanded = userExpanded ?? !hasVisibleAnswer;
+
+  const headline = interruptRequested
+    ? "正在停止生成..."
+    : hasVisibleAnswer
+      ? "正在输出回答"
+      : runningTool
+        ? toolActionLabel(runningTool.name)
+        : liveThinking.trim()
+          ? "正在深度思考与组织框架"
+          : liveStatusText || (researchMode === "local_web" ? "正在规划资料库与联网检索" : "正在分析问题与检索资料");
+
+  const waitHint = !hasVisibleAnswer && !liveThinking.trim() && elapsedSeconds >= 6
+    ? runningTool?.name === "research_with_web"
+      ? "正在并行检索本地资料库、抓取网页原文并综合推理，长材料通常需要 30–90 秒，请稍候…"
+      : "正在处理较长上下文与综合推理，服务正常运行中…"
+    : "";
+
+  return (
+    <article className="flex justify-start">
+      <div className="w-full rounded-xl border border-black/[0.08] bg-[#fafaf8] px-4 py-2.5 text-xs dark:border-border dark:bg-muted/30">
+        <button
+          type="button"
+          onClick={() => setUserExpanded(!expanded)}
+          className="flex w-full items-center justify-between gap-3 text-left"
+        >
+          <span className="flex min-w-0 items-center gap-2 font-medium text-foreground">
+            {hasVisibleAnswer ? (
+              <span className="h-2 w-2 shrink-0 rounded-full bg-foreground/60 animate-pulse" />
+            ) : (
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-foreground/70" />
+            )}
+            <span className="truncate">{headline}</span>
+          </span>
+          <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
+            <span className="rounded-md bg-black/[0.05] px-2 py-0.5 font-mono text-[11px] text-foreground/75 dark:bg-background/70">
+              {formatDurationSeconds(elapsedSeconds)}
+            </span>
+            <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-180")} />
+          </span>
+        </button>
+
+        {expanded ? (
+          <div className="mt-2.5 space-y-2 border-t border-border/50 pt-2.5">
+            {tools.length > 0 ? (
+              <div className="space-y-1.5">
+                {tools.map((tool) => {
+                  const toolElapsed = tool.startedAt
+                    ? Math.max(0, Math.floor(((tool.completedAt ?? now) - tool.startedAt) / 1000))
+                    : 0;
+                  const events = tool.progressEvents ?? [];
+                  const visibleSteps = events.slice(-6);
+                  const latestProgress = visibleSteps[visibleSteps.length - 1]?.preview || tool.preview;
+                  return (
+                    <div
+                      key={tool.id}
+                      className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="flex min-w-0 items-center gap-1.5 font-medium text-foreground/90">
+                          {tool.status === "running" ? (
+                            <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
+                          ) : (
+                            <Check className="h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                          )}
+                          <span className="truncate">{toolActionLabel(tool.name)}</span>
+                        </span>
+                        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                          {tool.status === "running"
+                            ? `${formatDurationSeconds(toolElapsed)}`
+                            : tool.error
+                              ? "失败"
+                              : `完成 · ${formatDurationSeconds(toolElapsed)}`}
+                        </span>
+                      </div>
+                      {visibleSteps.length > 0 ? (
+                        <ul className="mt-1.5 space-y-1 pl-4">
+                          {visibleSteps.map((step, idx) => {
+                            const isCurrent = tool.status === "running" && idx === visibleSteps.length - 1;
+                            return (
+                              <li
+                                key={`${tool.id}-step-${idx}-${step.stage ?? step.preview}`}
+                                className={cn(
+                                  "flex items-center gap-1.5 text-[11px]",
+                                  isCurrent ? "text-foreground/90" : "text-muted-foreground",
+                                )}
+                              >
+                                {isCurrent ? (
+                                  <Loader2 className="h-2.5 w-2.5 shrink-0 animate-spin text-primary" />
+                                ) : (
+                                  <Check className="h-2.5 w-2.5 shrink-0 text-emerald-600/80 dark:text-emerald-400/80" />
+                                )}
+                                <span className="truncate">{step.preview}</span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : latestProgress ? (
+                        <p className="mt-1 truncate pl-4 text-[11px] text-muted-foreground">
+                          {latestProgress}
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <Compass className="h-3.5 w-3.5 shrink-0 text-primary/70" />
+                <span>
+                  {liveStatusText || (researchMode === "local_web"
+                    ? "准备调用资料库与联网搜索工具…"
+                    : "准备检索个人资料库与知识卡片…")}
+                </span>
+              </div>
+            )}
+
+            {liveThinking.trim() ? (
+              <div className="rounded-md border border-border/60 bg-background/80 px-2.5 py-2">
+                <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                  <Lightbulb className="h-3 w-3 text-amber-500" />
+                  <span>实时思考过程</span>
+                </div>
+                <div
+                  ref={thinkingBoxRef}
+                  className="max-h-36 overflow-y-auto whitespace-pre-wrap text-[11px] leading-5 text-muted-foreground"
+                >
+                  {liveThinking}
+                </div>
+              </div>
+            ) : null}
+
+            {waitHint ? (
+              <p className="text-[11px] leading-4 text-muted-foreground/90">
+                {waitHint}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </article>
   );

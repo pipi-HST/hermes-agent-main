@@ -715,3 +715,16 @@ def test_source_footer_keeps_weixin_reply_under_limit():
     assert len(reply) <= 1500
     assert reply.endswith("参考来源：[1] AI文章")
     assert "…" in reply
+
+
+def test_direct_reply_does_not_truncate_long_research_answer_at_1500_for_weixin():
+    long_answer = "深度对比分析。" * 450
+    content = _tool_content(long_answer, agent="research")
+
+    reply = direct_reply_from_tool_result_content(
+        "research_with_web",
+        content,
+        platform="weixin",
+    )
+
+    assert reply == long_answer

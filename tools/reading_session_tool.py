@@ -10,10 +10,12 @@ from tools.registry import registry
 START_SCHEMA = {
     "name": "start_reading_session",
     "description": (
-        "开始一个临时阅读讨论会话。用于用户围绕当前文章/链接/Capture/文件/截图问"
-        "“这段什么意思”“我没看懂”“解释一下”“怎么看”这类理解问题。"
-        "重要：本工具只建立临时 Reading Session，不生成 Capture 草稿、不保存。"
-        "如果用户明确要求总结、提取重点、保存、存库、全文保存，应调用 capture_content。"
+        "开始一个临时阅读讨论会话并自动提取链接正文（支持微信公众号 mp.weixin.qq.com、"
+        "小红书、普通网页）。用于两种场景：(1) 用户纯发链接/材料未说明意图时先做只读速览；"
+        "(2) 用户围绕文章/链接/Capture/文件/截图问“讲了什么”“这段什么意思”“怎么看”等理解问题。"
+        "重要：本工具会自动在只读模式下抓取 source_url 正文并在 meta.extracted_text 中返回，"
+        "无需调用 web_extract 或 execute_code 写爬虫；且绝不生成 Capture 草稿、不保存入库。"
+        "只有用户明确要求保存、存库、整理入库、全文保存时，才调用 capture_content。"
     ),
     "parameters": {
         "type": "object",

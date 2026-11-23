@@ -7,6 +7,7 @@ const libraryPath = fileURLToPath(new URL("../src/pages/KnowledgeLibraryPage.tsx
 const headerPath = fileURLToPath(new URL("../src/pages/KnowledgeLibraryHeader.tsx", import.meta.url));
 const sidebarPath = fileURLToPath(new URL("../src/pages/knowledge-library/KnowledgeLibrarySidebar.tsx", import.meta.url));
 const aiRailPath = fileURLToPath(new URL("../src/pages/knowledge-library/CollapsedAIPanelRail.tsx", import.meta.url));
+const aiPanelPath = fileURLToPath(new URL("../src/pages/knowledge-library/ArticleAIPanel.tsx", import.meta.url));
 const readingOverlayPath = fileURLToPath(new URL("../src/pages/knowledge-library/ReadingOverlay.tsx", import.meta.url));
 
 function assert(condition, message) {
@@ -29,12 +30,14 @@ const libraryPageSource = readFileSync(libraryPath, "utf8");
 const headerSource = readFileSync(headerPath, "utf8");
 const sidebarSource = readFileSync(sidebarPath, "utf8");
 const aiRailSource = readFileSync(aiRailPath, "utf8");
+const aiPanelSource = readFileSync(aiPanelPath, "utf8");
 const readingOverlaySource = readFileSync(readingOverlayPath, "utf8");
 const librarySource = [
   libraryPageSource,
   headerSource,
   sidebarSource,
   aiRailSource,
+  aiPanelSource,
   readingOverlaySource,
 ].join("\n");
 
@@ -66,7 +69,7 @@ const collapsedAiRail = componentBody(aiRailSource, "CollapsedAIPanelRail");
 assert(collapsedAiRail.includes("展开 AI 面板"), "Collapsed AI rail should expose an expand action");
 assert(!collapsedAiRail.includes("writing-mode"), "Collapsed AI rail should not render a vertical label");
 
-const articleAiPanel = componentBody(libraryPageSource, "ArticleAIPanel");
+const articleAiPanel = componentBody(aiPanelSource, "ArticleAIPanel");
 assert(articleAiPanel.includes("xl:flex"), "Expanded AI panel should be visible at xl width");
 assert(!articleAiPanel.includes("2xl:flex"), "Expanded AI panel should not require 2xl width");
 

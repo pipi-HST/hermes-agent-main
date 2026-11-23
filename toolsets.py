@@ -484,9 +484,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "knowledge_web_research": {
+        "description": "Local knowledge + controlled web synthesis research tool (research_with_web)",
+        "tools": ["research_with_web"],
+        "includes": []
+    },
+
     "hermes-weixin": {
-        "description": "Weixin bot toolset - personal WeChat messaging via iLink (full access)",
-        "tools": _HERMES_CORE_TOOLS,
+        "description": "Weixin bot toolset - personal WeChat messaging via iLink (full access + local/web research)",
+        "tools": _HERMES_CORE_TOOLS + ["research_with_web"],
         "includes": []
     },
 

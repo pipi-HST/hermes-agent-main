@@ -5,6 +5,7 @@ const apiPath = fileURLToPath(new URL("../src/lib/api.ts", import.meta.url));
 const libraryPagePath = fileURLToPath(new URL("../src/pages/KnowledgeLibraryPage.tsx", import.meta.url));
 const libraryHeaderPath = fileURLToPath(new URL("../src/pages/KnowledgeLibraryHeader.tsx", import.meta.url));
 const libraryHelpersPath = fileURLToPath(new URL("../src/pages/knowledge-library/helpers.ts", import.meta.url));
+const fileWorkbenchPath = fileURLToPath(new URL("../src/pages/knowledge-library/FileWorkbench.tsx", import.meta.url));
 const chatPagePath = fileURLToPath(new URL("../src/pages/KnowledgeChatPage.tsx", import.meta.url));
 const workbenchPath = fileURLToPath(new URL("../src/pages/knowledge-chat/EditableCaptureWorkbench.tsx", import.meta.url));
 
@@ -34,7 +35,8 @@ const apiSource = readFileSync(apiPath, "utf8");
 const libraryHeaderSource = readFileSync(libraryHeaderPath, "utf8");
 const librarySource = readFileSync(libraryPagePath, "utf8")
   + "\n" + libraryHeaderSource
-  + "\n" + readFileSync(libraryHelpersPath, "utf8");
+  + "\n" + readFileSync(libraryHelpersPath, "utf8")
+  + "\n" + readFileSync(fileWorkbenchPath, "utf8");
 const chatSource = readFileSync(chatPagePath, "utf8");
 const workbenchSource = readFileSync(workbenchPath, "utf8");
 
@@ -138,7 +140,8 @@ assert(!workbenchSource.includes("整理成草稿"), "Editable workbench should 
 
 const fileWorkbench = componentBody(librarySource, "FileWorkbench");
 assert(!fileWorkbench.includes("<StatusTile"), "FileWorkbench should not render the old status tile row");
-assert(fileWorkbench.includes("元信息"), "FileWorkbench should expose metadata through a compact drawer or menu");
+assert(!fileWorkbench.includes("元信息"), "FileWorkbench should not expose an engineering metadata drawer");
+assert(fileWorkbench.includes("提炼卡片"), "FileWorkbench should surface card extraction on the main reading toolbar");
 assert(fileWorkbench.includes("更多"), "FileWorkbench should group low-frequency actions under a more menu");
 assert(
   librarySource.includes("没有活跃知识卡片、待提交卡片草稿和其他文件引用"),

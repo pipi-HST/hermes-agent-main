@@ -154,9 +154,9 @@ export function ActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex items-center gap-1.5 rounded-md border border-primary/45 bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-[0_12px_30px_rgba(0,0,0,0.22)] transition hover:brightness-110 disabled:border-current/10 disabled:bg-muted/40 disabled:text-muted-foreground"
+      className="inline-flex items-center gap-1.5 rounded-lg bg-foreground px-3.5 py-2 text-xs font-medium text-background transition hover:opacity-90 disabled:bg-muted disabled:text-muted-foreground"
     >
-      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+      {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
       {children}
     </button>
   );
@@ -167,13 +167,19 @@ export function StatusBadge({ status }: { status: string }) {
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[0.68rem] uppercase tracking-[0.12em]",
+        "inline-flex shrink-0 items-center gap-1 text-[11px] font-medium",
         open
-          ? "border-primary/30 bg-primary/10 text-primary"
-          : "border-current/10 bg-background/55 text-muted-foreground",
+          ? "text-amber-700 dark:text-amber-300"
+          : "text-muted-foreground",
       )}
       title={status}
     >
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          open ? "bg-amber-500" : "bg-foreground/30",
+        )}
+      />
       {statusLabel(status)}
     </span>
   );
@@ -181,7 +187,7 @@ export function StatusBadge({ status }: { status: string }) {
 
 export function TinyPill({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex max-w-full items-center rounded-full border border-current/10 bg-background/55 px-2 py-0.5 text-[0.72rem] leading-5 text-muted-foreground">
+    <span className="inline-flex max-w-full items-center rounded-md bg-muted/60 px-2 py-0.5 text-[11px] leading-5 text-muted-foreground">
       {children}
     </span>
   );
@@ -189,8 +195,8 @@ export function TinyPill({ children }: { children: React.ReactNode }) {
 
 export function LoadingBlock({ text }: { text: string }) {
   return (
-    <div className="flex min-h-32 items-center justify-center gap-2 text-sm text-muted-foreground">
-      <Loader2 className="h-4 w-4 animate-spin" />
+    <div className="flex min-h-32 items-center justify-center gap-2 text-xs text-muted-foreground">
+      <Loader2 className="h-3.5 w-3.5 animate-spin" />
       {text}
     </div>
   );
@@ -198,7 +204,7 @@ export function LoadingBlock({ text }: { text: string }) {
 
 export function PanelEmpty({ text }: { text: string }) {
   return (
-    <div className="rounded-md border border-dashed border-border bg-background/45 px-3 py-4 text-sm leading-6 text-muted-foreground">
+    <div className="rounded-xl bg-white/55 px-3.5 py-5 text-xs leading-6 text-muted-foreground dark:bg-card/40">
       {text}
     </div>
   );

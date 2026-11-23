@@ -8,6 +8,8 @@ import re
 from typing import Any, Optional
 
 WEIXIN_DIRECT_REPLY_LIMIT = 1500
+WEIXIN_ANSWER_DIRECT_REPLY_LIMIT = 12000
+ANSWER_DIRECT_REPLY_TOOL_NAMES = {"research_with_web", "search_my_notes", "continue_rag_answer"}
 SOURCE_FOOTER_TOOL_NAMES = {"search_my_notes", "review_followup"}
 DIRECT_REPLY_PLATFORMS = {"weixin", "tui", "dashboard", "web"}
 DIRECT_REPLY_TOOL_NAMES = {
@@ -98,9 +100,11 @@ def direct_reply_from_tool_result_content(
     if structured and structured.get("status") != "success":
         return None
     if (platform or "").lower() == "weixin":
+        if tool_name in ANSWER_DIRECT_REPLY_TOOL_NAMES:
+            return _clip_reply(reply, limit=WEIXIN_ANSWER_DIRECT_REPLY_LIMIT)
         return _clip_reply(reply)
     full_answer = _structured_full_answer(structured)
-    if full_answer and tool_name in {"research_with_web", "search_my_notes", "continue_rag_answer"}:
+    if full_answer and tool_name in ANSWER_DIRECT_REPLY_TOOL_NAMES:
         return full_answer
     return reply
 
@@ -303,6 +307,21 @@ def agent_result_envelope_content_for_model(result: Any) -> Optional[str]:
             "meta",
         )
     }
+    meta = envelope.get("meta") if isinstance(envelope.get("meta"), dict) else {}
+    if envelope.get("intent") == "start_reading_session" and meta.get("extracted_text"):
+        return (
+            "USER_VISIBLE_REPLY:\n"
+            f"{chat_preview}\n\n"
+            "STRUCTURED_AGENT_RESULT_DO_NOT_REWRITE:\n"
+            f"{json.dumps(structured, ensure_ascii=False)}\n\n"
+            "This temporary reading session has already extracted the article text in meta.extracted_text "
+            "(no capture draft was created and nothing was saved to the library). "
+            "Do NOT echo USER_VISIBLE_REPLY verbatim. Instead, read meta.extracted_text and meta.source_title: "
+            "if the user only sent a bare URL/material without a question, return a concise mobile-friendly overview "
+            "(title + 1-sentence core thesis + 3 key points + light prompt asking whether to discuss or reply '整理保存' to create a draft); "
+            "if the user asked a question, answer their question directly based on meta.extracted_text. "
+            "Preserve facts accurately and avoid Markdown tables or # headings in WeChat."
+        )
     return (
         "USER_VISIBLE_REPLY:\n"
         f"{chat_preview}\n\n"

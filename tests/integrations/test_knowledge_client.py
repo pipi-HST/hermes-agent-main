@@ -37,6 +37,37 @@ def _client(handler) -> KnowledgeClient:
     )
 
 
+@pytest.mark.parametrize("library", [False, True])
+def test_capture_revision_save_checks_live_contract_and_forwards_conflict(library):
+    version = 2
+    detail = {"code": "capture_revision_conflict", "message": "edited elsewhere"}
+    patched = []
+
+    def handler(request):
+        if request.url.path == "/api/health":
+            return httpx.Response(200, json={"service": "hermes-knowledge", "contract_version": version})
+        patched.append((request.method, request.url.path, json.loads(request.content)))
+        return httpx.Response(409, json={"detail": detail})
+
+    with _client(handler) as client:
+        def save():
+            if library:
+                return client.patch_library_item("capture", "cap-1", body="edit", expected_revision="opened")
+            return client.update_capture("cap-1", body="edit", expected_revision="opened")
+
+        # A newer startup cache must not let an edit reach a downgraded service.
+        client.contract_version = 3
+        with pytest.raises(KnowledgeIncompatible):
+            save()
+        assert patched == []
+        version = 3
+        with pytest.raises(KnowledgeConflict) as error:
+            save()
+        assert error.value.detail == detail
+        path = "/api/library/items/capture/cap-1" if library else "/api/captures/cap-1"
+        assert patched == [("PATCH", path, {"body": "edit", "expected_revision": "opened"})]
+
+
 def test_health_requires_expected_service():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"service": "other", "contract_version": 1})
@@ -984,3 +1015,58 @@ def test_dispatch_rejects_unserialisable_arguments(monkeypatch):
 
     with pytest.raises(KnowledgeUnavailable, match="payload"):
         tool_bridge.dispatch("rag_bridge", "run", payload=circular)
+
+@pytest.mark.asyncio
+async def test_astream_selection_chat_yields_service_events_and_flags_missing_route():
+    paths = []
+
+    def handler(request):
+        paths.append((request.method, request.url.path))
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content=(
+                'data: {"event": "progress", "type": "answer_delta", "delta": "第一段"}\n\n'
+                'data: {"event": "complete", "result": {"chat_preview": "第一段"}}\n\n'
+            ),
+        )
+
+    client = KnowledgeClient(
+        KnowledgeConfig(base_url="http://knowledge.test", token="t"),
+        transport=httpx.MockTransport(handler),
+        async_transport=httpx.MockTransport(handler),
+    )
+    try:
+        events = [
+            event
+            async for event in client.astream_selection_chat(
+                "capture", "cap-1", {"question": "这是什么"}
+            )
+        ]
+    finally:
+        client.close()
+
+    assert [event["event"] for event in events] == ["progress", "complete"]
+    assert events[0]["type"] == "answer_delta"
+    assert events[0]["delta"] == "第一段"
+    assert events[-1]["result"] == {"chat_preview": "第一段"}
+    assert paths == [
+        ("POST", "/api/knowledge/library/items/capture/cap-1/selection-chat/stream")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_astream_selection_chat_raises_not_found_for_old_service():
+    def handler(request):
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    client = KnowledgeClient(
+        KnowledgeConfig(base_url="http://knowledge.test", token="t"),
+        async_transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(KnowledgeNotFound):
+            async for _ in client.astream_selection_chat("capture", "cap-1", {}):
+                pass
+    finally:
+        client.close()

@@ -46,25 +46,47 @@ except ImportError:  # pragma: no cover - starlette is a required install path
 
 
 class WSTransport:
-    """Per-connection WS transport.
+    """Per-connection WS transport with non-blocking ordered FIFO delivery.
 
-    ``write`` is safe to call from any thread *other than* the event loop
-    thread that owns the socket. Pool workers (the only real caller) run in
-    their own threads, so marshalling onto the loop via
-    :func:`asyncio.run_coroutine_threadsafe` + ``future.result()`` is correct
-    and deadlock-free there.
-
-    When called from the loop thread itself (e.g. by ``handle_ws`` for an
-    inline response) the same call would deadlock: we'd schedule work onto
-    the loop we're currently blocking. We detect that case and fire-and-
-    forget instead. Callers that need to know when the bytes are on the wire
-    should use :meth:`write_async` from the loop thread.
+    ``write`` is safe to call from any thread (including pool worker threads
+    streaming LLM tokens).  Frames are enqueued onto the owning event loop in
+    FIFO order and drained by a single writer task so fast streaming never
+    blocks the model thread per token or races concurrent ``send_text`` calls.
     """
+
+    is_web = True
 
     def __init__(self, ws: Any, loop: asyncio.AbstractEventLoop) -> None:
         self._ws = ws
         self._loop = loop
         self._closed = False
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._writer_task: asyncio.Task[None] | None = loop.create_task(self._writer_loop())
+
+    async def _writer_loop(self) -> None:
+        try:
+            while True:
+                line = await self._queue.get()
+                if line is None:
+                    break
+                if self._closed:
+                    continue
+                try:
+                    await self._ws.send_text(line)
+                except Exception as exc:
+                    self._closed = True
+                    _log.debug("ws send failed: %s", exc)
+                    try:
+                        await self._ws.close()
+                    except Exception:
+                        pass
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    def _enqueue(self, line: str) -> None:
+        if not self._closed:
+            self._queue.put_nowait(line)
 
     def write(self, obj: dict) -> bool:
         if self._closed:
@@ -78,39 +100,32 @@ class WSTransport:
             on_loop = False
 
         if on_loop:
-            # Fire-and-forget — don't block the loop waiting on itself.
-            self._loop.create_task(self._safe_send(line))
+            self._enqueue(line)
             return True
 
         try:
-            from agent.async_utils import safe_schedule_threadsafe
-            fut = safe_schedule_threadsafe(self._safe_send(line), self._loop)
-            if fut is None:
-                self._closed = True
-                return False
-            fut.result(timeout=_WS_WRITE_TIMEOUT_S)
+            self._loop.call_soon_threadsafe(self._enqueue, line)
             return not self._closed
         except Exception as exc:
             self._closed = True
-            _log.debug("ws write failed: %s", exc)
+            _log.debug("ws enqueue failed: %s", exc)
             return False
 
     async def write_async(self, obj: dict) -> bool:
-        """Send from the owning event loop. Awaits until the frame is on the wire."""
+        """Send from the owning event loop (ordered behind any queued deltas)."""
         if self._closed:
             return False
-        await self._safe_send(json.dumps(obj, ensure_ascii=False))
+        self._enqueue(json.dumps(obj, ensure_ascii=False))
         return not self._closed
 
-    async def _safe_send(self, line: str) -> None:
-        try:
-            await self._ws.send_text(line)
-        except Exception as exc:
-            self._closed = True
-            _log.debug("ws send failed: %s", exc)
-
     def close(self) -> None:
+        if self._closed:
+            return
         self._closed = True
+        try:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
+        except Exception:
+            pass
 
 
 async def handle_ws(ws: Any) -> None:

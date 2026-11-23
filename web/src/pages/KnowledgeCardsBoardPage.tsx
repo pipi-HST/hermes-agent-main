@@ -1,128 +1,73 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
-  ArrowLeft,
+  ArrowRight,
   BookOpenText,
-  BookMarked,
   Check,
-  ChevronDown,
-  CircleDot,
   Copy,
-  ExternalLink,
-  FileText,
   Layers3,
   Loader2,
-  Network,
+  Pencil,
   RefreshCw,
   Search,
-  ShieldAlert,
-  Sparkles,
+  Send,
   Trash2,
-  Workflow,
+  Wand2,
+  X,
 } from "lucide-react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Markdown } from "@/components/Markdown";
 import {
   api,
   type KnowledgeCard,
   type KnowledgeCardKind,
+  type KnowledgeCardUpdateRequest,
   type KnowledgeGardenDraftItem,
-  type KnowledgeGraphEdge,
-  type KnowledgeGraphNode,
-  type KnowledgeGraphNodeKind,
-  type KnowledgeGraphRelationType,
+  type KnowledgeGardenDraftUpdateRequest,
   type KnowledgeSource,
 } from "@/lib/api";
+import type { AttachedTopicCard } from "@/pages/knowledge-chat/GatewayChat";
 import { cn } from "@/lib/utils";
 
-const KIND_META: Record<
-  KnowledgeCardKind,
-  {
-    label: string;
-    description: string;
-    icon: React.ComponentType<{ className?: string }>;
-    tone: string;
-    active: string;
-    rail: string;
-  }
-> = {
-  viewpoint: {
-    label: "洞察 / 金句",
-    description: "有启发的行业判断、核心结论与思考火花",
-    icon: Sparkles,
-    tone: "border-[#bdd7d2] bg-[#edf5f2] text-[#255f54]",
-    active: "border-[#8fbbb2] bg-[#e1eeea] text-[#173f38]",
-    rail: "bg-[#5f998e]",
-  },
-  method: {
-    label: "方法 / 框架",
-    description: "问题拆解套路、产品框架与面试方法论",
-    icon: Workflow,
-    tone: "border-[#c9d9bd] bg-[#f0f5eb] text-[#496d35]",
-    active: "border-[#adc49a] bg-[#e7efdf] text-[#344f25]",
-    rail: "bg-[#7fa66a]",
-  },
-  fact: {
-    label: "新知 / 概念",
-    description: "搞懂的技术概念、行业黑话与基础原理",
-    icon: BookMarked,
-    tone: "border-[#e1d3aa] bg-[#f7f2e6] text-[#725c24]",
-    active: "border-[#cbb879] bg-[#f1e8cf] text-[#554419]",
-    rail: "bg-[#b99d4a]",
-  },
-  risk: {
-    label: "避坑 / 边界",
-    description: "实践误区、适用边界与踩坑反思",
-    icon: ShieldAlert,
-    tone: "border-[#e1c1bb] bg-[#f7eeeb] text-[#8a3f32]",
-    active: "border-[#d4a59c] bg-[#f1e2de] text-[#653026]",
-    rail: "bg-[#c87b6d]",
-  },
+const KIND_LABELS: Record<KnowledgeCardKind, string> = {
+  viewpoint: "洞察",
+  method: "方法",
+  fact: "概念",
+  risk: "避坑",
 };
 
 const KIND_ORDER: KnowledgeCardKind[] = ["viewpoint", "method", "fact", "risk"];
 
-const RELATION_LABELS: Record<KnowledgeGraphRelationType, string> = {
-  semantic_similarity: "相似笔记",
-  card_uses_capture: "卡片引用",
-  card_links_card: "卡片互链",
-  theme_groups_capture: "主题聚合",
-};
+type SortKey = "recent" | "cited";
 
-const NODE_KIND_LABELS: Record<KnowledgeGraphNodeKind, string> = {
-  capture: "笔记",
-  garden_card: "卡片",
-  theme_candidate: "主题",
-};
-
-type GraphNodePosition = {
-  x: number;
-  y: number;
-  isFocus: boolean;
-};
+type DrawerTarget =
+  | { type: "card"; id: string }
+  | { type: "draft"; id: string }
+  | null;
 
 export default function KnowledgeCardsBoardPage() {
   const navigate = useNavigate();
-  const location = useLocation();
   const { cardId: routeCardId } = useParams();
-  const isDetailRoute = Boolean(routeCardId);
-  const currentView = new URLSearchParams(location.search).get("view") === "graph" ? "graph" : "cards";
+  const [searchParams, setSearchParams] = useSearchParams();
   const [cards, setCards] = useState<KnowledgeCard[]>([]);
-  const [selectedId, setSelectedId] = useState(routeCardId ?? "");
-  const [detail, setDetail] = useState<KnowledgeCard | null>(null);
+  const [pendingDrafts, setPendingDrafts] = useState<KnowledgeGardenDraftItem[]>([]);
+  const [drawer, setDrawer] = useState<DrawerTarget>(() => {
+    const draftParam = searchParams.get("draft");
+    if (draftParam) return { type: "draft", id: draftParam };
+    if (routeCardId) return { type: "card", id: routeCardId };
+    return null;
+  });
+  const autoOpenedDraftRef = useRef(false);
   const [activeKind, setActiveKind] = useState<KnowledgeCardKind | "all">("all");
   const [activeTheme, setActiveTheme] = useState("all");
+  const [sortBy, setSortBy] = useState<SortKey>("recent");
   const [query, setQuery] = useState("");
+  const [basketIds, setBasketIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [deletingId, setDeletingId] = useState("");
+  const [draftsLoading, setDraftsLoading] = useState(true);
+  const [busyAction, setBusyAction] = useState<"" | "save" | "commit" | "discard" | "revise" | "delete">("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [pendingDrafts, setPendingDrafts] = useState<KnowledgeGardenDraftItem[]>([]);
-  const [pendingDraftsLoading, setPendingDraftsLoading] = useState(true);
-  const [pendingDraftsError, setPendingDraftsError] = useState("");
-  const [pendingDraftsExpanded, setPendingDraftsExpanded] = useState(false);
-  const [pendingDraftActionId, setPendingDraftActionId] = useState("");
-  const [pendingDraftAction, setPendingDraftAction] = useState<"commit" | "discard" | "">("");
 
   const loadCards = useCallback(async () => {
     setLoading(true);
@@ -130,75 +75,63 @@ export default function KnowledgeCardsBoardPage() {
     try {
       const payload = await api.getKnowledgeCards(200);
       setCards(payload.cards);
-      setSelectedId((current) => {
-        if (routeCardId) return routeCardId;
-        if (current && payload.cards.some((card) => card.id === current)) return current;
-        return payload.cards[0]?.id ?? "";
-      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [routeCardId]);
+  }, []);
 
   const loadPendingDrafts = useCallback(async () => {
-    setPendingDraftsLoading(true);
-    setPendingDraftsError("");
+    setDraftsLoading(true);
     try {
       const payload = await api.listKnowledgeGardenDrafts(50, "draft_ready");
       setPendingDrafts(payload.items);
-    } catch (err) {
-      setPendingDraftsError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPendingDraftsLoading(false);
-    }
-  }, []);
-
-  const loadDetail = useCallback(async (cardId: string) => {
-    if (!cardId) {
-      setDetail(null);
-      return;
-    }
-    setDetailLoading(true);
-    setError("");
-    try {
-      const payload = await api.getKnowledgeCard(cardId);
-      setDetail(payload.card);
+      const requestedDraft = searchParams.get("draft");
+      if (requestedDraft && payload.items.some((d) => d.id === requestedDraft)) {
+        setDrawer({ type: "draft", id: requestedDraft });
+        autoOpenedDraftRef.current = true;
+        setSearchParams(
+          (current) => {
+            const next = new URLSearchParams(current);
+            next.delete("draft");
+            return next;
+          },
+          { replace: true },
+        );
+      } else if (!routeCardId && !autoOpenedDraftRef.current && payload.items.length > 0) {
+        autoOpenedDraftRef.current = true;
+        setDrawer({ type: "draft", id: payload.items[0].id });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setDetailLoading(false);
+      setDraftsLoading(false);
     }
-  }, []);
+  }, [routeCardId, searchParams, setSearchParams]);
 
   useEffect(() => {
     void loadCards();
-  }, [loadCards]);
-
-  useEffect(() => {
     void loadPendingDrafts();
-  }, [loadPendingDrafts]);
+  }, [loadCards, loadPendingDrafts]);
 
   useEffect(() => {
-    if (routeCardId && routeCardId !== selectedId) {
-      setSelectedId(routeCardId);
+    if (routeCardId) {
+      setDrawer({ type: "card", id: routeCardId });
     }
-  }, [routeCardId, selectedId]);
+  }, [routeCardId]);
 
   useEffect(() => {
-    void loadDetail(selectedId);
-  }, [loadDetail, selectedId]);
-
-  const counts = useMemo(() => {
-    return KIND_ORDER.reduce<Record<KnowledgeCardKind, number>>(
-      (acc, kind) => {
-        acc[kind] = cards.filter((card) => card.kind === kind).length;
-        return acc;
-      },
-      { viewpoint: 0, method: 0, fact: 0, risk: 0 },
-    );
-  }, [cards]);
+    if (!drawer) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDrawer(null);
+        if (routeCardId) navigate("/cards-board", { replace: true });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [drawer, navigate, routeCardId]);
 
   const themes = useMemo(() => {
     const values = new Map<string, number>();
@@ -212,1540 +145,1104 @@ export default function KnowledgeCardsBoardPage() {
 
   const filteredCards = useMemo(() => {
     const text = query.trim().toLowerCase();
-    return cards.filter((card) => {
+    const list = cards.filter((card) => {
       if (activeKind !== "all" && card.kind !== activeKind) return false;
       if (activeTheme !== "all" && card.source_theme !== activeTheme) return false;
       if (!text) return true;
       return [
         card.title,
         card.summary,
-        card.markdown,
+        cardBodyMarkdown(card),
         card.source_theme,
         card.sources.map((source) => source.title).join(" "),
-        card.key_materials?.map(displayValue).join(" "),
       ]
         .join("\n")
         .toLowerCase()
         .includes(text);
     });
-  }, [activeKind, activeTheme, cards, query]);
-
-  useEffect(() => {
-    if (isDetailRoute) return;
-    if (!filteredCards.length) {
-      setSelectedId("");
-      return;
+    if (sortBy === "cited") {
+      return [...list].sort((a, b) => (b.citation_count || 0) - (a.citation_count || 0));
     }
-    if (!selectedId || !filteredCards.some((card) => card.id === selectedId)) {
-      setSelectedId(filteredCards[0].id);
-    }
-  }, [filteredCards, isDetailRoute, selectedId]);
+    return list;
+  }, [activeKind, activeTheme, cards, query, sortBy]);
 
-  const selectedCard = detail && detail.id === selectedId
-    ? detail
-    : cards.find((card) => card.id === selectedId) ?? null;
+  const filteredDrafts = useMemo(() => {
+    const text = query.trim().toLowerCase();
+    return pendingDrafts.filter((draft) => {
+      if (activeKind !== "all" && draft.card_kind !== activeKind) return false;
+      if (activeTheme !== "all") return false;
+      if (!text) return true;
+      return [draft.title, draft.one_liner, draftBodyMarkdown(draft)]
+        .join("\n")
+        .toLowerCase()
+        .includes(text);
+    });
+  }, [activeKind, activeTheme, pendingDrafts, query]);
 
-  const deleteCard = useCallback(async (card: KnowledgeCard) => {
-    const title = card.title || "这张知识卡片";
-    const confirmed = window.confirm(`归档知识卡片《${title}》？\n\n归档后将从卡片库隐藏，结构化记录会保留。`);
-    if (!confirmed) return;
-    setDeletingId(card.id);
-    setError("");
-    setNotice("");
-    try {
-      await api.deleteKnowledgeCard(card.id);
-      const remaining = filteredCards.filter((item) => item.id !== card.id);
-      setCards((current) => current.filter((item) => item.id !== card.id));
-      if (selectedId === card.id) {
-        setDetail(null);
-        setSelectedId(remaining[0]?.id ?? "");
+  const activeDraft = useMemo(
+    () => (drawer?.type === "draft" ? pendingDrafts.find((d) => d.id === drawer.id) ?? null : null),
+    [drawer, pendingDrafts],
+  );
+
+  const activeCard = useMemo(
+    () => (drawer?.type === "card" ? cards.find((c) => c.id === drawer.id) ?? null : null),
+    [cards, drawer],
+  );
+
+  const basketCards = useMemo(() => {
+    const byId = new Map(cards.map((card) => [card.id, card]));
+    return basketIds.map((id) => byId.get(id)).filter((card): card is KnowledgeCard => Boolean(card));
+  }, [basketIds, cards]);
+
+  const toggleBasket = useCallback((cardId: string) => {
+    setBasketIds((current) =>
+      current.includes(cardId) ? current.filter((id) => id !== cardId) : [...current, cardId],
+    );
+  }, []);
+
+  const closeDrawer = useCallback(() => {
+    setDrawer(null);
+    if (routeCardId) navigate("/cards-board", { replace: true });
+  }, [navigate, routeCardId]);
+
+  const sendCardsToTopicStudio = useCallback(
+    (selected: KnowledgeCard[]) => {
+      if (!selected.length) return;
+      const attachedCards: AttachedTopicCard[] = selected.map((card) => ({
+        id: card.id,
+        title: card.title,
+        summary: card.payload?.claim || card.summary,
+        theme: card.source_theme ? themeTitle(card.source_theme) : "",
+      }));
+      const prompt =
+        selected.length === 1
+          ? "请结合这张卡片和资料库相关材料，帮我展开一份结构化的思考与输出提纲。"
+          : `请串联这 ${selected.length} 张知识卡片的内在逻辑，并结合资料库相关材料，帮我梳理一个专题观点与输出框架。`;
+      navigate("/knowledge-chat", { state: { attachedCards, prompt } });
+    },
+    [navigate],
+  );
+
+  const saveCardEdits = useCallback(
+    async (card: KnowledgeCard, updates: KnowledgeCardUpdateRequest): Promise<KnowledgeCard | null> => {
+      if (busyAction) return null;
+      setBusyAction("save");
+      setError("");
+      setNotice("");
+      try {
+        const res = await api.updateKnowledgeCard(card.id, updates);
+        setCards((current) => current.map((item) => (item.id === card.id ? res.card : item)));
+        setNotice(`已更新卡片：《${res.card.title}》。`);
+        return res.card;
+      } catch (err) {
+        setError(`保存卡片失败：${err instanceof Error ? err.message : String(err)}`);
+        return null;
+      } finally {
+        setBusyAction("");
       }
-      if (routeCardId === card.id) {
-        navigate("/cards-board", { replace: true });
-      }
-      setNotice(`已归档知识卡片：《${title}》。`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDeletingId("");
-    }
-  }, [filteredCards, navigate, routeCardId, selectedId]);
+    },
+    [busyAction],
+  );
 
-  const commitPendingDraft = useCallback(async (draft: KnowledgeGardenDraftItem) => {
-    if (pendingDraftActionId) return;
-    const title = draft.title || "未命名卡片草稿";
-    setPendingDraftActionId(draft.id);
-    setPendingDraftAction("commit");
-    setError("");
-    setNotice("");
-    try {
-      const result = await api.commitKnowledgeGardenDraft(draft.id);
-      if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
-        throw new Error(result.error || result.errors?.[0] || "确认保存失败。");
+  const archiveCard = useCallback(
+    async (card: KnowledgeCard) => {
+      const title = card.title || "这张知识卡片";
+      if (!window.confirm(`归档知识卡片《${title}》？\n\n归档后将从卡片库隐藏。`)) return;
+      setBusyAction("delete");
+      setError("");
+      setNotice("");
+      try {
+        await api.deleteKnowledgeCard(card.id);
+        setCards((current) => current.filter((item) => item.id !== card.id));
+        setBasketIds((current) => current.filter((id) => id !== card.id));
+        closeDrawer();
+        setNotice(`已归档卡片：《${title}》。`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusyAction("");
       }
-      setNotice(`已确认保存卡片草稿：《${title}》。`);
-      await Promise.all([loadCards(), loadPendingDrafts()]);
-    } catch (err) {
-      setError(`确认卡片草稿失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setPendingDraftActionId("");
-      setPendingDraftAction("");
-    }
-  }, [loadCards, loadPendingDrafts, pendingDraftActionId]);
+    },
+    [closeDrawer],
+  );
 
-  const discardPendingDraft = useCallback(async (draft: KnowledgeGardenDraftItem) => {
-    if (pendingDraftActionId) return;
-    const title = draft.title || "未命名卡片草稿";
-    setPendingDraftActionId(draft.id);
-    setPendingDraftAction("discard");
-    setError("");
-    setNotice("");
-    try {
-      const result = await api.discardKnowledgeGardenDraft(draft.id);
-      if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
-        throw new Error(result.error || result.errors?.[0] || "舍弃卡片草稿失败。");
+  const saveDraftEdits = useCallback(
+    async (
+      draft: KnowledgeGardenDraftItem,
+      updates: KnowledgeGardenDraftUpdateRequest,
+    ): Promise<KnowledgeGardenDraftItem | null> => {
+      if (busyAction) return null;
+      setBusyAction("save");
+      setError("");
+      setNotice("");
+      try {
+        const res = await api.updateKnowledgeGardenDraft(draft.id, updates);
+        setPendingDrafts((current) =>
+          current.map((item) => (item.id === draft.id ? res.item : item)),
+        );
+        setNotice(`已保存草稿：《${res.item.title || draft.title}》。`);
+        return res.item;
+      } catch (err) {
+        setError(`保存草稿失败：${err instanceof Error ? err.message : String(err)}`);
+        return null;
+      } finally {
+        setBusyAction("");
       }
-      setNotice(`已舍弃卡片草稿：《${title}》。`);
-      await Promise.all([loadCards(), loadPendingDrafts()]);
-    } catch (err) {
-      setError(`舍弃卡片草稿失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setPendingDraftActionId("");
-      setPendingDraftAction("");
-    }
-  }, [loadCards, loadPendingDrafts, pendingDraftActionId]);
+    },
+    [busyAction],
+  );
+
+  const reviseDraftWithAi = useCallback(
+    async (draft: KnowledgeGardenDraftItem, instruction: string): Promise<KnowledgeGardenDraftItem | null> => {
+      if (busyAction || !instruction.trim()) return null;
+      setBusyAction("revise");
+      setError("");
+      setNotice("");
+      try {
+        const res = await api.reviseKnowledgeGardenDraft(draft.id, instruction.trim());
+        if (res.ok === false || res.status === "error" || res.error || res.errors?.length) {
+          throw new Error(res.error || res.errors?.[0] || "AI 改写失败。");
+        }
+        if (res.item) {
+          setPendingDrafts((current) =>
+            current.map((item) => (item.id === draft.id ? res.item! : item)),
+          );
+          setNotice(`已按你的意见润色草稿：《${res.item.title || draft.title}》。`);
+          return res.item;
+        }
+        await loadPendingDrafts();
+        return null;
+      } catch (err) {
+        setError(`AI 润色失败：${err instanceof Error ? err.message : String(err)}`);
+        return null;
+      } finally {
+        setBusyAction("");
+      }
+    },
+    [busyAction, loadPendingDrafts],
+  );
+
+  const commitDraft = useCallback(
+    async (
+      draft: KnowledgeGardenDraftItem,
+      pendingUpdates?: KnowledgeGardenDraftUpdateRequest | null,
+    ) => {
+      if (busyAction) return;
+      const title = pendingUpdates?.title || draft.title || "未命名卡片";
+      setBusyAction("commit");
+      setError("");
+      setNotice("");
+      try {
+        if (pendingUpdates) {
+          await api.updateKnowledgeGardenDraft(draft.id, pendingUpdates);
+        }
+        const result = await api.commitKnowledgeGardenDraft(draft.id);
+        if (result.ok === false || result.status === "error" || result.error || result.errors?.length) {
+          throw new Error(result.error || result.errors?.[0] || "入库失败。");
+        }
+        const newCardId =
+          (typeof result.card_id === "string" && result.card_id) ||
+          (typeof result.meta?.card_id === "string" ? result.meta.card_id : "");
+        setPendingDrafts((current) => current.filter((item) => item.id !== draft.id));
+        const cardsPayload = await api.getKnowledgeCards(200);
+        setCards(cardsPayload.cards);
+        setDrawer(newCardId ? { type: "card", id: newCardId } : null);
+        setNotice(`已存入卡片库：《${title}》。`);
+      } catch (err) {
+        setError(`确认入卡失败：${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setBusyAction("");
+      }
+    },
+    [busyAction],
+  );
+
+  const discardDraft = useCallback(
+    async (draft: KnowledgeGardenDraftItem) => {
+      if (busyAction) return;
+      setBusyAction("discard");
+      setError("");
+      setNotice("");
+      try {
+        await api.discardKnowledgeGardenDraft(draft.id);
+        setPendingDrafts((current) => current.filter((item) => item.id !== draft.id));
+        setDrawer(null);
+        setNotice(`已舍弃草稿：《${draft.title || "未命名草稿"}》。`);
+      } catch (err) {
+        setError(`舍弃草稿失败：${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setBusyAction("");
+      }
+    },
+    [busyAction],
+  );
+
+  const openSourceInLibrary = useCallback(
+    (source: KnowledgeSource) => {
+      if (!source.id) return;
+      navigate(`/knowledge-library?kind=capture&item=${encodeURIComponent(source.id)}`);
+    },
+    [navigate],
+  );
 
   const refreshBoard = useCallback(() => {
     void loadCards();
     void loadPendingDrafts();
   }, [loadCards, loadPendingDrafts]);
 
-  const switchView = useCallback((view: "cards" | "graph") => {
-    navigate(view === "graph" ? "/cards-board?view=graph" : "/cards-board", { replace: true });
-  }, [navigate]);
-
-  if (isDetailRoute) {
-    return (
-      <CardReadingPage
-        card={selectedCard}
-        deleting={selectedCard ? deletingId === selectedCard.id : false}
-        error={error}
-        loading={detailLoading || (loading && !selectedCard)}
-        notice={notice}
-        onDelete={selectedCard ? () => void deleteCard(selectedCard) : undefined}
-      />
-    );
-  }
+  const totalVisible = filteredDrafts.length + filteredCards.length;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 text-foreground">
-      <header className="shrink-0 overflow-hidden rounded-lg border border-border bg-background">
-        <div className="flex flex-col gap-4 px-5 py-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-xs font-medium text-primary">
-              <Layers3 className="h-3.5 w-3.5" />
-              Knowledge Cards · 个人认知资产
-            </div>
-            <h1 className="mt-1 text-2xl font-semibold tracking-normal text-foreground md:text-3xl">
-              个人知识卡片库
-            </h1>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-              从资料伴读中提炼出的新知概念、方法框架与核心洞察——拒绝“收藏=学会”，只沉淀内化后的个人认知。
-            </p>
-          </div>
-          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
-            <div className="col-span-2 inline-flex rounded-md border border-border bg-background/70 p-1 sm:col-span-1">
-              <button
-                type="button"
-                onClick={() => switchView("cards")}
-                className={cn(
-                  "rounded px-3 py-1.5 text-sm transition",
-                  currentView === "cards" ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                知识卡片
-              </button>
-              <button
-                type="button"
-                onClick={() => switchView("graph")}
-                className={cn(
-                  "rounded px-3 py-1.5 text-sm transition",
-                  currentView === "graph" ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                知识图谱
-              </button>
-            </div>
-            <Metric label="总卡片" value={cards.length} />
-            <Metric label="来源材料" value={cards.reduce((sum, card) => sum + card.sources.length, 0)} />
-            <button
-              type="button"
-              onClick={refreshBoard}
-              className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
-            >
-              <RefreshCw className={cn("h-4 w-4", (loading || pendingDraftsLoading) && "animate-spin")} />
-              刷新
-            </button>
-            <Link
-              to="/knowledge-chat"
-              className="inline-flex items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-foreground transition hover:border-primary/55 hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
-            >
-              🧭 去专题输出
-            </Link>
-          </div>
+    <div className="relative flex min-h-0 flex-1 flex-col text-foreground">
+      {/* Top minimal header */}
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 pb-3">
+        <div className="flex min-w-0 items-baseline gap-2.5">
+          <h1 className="text-lg font-semibold tracking-tight text-foreground">知识卡片</h1>
+          <span className="text-xs text-muted-foreground">
+            {cards.length} 张{pendingDrafts.length > 0 ? ` · ${pendingDrafts.length} 张待确认` : ""}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={refreshBoard}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/70 bg-background px-2.5 text-xs text-muted-foreground transition hover:border-foreground/20 hover:text-foreground"
+            title="刷新"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", (loading || draftsLoading) && "animate-spin")} />
+            刷新
+          </button>
+          <Link
+            to="/knowledge-chat"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-foreground px-3 text-xs font-medium text-background transition hover:opacity-90"
+          >
+            去专题输出
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
         </div>
       </header>
 
-      {(pendingDrafts.length > 0 || pendingDraftsError) && (
-        <section className="shrink-0 overflow-hidden rounded-lg border border-amber-300/70 bg-amber-50/70 text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-100">
+      {/* Single-row calm filter toolbar */}
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 py-3">
+        {/* Topic tabs */}
+        <div className="flex min-w-0 flex-wrap items-center gap-1">
+          <FilterTab
+            active={activeTheme === "all"}
+            label={`全部 (${cards.length})`}
+            onClick={() => setActiveTheme("all")}
+          />
+          {themes.map(([theme, count]) => (
+            <FilterTab
+              key={theme}
+              active={activeTheme === theme}
+              label={`${themeTitle(theme)} (${count})`}
+              onClick={() => setActiveTheme(theme)}
+            />
+          ))}
+        </div>
+
+        {/* Kind + Sort + Search */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex items-center rounded-lg bg-muted/55 p-0.5 text-xs">
+            <button
+              type="button"
+              onClick={() => setActiveKind("all")}
+              className={cn(
+                "rounded-md px-2.5 py-1 transition",
+                activeKind === "all"
+                  ? "bg-background font-medium text-foreground shadow-2xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              全部
+            </button>
+            {KIND_ORDER.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                onClick={() => setActiveKind(kind)}
+                className={cn(
+                  "rounded-md px-2.5 py-1 transition",
+                  activeKind === kind
+                    ? "bg-background font-medium text-foreground shadow-2xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {KIND_LABELS[kind]}
+              </button>
+            ))}
+          </div>
+
           <button
             type="button"
-            onClick={() => setPendingDraftsExpanded((value) => !value)}
-            aria-expanded={pendingDraftsExpanded}
-            className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+            onClick={() => setSortBy((s) => (s === "recent" ? "cited" : "recent"))}
+            className="h-8 rounded-lg border border-border/70 bg-background px-2.5 text-xs text-muted-foreground transition hover:text-foreground"
+            title="切换排序方式"
           >
-            <span className="inline-flex min-w-0 items-center gap-2 text-sm font-medium">
-              <span>📝 待确认卡片草稿（{pendingDrafts.length} 张）</span>
-              {pendingDraftsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-            </span>
-            <ChevronDown className={cn("h-4 w-4 shrink-0 transition", pendingDraftsExpanded && "rotate-180")} />
+            {sortBy === "recent" ? "按最新" : "按常用"}
           </button>
 
-          {pendingDraftsError ? (
-            <div className="flex items-start gap-2 border-t border-amber-300/60 px-3 py-2 text-xs text-destructive dark:border-amber-500/25">
-              <AlertCircle className="mt-0.5 h-3.5 w-3.5" />
-              <span>{pendingDraftsError}</span>
-            </div>
-          ) : null}
-
-          {pendingDraftsExpanded ? (
-            <div className="border-t border-amber-300/60 dark:border-amber-500/25">
-              {pendingDrafts.length ? (
-                <ul className="divide-y divide-amber-300/50 dark:divide-amber-500/20">
-                  {pendingDrafts.map((draft) => {
-                    const busy = pendingDraftActionId === draft.id;
-                    return (
-                      <li
-                        key={draft.id}
-                        className="flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
-                      >
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium">
-                            {draft.title || "未命名卡片草稿"}
-                          </div>
-                          <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-amber-900/75 dark:text-amber-100/70">
-                            {draft.one_liner || "暂无一句话摘要"}
-                          </p>
-                          <span className="mt-1 inline-flex rounded border border-amber-400/60 bg-amber-100/70 px-1.5 py-0.5 text-[11px] text-amber-900 dark:border-amber-500/30 dark:bg-amber-900/30 dark:text-amber-100">
-                            {gardenDraftKindLabel(draft.card_kind)}
-                          </span>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void commitPendingDraft(draft)}
-                            disabled={Boolean(pendingDraftActionId)}
-                            className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-500/15 px-2.5 py-1 text-xs font-medium transition hover:bg-amber-500/25 disabled:opacity-45"
-                          >
-                            {busy && pendingDraftAction === "commit" ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <Check className="h-3.5 w-3.5" />
-                            )}
-                            确认保存
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void discardPendingDraft(draft)}
-                            disabled={Boolean(pendingDraftActionId)}
-                            className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 px-2.5 py-1 text-xs transition hover:bg-amber-500/10 disabled:opacity-45"
-                          >
-                            {busy && pendingDraftAction === "discard" ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <Trash2 className="h-3.5 w-3.5" />
-                            )}
-                            舍弃
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : (
-                <p className="px-3 py-2 text-xs text-amber-900/75 dark:text-amber-100/70">
-                  {pendingDraftsLoading ? "正在读取待确认草稿..." : "暂无待确认草稿。"}
-                </p>
-              )}
-            </div>
-          ) : null}
-        </section>
-      )}
+          <label className="flex h-8 w-44 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-2.5 focus-within:border-foreground/30 sm:w-52">
+            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索卡片..."
+              className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                className="text-muted-foreground hover:text-foreground"
+                aria-label="清空搜索"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </label>
+        </div>
+      </div>
 
       {error && (
-        <div className="flex shrink-0 items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <AlertCircle className="mt-0.5 h-4 w-4" />
-          <span>{error}</span>
+        <div className="mb-3 flex shrink-0 items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3.5 py-2 text-xs text-destructive">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+          <button type="button" onClick={() => setError("")} className="opacity-70 hover:opacity-100">
+            <X className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
 
       {notice && (
-        <div className="flex shrink-0 items-start gap-2 rounded-md border border-success/25 bg-success/10 px-3 py-2 text-sm text-success">
-          <Check className="mt-0.5 h-4 w-4" />
-          <span>{notice}</span>
+        <div className="mb-3 flex shrink-0 items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/45 px-3.5 py-2 text-xs text-foreground">
+          <div className="flex items-center gap-2">
+            <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
+            <span>{notice}</span>
+          </div>
+          <button type="button" onClick={() => setNotice("")} className="text-muted-foreground hover:text-foreground">
+            <X className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
 
-      {currentView === "graph" ? (
-        <KnowledgeGraphPanel focusCardId={selectedId} />
-      ) : (
-      <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[250px_minmax(0,1fr)_380px]">
-        <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
-          <div className="border-b border-border/80 p-3">
-            <label className="flex items-center gap-2 rounded-md border border-border bg-background/70 px-2.5 py-2">
-              <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索卡片或来源"
-                className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-              />
-            </label>
+      {/* Full-width paper card gallery */}
+      <main className={cn("min-h-0 flex-1 overflow-y-auto pt-1", basketCards.length > 0 ? "pb-24" : "pb-6")}>
+        {loading && cards.length === 0 && pendingDrafts.length === 0 ? (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+            {Array.from({ length: 6 }).map((_, idx) => (
+              <div key={idx} className="h-44 animate-pulse rounded-xl bg-muted/50" />
+            ))}
           </div>
-
-          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-3">
-            <FilterSection title="卡片类型">
-              <FilterButton
-                active={activeKind === "all"}
-                count={cards.length}
-                label="全部卡片"
-                onClick={() => setActiveKind("all")}
-              />
-              {KIND_ORDER.map((kind) => {
-                const meta = KIND_META[kind];
-                const Icon = meta.icon;
-                return (
-                  <FilterButton
-                    key={kind}
-                    active={activeKind === kind}
-                    count={counts[kind]}
-                    description={meta.description}
-                    icon={<Icon className="h-4 w-4" />}
-                    label={meta.label}
-                    onClick={() => setActiveKind(kind)}
-                  />
-                );
-              })}
-            </FilterSection>
-
-            <FilterSection title="所属专题">
-              <FilterButton
-                active={activeTheme === "all"}
-                count={cards.length}
-                label="全部专题"
-                onClick={() => setActiveTheme("all")}
-              />
-              {themes.length ? (
-                themes.map(([theme, count]) => (
-                  <FilterButton
-                    key={theme}
-                    active={activeTheme === theme}
-                    count={count}
-                    label={themeTitle(theme)}
-                    onClick={() => setActiveTheme(theme)}
-                  />
-                ))
-              ) : (
-        <p className="rounded-md border border-dashed border-border bg-background/45 px-3 py-3 text-xs leading-5 text-muted-foreground">
-                  暂无专题归属。随专题输出沉淀下来的卡片会显示在这里。
-                </p>
-              )}
-            </FilterSection>
-          </div>
-        </aside>
-
-        <main className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
-          <div className="flex shrink-0 items-center justify-between border-b border-border/80 px-4 py-3">
-            <div>
-              <h2 className="text-sm font-semibold tracking-normal text-foreground">卡片库</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                当前显示 {filteredCards.length} / {cards.length} 张
-              </p>
-            </div>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {loading ? (
-              <LoadingBlock text="读取知识卡片..." />
-            ) : cards.length === 0 ? (
-              <EmptyState />
-            ) : filteredCards.length ? (
-              <div className="grid gap-4 2xl:grid-cols-2">
-                {filteredCards.map((card) => (
-                  <KnowledgeCardTile
-                    key={card.id}
-                    card={card}
-                    selected={selectedId === card.id}
-                    onSelect={() => setSelectedId(card.id)}
-                  />
-                ))}
-              </div>
-            ) : (
-              <EmptyBlock text="没有找到符合条件的知识卡片。" />
-            )}
-          </div>
-        </main>
-
-        <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
-          {detailLoading && selectedId ? (
-            <LoadingBlock text="读取卡片详情..." />
-          ) : selectedCard ? (
-            <CardInspector
-              card={selectedCard}
-              deleting={deletingId === selectedCard.id}
-              onDelete={() => void deleteCard(selectedCard)}
-            />
+        ) : totalVisible === 0 ? (
+          cards.length === 0 && pendingDrafts.length === 0 ? (
+            <EmptyGallery />
           ) : (
-            <EmptyBlock text="请选择一张卡片查看详情。" />
-          )}
-        </aside>
-      </div>
-      )}
-    </div>
-  );
-}
-
-function KnowledgeGraphPanel({ focusCardId }: { focusCardId: string }) {
-  const navigate = useNavigate();
-  const [graph, setGraph] = useState<{ nodes: KnowledgeGraphNode[]; edges: KnowledgeGraphEdge[]; meta?: { focus_kind?: string; focus_id?: string } } | null>(null);
-  const [selectedNodeKey, setSelectedNodeKey] = useState("");
-  const [selectedEdgeId, setSelectedEdgeId] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-
-  const loadGraph = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const data = await api.getKnowledgeGraph(
-        focusCardId
-          ? { focus_kind: "garden_card", focus_id: focusCardId, depth: 1, limit: 80 }
-          : { depth: 1, limit: 80 },
-      );
-      setGraph(data);
-      const focusKind = data.meta.focus_kind as KnowledgeGraphNodeKind | undefined;
-      const focusId = data.meta.focus_id;
-      const fallback = data.nodes[0];
-      setSelectedNodeKey(
-        focusKind && focusId
-          ? graphNodeKey(focusKind, focusId)
-          : fallback
-            ? graphNodeKey(fallback.kind, fallback.id)
-            : "",
-      );
-      setSelectedEdgeId("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [focusCardId]);
-
-  useEffect(() => {
-    void loadGraph();
-  }, [loadGraph]);
-
-  const nodeByKey = useMemo(() => {
-    return new Map((graph?.nodes ?? []).map((node) => [graphNodeKey(node.kind, node.id), node]));
-  }, [graph]);
-
-  const filteredEdges = useMemo(() => {
-    return graph?.edges ?? [];
-  }, [graph]);
-
-  const focusNodeKey = useMemo(() => {
-    const focusKind = graph?.meta?.focus_kind as KnowledgeGraphNodeKind | undefined;
-    const focusId = graph?.meta?.focus_id;
-    if (focusKind && focusId) return graphNodeKey(focusKind, focusId);
-    return graph?.nodes[0] ? graphNodeKey(graph.nodes[0].kind, graph.nodes[0].id) : "";
-  }, [graph]);
-
-  const selectedNode = selectedNodeKey ? nodeByKey.get(selectedNodeKey) ?? null : null;
-  const selectedEdges = useMemo(() => {
-    if (!selectedNode) return filteredEdges;
-    const key = graphNodeKey(selectedNode.kind, selectedNode.id);
-    return filteredEdges.filter((edge) =>
-      graphNodeKey(edge.source_kind, edge.source_id) === key ||
-      graphNodeKey(edge.target_kind, edge.target_id) === key,
-    );
-  }, [filteredEdges, selectedNode]);
-
-  const selectedEdge = useMemo(() => {
-    return filteredEdges.find((edge) => edge.id === selectedEdgeId) ?? selectedEdges[0] ?? filteredEdges[0] ?? null;
-  }, [filteredEdges, selectedEdgeId, selectedEdges]);
-
-  const visibleNodeKeys = useMemo(() => {
-    const keys = new Set<string>();
-    if (focusNodeKey) keys.add(focusNodeKey);
-    if (selectedNodeKey) keys.add(selectedNodeKey);
-    for (const edge of filteredEdges) {
-      keys.add(graphNodeKey(edge.source_kind, edge.source_id));
-      keys.add(graphNodeKey(edge.target_kind, edge.target_id));
-    }
-    return keys;
-  }, [filteredEdges, focusNodeKey, selectedNodeKey]);
-
-  const visibleNodes = useMemo(() => {
-    return (graph?.nodes ?? []).filter((node) => visibleNodeKeys.has(graphNodeKey(node.kind, node.id)));
-  }, [graph, visibleNodeKeys]);
-
-  const refreshGraph = async () => {
-    setRefreshing(true);
-    setError("");
-    setNotice("");
-    try {
-      const result = await api.refreshKnowledgeGraph();
-      setNotice(`已刷新 ${result.edge_count} 条关系，覆盖 ${result.node_count} 个节点。`);
-      await loadGraph();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
-  const openNode = (node: KnowledgeGraphNode) => {
-    if (!node.open_url) return;
-    if (node.open_url.startsWith("/")) {
-      navigate(node.open_url);
-      return;
-    }
-    window.open(node.open_url, "_blank", "noopener,noreferrer");
-  };
-
-  return (
-    <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-      <main className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
-        <div className="flex shrink-0 flex-col gap-3 border-b border-border/80 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <h2 className="flex items-center gap-2 text-sm font-semibold tracking-normal text-foreground">
-              <Network className="h-4 w-4 text-primary/80" />
-              知识图谱
-            </h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              仅展示已保存笔记、知识卡片和可解释主题关系。
-            </p>
+            <div className="flex min-h-[260px] items-center justify-center">
+              <p className="text-sm text-muted-foreground">当前筛选条件下没有卡片。</p>
+            </div>
+          )
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+            {filteredDrafts.map((draft) => (
+              <DraftGalleryCard
+                key={`draft-${draft.id}`}
+                draft={draft}
+                active={drawer?.type === "draft" && drawer.id === draft.id}
+                onOpen={() => setDrawer({ type: "draft", id: draft.id })}
+              />
+            ))}
+            {filteredCards.map((card) => (
+              <CardGalleryTile
+                key={card.id}
+                card={card}
+                active={drawer?.type === "card" && drawer.id === card.id}
+                inBasket={basketIds.includes(card.id)}
+                onOpen={() => setDrawer({ type: "card", id: card.id })}
+                onToggleBasket={() => toggleBasket(card.id)}
+              />
+            ))}
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span className="rounded-md border border-border bg-background/70 px-2.5 py-1.5">
-              {graph?.nodes.length ?? 0} 节点
+        )}
+      </main>
+
+      {/* Floating Topic Basket for multi-card picking */}
+      {basketCards.length > 0 && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-6 z-30 flex justify-center px-4">
+          <div className="pointer-events-auto flex max-w-3xl flex-wrap items-center gap-2.5 rounded-full border border-border bg-foreground px-4 py-2 text-background shadow-xl">
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+              <Layers3 className="h-3.5 w-3.5" />
+              已挑 {basketCards.length} 张
             </span>
-            <span className="rounded-md border border-border bg-background/70 px-2.5 py-1.5">
-              {graph?.edges.length ?? 0} 关系
-            </span>
+            <div className="hidden max-w-md items-center gap-1.5 sm:flex">
+              {basketCards.slice(0, 3).map((card) => (
+                <span
+                  key={card.id}
+                  className="inline-flex max-w-[140px] items-center gap-1 rounded-full bg-background/15 px-2.5 py-0.5 text-[11px]"
+                >
+                  <span className="truncate">{card.title}</span>
+                  <button
+                    type="button"
+                    onClick={() => toggleBasket(card.id)}
+                    className="opacity-70 hover:opacity-100"
+                    aria-label={`移出 ${card.title}`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+              {basketCards.length > 3 && (
+                <span className="text-[11px] opacity-75">+{basketCards.length - 3}</span>
+              )}
+            </div>
             <button
               type="button"
-              onClick={() => void refreshGraph()}
-              className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
+              onClick={() => setBasketIds([])}
+              className="text-xs opacity-70 transition hover:opacity-100"
             >
-              <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
-              刷新图谱
+              清空
+            </button>
+            <button
+              type="button"
+              onClick={() => sendCardsToTopicStudio(basketCards)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-background px-3.5 py-1 text-xs font-medium text-foreground transition hover:opacity-90"
+            >
+              带着去专题输出
+              <ArrowRight className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
+      )}
 
-        {error ? (
-          <div className="m-4 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            <AlertCircle className="mt-0.5 h-4 w-4" />
-            <span>{error}</span>
-          </div>
-        ) : null}
-        {notice ? (
-          <div className="m-4 flex items-start gap-2 rounded-md border border-success/25 bg-success/10 px-3 py-2 text-sm text-success">
-            <Check className="mt-0.5 h-4 w-4" />
-            <span>{notice}</span>
-          </div>
-        ) : null}
-
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-          {loading ? (
-            <div>
-              <LoadingBlock text="读取知识图谱..." />
-            </div>
-          ) : graph && graph.nodes.length ? (
-            <>
-              <section className="min-h-[520px] rounded-lg border border-border bg-background/60 p-4">
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-foreground">一跳关系图</h3>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      中心节点与一跳关联，关系类型直接标在连线上。
-                    </p>
-                  </div>
-                </div>
-                <GraphCanvas
-                  edges={filteredEdges}
-                  focusKey={focusNodeKey}
-                  nodes={visibleNodes}
-                  selectedEdgeId={selectedEdge?.id ?? ""}
-                  selectedNodeKey={selectedNodeKey}
-                  onSelectEdge={setSelectedEdgeId}
-                  onSelectNode={setSelectedNodeKey}
-                />
-              </section>
-
-              <section className="rounded-lg border border-border bg-background/60 p-4">
-                <h3 className="text-sm font-semibold text-foreground">关系证据</h3>
-                {selectedEdge ? (
-                  <div className="mt-3 rounded-lg border border-primary/25 bg-primary/10 px-3 py-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-xs font-medium text-primary">{edgeLabel(selectedEdge)}</span>
-                      <span className="text-xs text-muted-foreground">score {formatScore(selectedEdge.score)}</span>
-                    </div>
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">{graphEvidenceText(selectedEdge)}</p>
-                  </div>
-                ) : null}
-                <div className="mt-3 space-y-3">
-                  {selectedEdges.length ? (
-                    selectedEdges.map((edge) => (
-                      <GraphEdgeRow
-                        key={edge.id}
-                        edge={edge}
-                        nodeByKey={nodeByKey}
-                        selected={selectedEdge?.id === edge.id}
-                        onSelectEdge={setSelectedEdgeId}
-                        onSelectNode={setSelectedNodeKey}
-                      />
-                    ))
-                  ) : (
-                    <EmptyInline text="当前筛选下没有可展示的关系。" />
-                  )}
-                </div>
-              </section>
-            </>
-          ) : (
-            <div>
-              <GraphEmptyState />
-            </div>
-          )}
-        </div>
-      </main>
-
-      <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
-        {selectedNode ? (
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            <div className="mb-3 inline-flex rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
-              {NODE_KIND_LABELS[selectedNode.kind]}
-            </div>
-            <h2 className="text-xl font-semibold leading-7 text-foreground">{selectedNode.title}</h2>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground">{selectedNode.summary || "暂无摘要"}</p>
-            {selectedNode.file_path ? (
-              <PathLine label="文件" value={selectedNode.file_path} />
+      {/* Slide-over full reading & editing drawer */}
+      {(activeDraft || activeCard) && (
+        <div className="fixed inset-0 z-40 flex justify-end">
+          <div
+            className="absolute inset-0 bg-black/15 backdrop-blur-[1px]"
+            onClick={closeDrawer}
+          />
+          <aside className="relative z-10 flex h-full w-full max-w-[620px] flex-col border-l border-border/80 bg-background shadow-2xl">
+            {activeDraft ? (
+              <UnifiedCardDrawer
+                key={`draft-${activeDraft.id}-${activeDraft.updated_at}`}
+                mode="draft"
+                title={activeDraft.title || "未命名卡片"}
+                kind={normalizeKind(activeDraft.card_kind)}
+                claim={activeDraft.payload?.claim || activeDraft.one_liner || ""}
+                markdown={draftBodyMarkdown(activeDraft)}
+                theme=""
+                sources={[]}
+                inBasket={false}
+                busyAction={busyAction}
+                onClose={closeDrawer}
+                onSave={(updates) => saveDraftEdits(activeDraft, updates)}
+                onCommit={(updates) => void commitDraft(activeDraft, updates)}
+                onDiscard={() => void discardDraft(activeDraft)}
+                onRevise={(instruction) => reviseDraftWithAi(activeDraft, instruction)}
+              />
+            ) : activeCard ? (
+              <UnifiedCardDrawer
+                key={`card-${activeCard.id}-${activeCard.updated_at}`}
+                mode="card"
+                title={activeCard.title}
+                kind={normalizeKind(activeCard.kind)}
+                claim={activeCard.payload?.claim || activeCard.summary || ""}
+                markdown={cardBodyMarkdown(activeCard)}
+                theme={activeCard.source_theme ? themeTitle(activeCard.source_theme) : ""}
+                sources={activeCard.sources}
+                citationCount={activeCard.citation_count}
+                inBasket={basketIds.includes(activeCard.id)}
+                busyAction={busyAction}
+                onClose={closeDrawer}
+                onSave={(updates) => saveCardEdits(activeCard, updates)}
+                onArchive={() => void archiveCard(activeCard)}
+                onOpenSource={openSourceInLibrary}
+                onSendSingle={() => sendCardsToTopicStudio([activeCard])}
+                onToggleBasket={() => toggleBasket(activeCard.id)}
+              />
             ) : null}
-            <div className="mt-5 grid gap-2">
-              {selectedNode.open_url ? (
-                <button
-                  type="button"
-                  onClick={() => openNode(selectedNode)}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-foreground transition hover:border-primary/55 hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
-                >
-                  <ExternalLink className="h-4 w-4" />
-                  打开 Hermes
-                </button>
-              ) : null}
-              {selectedNode.file_url ? (
-                <button
-                  type="button"
-                  onClick={() => { window.location.href = selectedNode.file_url; }}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
-                >
-                  <ExternalLink className="h-4 w-4" />
-                  打开文件
-                </button>
-              ) : null}
-            </div>
-            <section className="mt-5 rounded-lg border border-border bg-background p-3">
-              <h3 className="text-sm font-semibold text-foreground">相关关系</h3>
-              <div className="mt-3 space-y-2">
-                {selectedEdges.length ? selectedEdges.map((edge) => (
-                  <button
-                    key={`${selectedNode.id}-${edge.id}`}
-                    type="button"
-                    onClick={() => setSelectedEdgeId(edge.id)}
-                    className={cn(
-                      "w-full rounded-md border px-3 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20",
-                      selectedEdge?.id === edge.id ? "border-primary/35 bg-primary/10" : "border-border bg-background/60 hover:border-primary/30",
-                    )}
-                  >
-                    <div className="text-xs font-medium text-foreground">{RELATION_LABELS[edge.relation_type]}</div>
-                    <div className="mt-1 text-xs leading-5 text-muted-foreground">{graphEvidenceText(edge)}</div>
-                  </button>
-                )) : <EmptyInline text="当前节点暂无关系。" />}
-              </div>
-            </section>
-          </div>
-        ) : (
-          <EmptyBlock text="请选择一个图谱节点查看详情。" />
-        )}
-      </aside>
-    </div>
-  );
-}
-
-function GraphCanvas({
-  edges,
-  focusKey,
-  nodes,
-  selectedEdgeId,
-  selectedNodeKey,
-  onSelectEdge,
-  onSelectNode,
-}: {
-  edges: KnowledgeGraphEdge[];
-  focusKey: string;
-  nodes: KnowledgeGraphNode[];
-  selectedEdgeId: string;
-  selectedNodeKey: string;
-  onSelectEdge: (edgeId: string) => void;
-  onSelectNode: (nodeKey: string) => void;
-}) {
-  const positions = useMemo(() => layoutGraphNodes(nodes, edges, focusKey), [edges, focusKey, nodes]);
-  const visibleEdges = edges.filter((edge) =>
-    positions.has(graphNodeKey(edge.source_kind, edge.source_id)) &&
-    positions.has(graphNodeKey(edge.target_kind, edge.target_id)),
-  );
-
-  return (
-    <div className="relative min-h-[540px] overflow-hidden rounded-lg border border-border bg-[radial-gradient(circle_at_center,rgba(95,153,142,0.08),transparent_58%)]">
-      <svg
-        className="pointer-events-none absolute inset-0 h-full w-full"
-        viewBox="0 0 1000 620"
-        preserveAspectRatio="none"
-        aria-hidden="true"
-      >
-        {visibleEdges.map((edge) => {
-          const source = positions.get(graphNodeKey(edge.source_kind, edge.source_id));
-          const target = positions.get(graphNodeKey(edge.target_kind, edge.target_id));
-          if (!source || !target) return null;
-          const selected = selectedEdgeId === edge.id;
-          return (
-            <line
-              key={edge.id}
-              x1={source.x}
-              y1={source.y}
-              x2={target.x}
-              y2={target.y}
-              className={cn("transition", selected ? "stroke-primary" : "stroke-border")}
-              strokeWidth={selected ? 4 : 2}
-              strokeLinecap="round"
-            />
-          );
-        })}
-      </svg>
-
-      {visibleEdges.map((edge) => {
-        const source = positions.get(graphNodeKey(edge.source_kind, edge.source_id));
-        const target = positions.get(graphNodeKey(edge.target_kind, edge.target_id));
-        if (!source || !target) return null;
-        const selected = selectedEdgeId === edge.id;
-        const labelPoint = edgeLabelPoint(source, target);
-        return (
-          <button
-            key={`${edge.id}-label`}
-            type="button"
-            onClick={() => onSelectEdge(edge.id)}
-            style={{ left: `${labelPoint.x / 10}%`, top: `${labelPoint.y / 6.2}%` }}
-            className={cn(
-              "absolute z-20 -translate-x-1/2 -translate-y-1/2 rounded-md border px-2.5 py-1 text-xs font-medium shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20",
-              selected
-                ? "border-primary/35 bg-primary/15 text-primary"
-                : "border-border bg-background text-muted-foreground hover:border-primary/30 hover:text-foreground",
-            )}
-          >
-            {edgeLabel(edge)}
-          </button>
-        );
-      })}
-
-      {nodes.map((node) => {
-        const key = graphNodeKey(node.kind, node.id);
-        const position = positions.get(key);
-        if (!position) return null;
-        const selected = selectedNodeKey === key;
-        return (
-          <button
-            key={key}
-            type="button"
-            onClick={() => onSelectNode(key)}
-            style={{ left: `${position.x / 10}%`, top: `${position.y / 6.2}%` }}
-            className={cn(
-              "absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-lg border p-3 text-left shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20",
-              position.isFocus ? "w-56" : "w-44",
-              selected || position.isFocus
-                ? "border-primary/45 bg-background"
-                : "border-border bg-background/90 hover:border-primary/30",
-            )}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className={cn("rounded border px-2 py-0.5 text-xs", graphNodeTone(node.kind))}>
-                {position.isFocus ? "中心" : NODE_KIND_LABELS[node.kind]}
-              </span>
-              <span className="text-xs text-muted-foreground">{relationCountForNode(edges, node)} 条</span>
-            </div>
-            <div className={cn("mt-2 line-clamp-2 font-semibold leading-5 text-foreground", position.isFocus ? "text-sm" : "text-xs")}>
-              {node.title}
-            </div>
-            <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
-              {node.summary || node.file_path || "暂无摘要"}
-            </p>
-          </button>
-        );
-      })}
-
-      {!visibleEdges.length && nodes.length ? (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-md border border-dashed border-border bg-background/85 px-3 py-2 text-xs text-muted-foreground">
-          暂无一跳关系
+          </aside>
         </div>
-      ) : null}
+      )}
     </div>
   );
 }
 
-function GraphEdgeRow({
-  edge,
-  nodeByKey,
-  selected,
-  onSelectEdge,
-  onSelectNode,
+function DraftGalleryCard({
+  active,
+  draft,
+  onOpen,
 }: {
-  edge: KnowledgeGraphEdge;
-  nodeByKey: Map<string, KnowledgeGraphNode>;
-  selected: boolean;
-  onSelectEdge: (edgeId: string) => void;
-  onSelectNode: (key: string) => void;
+  active: boolean;
+  draft: KnowledgeGardenDraftItem;
+  onOpen: () => void;
 }) {
-  const sourceKey = graphNodeKey(edge.source_kind, edge.source_id);
-  const targetKey = graphNodeKey(edge.target_kind, edge.target_id);
-  const source = nodeByKey.get(sourceKey);
-  const target = nodeByKey.get(targetKey);
+  const claim = draft.payload?.claim || draft.one_liner || "点击查看并编辑完整草稿内容";
+  const anchors = useMemo(() => extractHighlightAnchors(draftBodyMarkdown(draft)), [draft]);
   return (
-    <div className={cn("rounded-lg border px-3 py-3", selected ? "border-primary/35 bg-primary/10" : "border-border bg-background")}>
-      <div className="flex items-center justify-between gap-3">
-        <button type="button" onClick={() => onSelectEdge(edge.id)} className="text-left text-xs font-medium text-primary hover:text-primary/80">
-          {edgeLabel(edge)}
-        </button>
-        <span className="text-xs text-muted-foreground">score {formatScore(edge.score)}</span>
-      </div>
-      <div className="mt-2 flex items-center gap-2 text-sm text-foreground">
-        <button type="button" onClick={() => onSelectNode(sourceKey)} className="min-w-0 truncate text-left hover:text-primary">
-          {source?.title || edge.source_id}
-        </button>
-        <span className="text-muted-foreground">→</span>
-        <button type="button" onClick={() => onSelectNode(targetKey)} className="min-w-0 truncate text-left hover:text-primary">
-          {target?.title || edge.target_id}
-        </button>
-      </div>
-      <p className="mt-2 text-xs leading-5 text-muted-foreground">{graphEvidenceText(edge)}</p>
-    </div>
-  );
-}
-
-function graphNodeKey(kind: KnowledgeGraphNodeKind, id: string): string {
-  return `${kind}:${id}`;
-}
-
-function layoutGraphNodes(
-  nodes: KnowledgeGraphNode[],
-  edges: KnowledgeGraphEdge[],
-  focusKey: string,
-): Map<string, GraphNodePosition> {
-  const positions = new Map<string, GraphNodePosition>();
-  if (!nodes.length) return positions;
-  const nodeByKey = new Map(nodes.map((node) => [graphNodeKey(node.kind, node.id), node]));
-  const centerKey = focusKey && nodeByKey.has(focusKey) ? focusKey : graphNodeKey(nodes[0].kind, nodes[0].id);
-  positions.set(centerKey, { x: 500, y: 310, isFocus: true });
-
-  const orderedKeys = nodes
-    .map((node) => graphNodeKey(node.kind, node.id))
-    .filter((key) => key !== centerKey)
-    .sort((left, right) => {
-      const leftEdgeIndex = edgeIndexForNode(edges, left, centerKey);
-      const rightEdgeIndex = edgeIndexForNode(edges, right, centerKey);
-      if (leftEdgeIndex !== rightEdgeIndex) return leftEdgeIndex - rightEdgeIndex;
-      return (nodeByKey.get(left)?.title || "").localeCompare(nodeByKey.get(right)?.title || "", "zh-Hans-CN");
-    });
-
-  const count = orderedKeys.length;
-  orderedKeys.forEach((key, index) => {
-    if (count === 1) {
-      positions.set(key, { x: 760, y: 310, isFocus: false });
-      return;
-    }
-    const angle = -Math.PI / 2 + (index * Math.PI * 2) / count;
-    positions.set(key, {
-      x: 500 + Math.cos(angle) * 350,
-      y: 310 + Math.sin(angle) * 210,
-      isFocus: false,
-    });
-  });
-  return positions;
-}
-
-function edgeIndexForNode(edges: KnowledgeGraphEdge[], nodeKey: string, focusKey: string): number {
-  const index = edges.findIndex((edge) => {
-    const sourceKey = graphNodeKey(edge.source_kind, edge.source_id);
-    const targetKey = graphNodeKey(edge.target_kind, edge.target_id);
-    return (
-      (sourceKey === focusKey && targetKey === nodeKey) ||
-      (targetKey === focusKey && sourceKey === nodeKey)
-    );
-  });
-  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
-}
-
-function edgeLabelPoint(source: GraphNodePosition, target: GraphNodePosition): { x: number; y: number } {
-  const midX = (source.x + target.x) / 2;
-  const midY = (source.y + target.y) / 2;
-  const dx = target.x - source.x;
-  const dy = target.y - source.y;
-  const length = Math.hypot(dx, dy) || 1;
-  const offsetDirection = dy >= 0 ? -1 : 1;
-  return {
-    x: midX + (-dy / length) * 48 * offsetDirection,
-    y: midY + (dx / length) * 48 * offsetDirection,
-  };
-}
-
-function graphNodeTone(kind: KnowledgeGraphNodeKind): string {
-  if (kind === "garden_card") return "border-[#8fbbb2] bg-[#e1eeea] text-[#173f38]";
-  if (kind === "theme_candidate") return "border-[#e1d3aa] bg-[#f7f2e6] text-[#725c24]";
-  return "border-border bg-background text-muted-foreground";
-}
-
-function edgeLabel(edge: KnowledgeGraphEdge): string {
-  if (edge.relation_type === "semantic_similarity") return `相似 ${formatScore(edge.score)}`;
-  return RELATION_LABELS[edge.relation_type];
-}
-
-function relationCountForNode(edges: KnowledgeGraphEdge[], node: KnowledgeGraphNode): number {
-  const key = graphNodeKey(node.kind, node.id);
-  return edges.filter((edge) =>
-    graphNodeKey(edge.source_kind, edge.source_id) === key ||
-    graphNodeKey(edge.target_kind, edge.target_id) === key,
-  ).length;
-}
-
-function formatScore(score: number): string {
-  return Number.isFinite(score) ? score.toFixed(2) : "-";
-}
-
-function graphEvidenceText(edge: KnowledgeGraphEdge): string {
-  const evidence = edge.evidence || {};
-  const matches = Array.isArray(evidence.section_matches) ? evidence.section_matches.slice(0, 2).join("；") : "";
-  const reasons = Array.isArray(evidence.reasons) ? evidence.reasons.slice(0, 2).join("；") : "";
-  const title = typeof evidence.title === "string" ? evidence.title : "";
-  const question = typeof evidence.question === "string" ? evidence.question : "";
-  return matches || reasons || title || question || "该关系由现有资料库结构确定生成。";
-}
-
-function KnowledgeCardTile({
-  card,
-  onSelect,
-  selected,
-}: {
-  card: KnowledgeCard;
-  onSelect: () => void;
-  selected: boolean;
-}) {
-  const meta = KIND_META[card.kind];
-  const Icon = meta.icon;
-  const claims = normalizedArguments(card.core_arguments).slice(0, 2);
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
       className={cn(
-        "group relative flex min-h-[230px] flex-col overflow-hidden rounded-lg border p-4 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20",
-        selected
-          ? "border-primary/45 bg-primary/10"
-          : "border-border bg-background hover:border-primary/30 hover:bg-background/95",
+        "group flex min-h-[192px] cursor-pointer flex-col rounded-xl border bg-amber-50/45 p-6 text-left transition hover:bg-amber-50/75 hover:shadow-sm dark:bg-amber-950/15",
+        active ? "border-amber-500/70 ring-1 ring-amber-500/30" : "border-amber-400/50",
       )}
     >
-      <div className={cn("absolute left-0 top-0 h-full w-1", meta.rail)} />
-      <div className="flex items-start justify-between gap-3 pl-1">
-        <div className="min-w-0">
-          <div className={cn("mb-2 inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs", meta.tone)}>
-            <Icon className="h-3.5 w-3.5" />
-            {meta.label}
-          </div>
-          <h2 className="line-clamp-3 text-base font-semibold leading-6 text-foreground">
-            {card.title}
-          </h2>
-        </div>
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span className="inline-flex items-center gap-1.5 font-medium text-amber-800 dark:text-amber-300">
+          <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+          待确认 · {KIND_LABELS[normalizeKind(draft.card_kind)]}
+        </span>
+        <span className="text-amber-700/80 transition group-hover:text-amber-900">
+          审阅编辑 →
+        </span>
       </div>
 
-      <p className="mt-3 line-clamp-4 pl-1 text-sm leading-6 text-muted-foreground">
-        {card.summary || "暂无摘要"}
+      <h2 className="mt-3 line-clamp-2 text-[16px] font-semibold leading-snug tracking-tight text-foreground">
+        {draft.title || "未命名卡片草稿"}
+      </h2>
+
+      <p className="mt-2.5 line-clamp-3 text-[13.5px] leading-[1.7] text-foreground/80">
+        {claim}
       </p>
 
-      {claims.length ? (
-        <div className="mt-3 space-y-2 pl-1">
-          {claims.map((claim, index) => (
-            <div key={`${card.id}-claim-${index}`} className="flex gap-2 text-sm leading-5 text-foreground/90">
-              <CircleDot className="mt-1 h-3 w-3 shrink-0 text-primary/80" />
-              <span className="line-clamp-2">{claim}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      <div className="mt-auto pl-1 pt-4">
-        <SourcePreview sources={card.sources} />
-        {card.citation_count ? (
-          <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-            🔥 被引用 {card.citation_count} 次
-          </div>
-        ) : null}
-      </div>
-    </button>
-  );
-}
-
-function CardInspector({
-  card,
-  deleting,
-  onDelete,
-}: {
-  card: KnowledgeCard;
-  deleting: boolean;
-  onDelete: () => void;
-}) {
-  const meta = KIND_META[card.kind];
-  const Icon = meta.icon;
-
-  return (
-    <>
-      <div className="shrink-0 border-b border-border/80 p-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <span className={cn("inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs", meta.active)}>
-            <Icon className="h-3.5 w-3.5" />
-            {meta.label}
-          </span>
-          <CardActions card={card} deleting={deleting} onDelete={onDelete} />
-        </div>
-        <h2 className="text-xl font-semibold leading-7 tracking-normal text-foreground">{card.title}</h2>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          {card.summary || "暂无摘要"}
+      {anchors.length > 0 && (
+        <p className="mt-auto truncate pt-4 text-[11.5px] text-amber-900/70 dark:text-amber-200/75">
+          {anchors.join(" · ")}
         </p>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        <section className="rounded-lg border border-border bg-background p-3">
-          <h3 className="flex items-center gap-2 text-sm font-semibold tracking-normal text-foreground">
-            <BookOpenText className="h-4 w-4 text-primary/80" />
-            快速操作
-          </h3>
-          <Link
-            to={cardTopicOutputPath(card)}
-            className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
-          >
-            🚀 带着此卡片去「专题输出」
-          </Link>
-          <Link
-            to={`/cards-board/${encodeURIComponent(card.id)}`}
-            className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-foreground transition hover:border-primary/55 hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
-          >
-            <BookOpenText className="h-4 w-4" />
-            打开完整详情
-          </Link>
-        </section>
-
-        {(card.file_path || card.source_theme) ? (
-        <section className="mt-4 rounded-lg border border-border bg-background p-3">
-          <h3 className="flex items-center gap-2 text-sm font-semibold tracking-normal text-foreground">
-            <FileText className="h-4 w-4 text-primary/80" />
-            兼容信息
-          </h3>
-          <div className="mt-2 space-y-2 text-sm leading-6 text-muted-foreground">
-            <PathLine label="存储位置" value={card.file_path} />
-            <PathLine label="所属专题" value={card.source_theme} />
-          </div>
-        </section>
-        ) : null}
-
-        <section className="mt-4 rounded-lg border border-border bg-background p-3">
-          <h3 className="flex items-center gap-2 text-sm font-semibold tracking-normal text-foreground">
-            <BookMarked className="h-4 w-4 text-primary/80" />
-            来源材料
-          </h3>
-          {card.sources.length ? (
-            <div className="mt-3 space-y-2">
-              {card.sources.map((source) => (
-                <SourceRow key={`${card.id}-${source.id}`} source={source} />
-              ))}
-            </div>
-          ) : (
-            <EmptyInline text="暂无来源材料。后续生成卡片时需要绑定 captures，方便追溯。" />
-          )}
-        </section>
-      </div>
-    </>
-  );
-}
-
-function CardReadingPage({
-  card,
-  deleting,
-  error,
-  loading,
-  notice,
-  onDelete,
-}: {
-  card: KnowledgeCard | null;
-  deleting: boolean;
-  error: string;
-  loading: boolean;
-  notice: string;
-  onDelete?: () => void;
-}) {
-  const kind = card?.kind ?? "viewpoint";
-  const meta = KIND_META[kind];
-  const Icon = meta.icon;
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 text-foreground">
-      <div className="shrink-0">
-        <Link
-          to="/cards-board"
-          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          返回卡片库
-        </Link>
-      </div>
-
-      {error && (
-        <div className="flex shrink-0 items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <AlertCircle className="mt-0.5 h-4 w-4" />
-          <span>{error}</span>
-        </div>
       )}
-
-      {notice && (
-        <div className="flex shrink-0 items-start gap-2 rounded-md border border-success/25 bg-success/10 px-3 py-2 text-sm text-success">
-          <Check className="mt-0.5 h-4 w-4" />
-          <span>{notice}</span>
-        </div>
-      )}
-
-      <main className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border bg-background">
-        {loading ? (
-          <LoadingBlock text="读取卡片详情..." />
-        ) : card ? (
-          <article className="mx-auto flex w-full max-w-[860px] flex-col gap-8 px-5 py-8 sm:px-8 lg:py-10">
-            <header className="border-b border-border/80 pb-7">
-              <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <span className={cn("inline-flex w-fit items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs", meta.active)}>
-                  <Icon className="h-3.5 w-3.5" />
-                  {meta.label}
-                </span>
-                {onDelete ? (
-                  <CardActions card={card} deleting={deleting} onDelete={onDelete} />
-                ) : null}
-              </div>
-              <h1 className="max-w-[780px] text-3xl font-semibold leading-tight tracking-normal text-foreground md:text-4xl">
-                {card.title}
-              </h1>
-              <p className="mt-5 max-w-[760px] text-lg leading-8 text-foreground/85">
-                {card.payload?.claim || card.summary || "暂无核心判断"}
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <SourceChip title={`可信度：${confidenceLabel(card.payload?.confidence)}`} />
-                <SourceChip title={`${card.sources.length} 篇来源`} muted={card.sources.length === 0} />
-                {card.schema_version ? <SourceChip title={card.schema_version} muted /> : null}
-              </div>
-              <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-center">
-                <Link
-                  to={cardTopicOutputPath(card)}
-                  className="inline-flex items-center justify-center gap-2 rounded-md border border-primary bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-[0_14px_34px_-24px_rgba(47,111,95,0.75)] transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
-                >
-                  🚀 带着此卡片去「专题输出」
-                </Link>
-                <span className="text-xs leading-5 text-muted-foreground">
-                  把这张卡片作为选题起点，交给专题输出专区做跨篇 RAG 合成。
-                </span>
-              </div>
-            </header>
-
-            <StructuredCardContent card={card} />
-          </article>
-        ) : (
-          <EmptyBlock text="没有找到这张知识卡片。" />
-        )}
-      </main>
     </div>
   );
 }
 
-function CardActions({
+function CardGalleryTile({
+  active,
   card,
-  deleting,
-  onDelete,
+  inBasket,
+  onOpen,
+  onToggleBasket,
 }: {
+  active: boolean;
   card: KnowledgeCard;
-  deleting: boolean;
-  onDelete: () => void;
+  inBasket: boolean;
+  onOpen: () => void;
+  onToggleBasket: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
-  const cardText = useMemo(() => cardToPlainText(card), [card]);
+  const claim = card.payload?.claim || card.summary || "";
+  const anchors = useMemo(() => extractHighlightAnchors(cardBodyMarkdown(card)), [card]);
+  const firstSource = card.sources[0] ? displaySourceTitle(card.sources[0]) : "";
+  const metaText = [
+    KIND_LABELS[normalizeKind(card.kind)],
+    card.source_theme ? themeTitle(card.source_theme) : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
-  const copyCard = async () => {
-    await navigator.clipboard.writeText(cardText);
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      className={cn(
+        "group relative flex min-h-[192px] cursor-pointer flex-col rounded-xl border bg-white/95 p-6 text-left transition hover:shadow-[0_6px_20px_-12px_rgba(15,23,20,0.18)] dark:bg-card",
+        inBasket
+          ? "border-foreground/50 ring-1 ring-foreground/20"
+          : active
+            ? "border-foreground/35 shadow-xs"
+            : "border-black/[0.08] hover:border-black/[0.18] dark:border-border/70 dark:hover:border-border",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate text-[11.5px] font-medium text-muted-foreground">
+          {metaText}
+        </span>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleBasket();
+          }}
+          aria-label={inBasket ? "移出已选" : "挑选此卡片"}
+          title={inBasket ? "移出已选" : "勾选用于专题输出"}
+          className={cn(
+            "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition",
+            inBasket
+              ? "border-foreground bg-foreground text-background"
+              : "border-border/90 bg-background text-transparent opacity-0 hover:border-foreground/50 group-hover:opacity-100 focus:opacity-100",
+          )}
+        >
+          <Check className="h-3 w-3" />
+        </button>
+      </div>
+
+      <h2 className="mt-3 line-clamp-2 text-[16px] font-semibold leading-snug tracking-tight text-foreground">
+        {card.title}
+      </h2>
+
+      <p className="mt-2.5 line-clamp-3 text-[13.5px] leading-[1.7] text-foreground/80">
+        {claim}
+      </p>
+
+      {anchors.length > 0 && (
+        <p className="mt-3 truncate text-[11.5px] text-muted-foreground/90">
+          {anchors.join(" · ")}
+        </p>
+      )}
+
+      <div className="mt-auto flex items-center justify-between gap-2 pt-4 text-[11px] text-muted-foreground/80">
+        <span className="truncate">{firstSource || "个人卡片"}</span>
+        {card.citation_count ? (
+          <span className="shrink-0 text-muted-foreground">引用 {card.citation_count}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function UnifiedCardDrawer({
+  mode,
+  title: initialTitle,
+  kind: initialKind,
+  claim: initialClaim,
+  markdown: initialMarkdown,
+  theme,
+  sources,
+  citationCount,
+  inBasket,
+  busyAction,
+  onClose,
+  onSave,
+  onCommit,
+  onDiscard,
+  onArchive,
+  onRevise,
+  onOpenSource,
+  onSendSingle,
+  onToggleBasket,
+}: {
+  mode: "draft" | "card";
+  title: string;
+  kind: KnowledgeCardKind;
+  claim: string;
+  markdown: string;
+  theme: string;
+  sources: KnowledgeSource[];
+  citationCount?: number;
+  inBasket: boolean;
+  busyAction: "" | "save" | "commit" | "discard" | "revise" | "delete";
+  onClose: () => void;
+  onSave: (updates: {
+    title?: string;
+    card_kind?: KnowledgeCardKind;
+    claim?: string;
+    markdown?: string;
+  }) => Promise<unknown>;
+  onCommit?: (updates?: KnowledgeGardenDraftUpdateRequest | null) => void;
+  onDiscard?: () => void;
+  onArchive?: () => void;
+  onRevise?: (instruction: string) => Promise<unknown>;
+  onOpenSource?: (source: KnowledgeSource) => void;
+  onSendSingle?: () => void;
+  onToggleBasket?: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(initialTitle);
+  const [kind, setKind] = useState<KnowledgeCardKind>(initialKind);
+  const [claim, setClaim] = useState(initialClaim);
+  const [markdown, setMarkdown] = useState(initialMarkdown);
+  const [dirty, setDirty] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const busy = Boolean(busyAction);
+
+  const displayBody = useMemo(
+    () => stripRedundantHeader(markdown, title, claim),
+    [claim, markdown, title],
+  );
+
+  const buildUpdates = () => ({
+    title: title.trim() || initialTitle,
+    card_kind: kind,
+    claim: claim.trim(),
+    markdown: markdown.trim(),
+  });
+
+  const handleSave = async () => {
+    const res = await onSave(buildUpdates());
+    if (res) {
+      setDirty(false);
+      setEditing(false);
+    }
+  };
+
+  const handleCopy = async () => {
+    const text = [`# ${title}`, "", claim, "", displayBody].filter(Boolean).join("\n");
+    await navigator.clipboard.writeText(text);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   };
 
-  return (
-    <div className="flex shrink-0 items-center gap-2">
-      <button
-        type="button"
-        onClick={() => void copyCard()}
-        className="inline-flex items-center gap-1.5 rounded-md border border-current/10 bg-background/50 px-2.5 py-1.5 text-xs text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-        {copied ? "已复制" : "复制"}
-      </button>
-      <button
-        type="button"
-        onClick={onDelete}
-        disabled={deleting}
-        className="inline-flex items-center gap-1.5 rounded-md border border-destructive/35 bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive transition hover:border-destructive/60 hover:bg-destructive/15 disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-        {deleting ? "归档中" : "归档"}
-      </button>
-    </div>
-  );
-}
-
-function StructuredCardContent({ card }: { card: KnowledgeCard }) {
-  const payload = card.payload;
-  if (!payload) {
-    return (
-      <>
-        <DetailSection title="卡片内容" icon={<BookOpenText className="h-4 w-4 text-primary/80" />}>
-          {card.markdown?.trim() ? <MarkdownPreview markdown={card.markdown} /> : <FallbackCardContent card={card} />}
-        </DetailSection>
-        <CardSourceSection card={card} />
-      </>
-    );
-  }
-  const judgments = payload.core_judgments ?? [];
+  const handleAiRevise = async () => {
+    if (!onRevise || !aiInstruction.trim() || busy) return;
+    const res = await onRevise(aiInstruction);
+    if (res) {
+      setAiInstruction("");
+      setDirty(false);
+      setEditing(false);
+    }
+  };
 
   return (
     <>
-      <DetailSection title="什么时候用" icon={<Workflow className="h-4 w-4 text-primary/80" />}>
-        <TextList empty="暂无适用场景。" items={payload.when_to_use} />
-      </DetailSection>
-
-      <DetailSection title="核心判断" icon={<CircleDot className="h-4 w-4 text-primary/80" />}>
-        <TextList
-          empty="暂无核心判断。"
-          items={judgments.map((judgment) => judgment.statement)}
-        />
-      </DetailSection>
-
-      <DetailSection title="为什么成立" icon={<BookOpenText className="h-4 w-4 text-primary/80" />}>
-        <div className="space-y-4">
-          {judgments.length ? (
-            judgments.map((judgment, index) => (
-              <div key={judgment.id || `${card.id}-judgment-${index}`} className="border-t border-border/80 pt-4 first:border-t-0 first:pt-0">
-                <h3 className="text-base font-semibold leading-6 text-foreground">
-                  {judgment.statement || `判断 ${index + 1}`}
-                </h3>
-                {judgment.reasoning ? (
-                  <p className="mt-2 text-sm leading-7 text-foreground/85">{judgment.reasoning}</p>
-                ) : null}
-                {judgment.support?.length ? (
-                  <div className="mt-3 space-y-2">
-                    {judgment.support.map((support, supportIndex) => (
-                      <div key={`${judgment.id || index}-support-${supportIndex}`} className="border-l-2 border-primary/20 bg-background/45 px-3 py-2">
-                        <p className="text-sm leading-6 text-muted-foreground">{support.summary}</p>
-                        {(support.source_ids ?? []).length ? (
-                          <div className="mt-2 flex flex-wrap gap-1.5">
-                            {(support.source_ids ?? []).map((sourceId) => (
-                              <SourceChip key={`${judgment.id}-${supportIndex}-${sourceId}`} title={sourceLabel(card.sources, sourceId)} muted />
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ))
+      {/* Drawer Header */}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 px-6 py-3.5">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {mode === "draft" ? (
+            <span className="inline-flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+              待确认草稿
+            </span>
           ) : (
-            <EmptyInline text="暂无推理依据。" />
+            <span>
+              {KIND_LABELS[kind]}
+              {theme ? ` · ${theme}` : ""}
+              {citationCount ? ` · 引用 ${citationCount} 次` : ""}
+            </span>
           )}
         </div>
-      </DetailSection>
 
-      <DetailSection title="边界与反例" icon={<ShieldAlert className="h-4 w-4 text-primary/80" />}>
-        <TextList empty="暂无边界说明。" items={payload.boundaries} />
-      </DetailSection>
+        <div className="flex items-center gap-1">
+          {!editing ? (
+            <>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setEditing(true)}
+                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                编辑
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleCopy()}
+                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                {copied ? "已复制" : "复制"}
+              </button>
+              {mode === "card" && onArchive ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={onArchive}
+                  className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                  title="归档卡片"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </>
+          ) : (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setTitle(initialTitle);
+                setKind(initialKind);
+                setClaim(initialClaim);
+                setMarkdown(initialMarkdown);
+                setDirty(false);
+                setEditing(false);
+              }}
+              className="inline-flex h-7 items-center rounded-md px-2 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            >
+              取消编辑
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="ml-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            aria-label="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
 
-      <DetailSection title="行动启发" icon={<Sparkles className="h-4 w-4 text-primary/80" />}>
-        <TextList empty="暂无行动启发。" items={payload.action_items} />
-      </DetailSection>
+      {/* Drawer Content */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 py-7">
+        {!editing ? (
+          <article className="space-y-6">
+            <div>
+              <h2 className="text-[22px] font-semibold leading-snug tracking-tight text-foreground">
+                {title || "未命名卡片"}
+              </h2>
+              {claim ? (
+                <p className="mt-4 rounded-xl bg-muted/45 px-4 py-3.5 text-[15px] leading-[1.75] text-foreground/90">
+                  {claim}
+                </p>
+              ) : null}
+            </div>
 
-      <CardSourceSection card={card} />
+            {displayBody ? (
+              <div
+                className={cn(
+                  "pt-1",
+                  "[&_[data-markdown-root]]:space-y-4 [&_[data-markdown-root]]:text-[15px] [&_[data-markdown-root]]:leading-[1.85] [&_[data-markdown-root]]:text-foreground/88",
+                  "[&_[data-markdown-root]_ul]:space-y-3 [&_[data-markdown-root]_ul]:pl-5 [&_[data-markdown-root]_ul]:text-[15px]",
+                  "[&_[data-markdown-root]_ol]:space-y-3 [&_[data-markdown-root]_ol]:pl-5 [&_[data-markdown-root]_ol]:text-[15px]",
+                  "[&_[data-markdown-root]_li]:leading-[1.8]",
+                  "[&_[data-markdown-root]_strong]:font-semibold [&_[data-markdown-root]_strong]:text-foreground",
+                  "[&_[data-markdown-root]_blockquote]:rounded-xl [&_[data-markdown-root]_blockquote]:border-0 [&_[data-markdown-root]_blockquote]:bg-amber-50/70 [&_[data-markdown-root]_blockquote]:px-4 [&_[data-markdown-root]_blockquote]:py-3 [&_[data-markdown-root]_blockquote]:text-[14px] [&_[data-markdown-root]_blockquote]:leading-[1.75] [&_[data-markdown-root]_blockquote]:text-foreground/85 dark:[&_[data-markdown-root]_blockquote]:bg-amber-950/25",
+                  "[&_[data-markdown-root]_h2]:pt-2 [&_[data-markdown-root]_h2]:text-[15px] [&_[data-markdown-root]_h3]:pt-2 [&_[data-markdown-root]_h3]:text-[14.5px]",
+                )}
+              >
+                <Markdown content={displayBody} />
+              </div>
+            ) : null}
 
-      {(card.file_path || card.source_theme || card.markdown?.trim()) ? (
-      <DetailSection title="兼容信息" icon={<FileText className="h-4 w-4 text-primary/80" />}>
-        {(card.file_path || card.source_theme) ? (
-          <div className="space-y-2 text-sm leading-6 text-muted-foreground">
-            <PathLine label="存储位置" value={card.file_path} />
-            <PathLine label="所属专题" value={card.source_theme} />
+            {sources.length > 0 && (
+              <section className="border-t border-border/50 pt-5">
+                <h3 className="mb-2.5 text-xs font-medium text-muted-foreground">来源原文</h3>
+                <div className="space-y-2">
+                  {sources.map((source) => (
+                    <button
+                      key={source.id}
+                      type="button"
+                      onClick={() => onOpenSource?.(source)}
+                      className="flex w-full items-start gap-2.5 rounded-lg border border-border/60 bg-muted/25 px-3 py-2.5 text-left transition hover:border-foreground/25 hover:bg-muted/50"
+                    >
+                      <BookOpenText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium text-foreground">
+                          {displaySourceTitle(source)}
+                        </div>
+                        {source.summary ? (
+                          <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+                            {source.summary}
+                          </p>
+                        ) : null}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+          </article>
+        ) : (
+          <div className="flex h-full flex-col gap-4">
+            <div className="flex items-center gap-1.5">
+              {KIND_ORDER.map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => {
+                    setKind(k);
+                    setDirty(true);
+                  }}
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-xs transition",
+                    kind === k
+                      ? "bg-foreground font-medium text-background"
+                      : "bg-muted/60 text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {KIND_LABELS[k]}
+                </button>
+              ))}
+            </div>
+
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-muted-foreground">标题</span>
+              <input
+                value={title}
+                disabled={busy}
+                onChange={(e) => {
+                  setTitle(e.target.value);
+                  setDirty(true);
+                }}
+                placeholder="短标题（14字以内）"
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-base font-semibold text-foreground outline-none focus:border-foreground/40"
+              />
+            </label>
+
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-muted-foreground">一句话结论</span>
+              <textarea
+                value={claim}
+                disabled={busy}
+                rows={2}
+                onChange={(e) => {
+                  setClaim(e.target.value);
+                  setDirty(true);
+                }}
+                placeholder="整张卡最值得记住的那一句话..."
+                className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm leading-6 text-foreground outline-none focus:border-foreground/40"
+              />
+            </label>
+
+            <label className="flex min-h-[260px] flex-1 flex-col space-y-1.5">
+              <span className="text-xs font-medium text-muted-foreground">正文（支持 Markdown，像笔记一样自由写）</span>
+              <textarea
+                value={markdown}
+                disabled={busy}
+                onChange={(e) => {
+                  setMarkdown(e.target.value);
+                  setDirty(true);
+                }}
+                placeholder="写清底层逻辑、做法步骤或你自己的随手心得..."
+                className="min-h-[240px] flex-1 resize-y rounded-lg border border-border bg-background px-3 py-2.5 text-sm leading-7 text-foreground outline-none focus:border-foreground/40"
+              />
+            </label>
           </div>
-        ) : null}
-        {card.markdown?.trim() ? (
-        <details className="mt-4 rounded-md border border-border bg-background p-3">
-            <summary className="cursor-pointer text-sm font-medium text-foreground">旧版原始内容</summary>
-            <MarkdownPreview markdown={card.markdown} />
-          </details>
-        ) : null}
-      </DetailSection>
-      ) : null}
+        )}
+      </div>
+
+      {/* Drawer Footer */}
+      <div className="shrink-0 space-y-2.5 border-t border-border/60 bg-background/95 px-6 py-3.5">
+        {mode === "draft" && onRevise && (
+          <div className="flex items-center gap-2">
+            <div className="flex flex-1 items-center gap-2 rounded-lg border border-border/80 bg-background px-3 py-1.5 focus-within:border-foreground/35">
+              <Wand2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <input
+                value={aiInstruction}
+                disabled={busy}
+                onChange={(e) => setAiInstruction(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void handleAiRevise();
+                  }
+                }}
+                placeholder="不满意？说一句让 AI 润色（如：说人话、再精简一点）"
+                className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+              />
+            </div>
+            <button
+              type="button"
+              disabled={busy || !aiInstruction.trim()}
+              onClick={() => void handleAiRevise()}
+              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border/80 bg-background px-3 text-xs font-medium text-foreground transition hover:bg-muted disabled:opacity-45"
+            >
+              {busyAction === "revise" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Send className="h-3.5 w-3.5" />
+              )}
+              AI 润色
+            </button>
+          </div>
+        )}
+
+        {mode === "draft" ? (
+          <div className="flex items-center gap-2">
+            {editing && dirty ? (
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleSave()}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border bg-background px-3.5 text-xs font-medium text-foreground transition hover:bg-muted disabled:opacity-45"
+                >
+                  {busyAction === "save" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  暂存草稿
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onCommit?.(buildUpdates())}
+                  className="inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg bg-foreground px-4 text-xs font-medium text-background transition hover:opacity-90 disabled:opacity-45"
+                >
+                  {busyAction === "commit" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                  保存并存入卡片库
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onCommit?.(dirty ? buildUpdates() : null)}
+                className="inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg bg-foreground px-4 text-xs font-medium text-background transition hover:opacity-90 disabled:opacity-45"
+              >
+                {busyAction === "commit" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                确认存入卡片库
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onDiscard}
+              className="inline-flex h-9 items-center gap-1 rounded-lg border border-border/80 px-3 text-xs text-muted-foreground transition hover:border-destructive/40 hover:text-destructive disabled:opacity-45"
+            >
+              {busyAction === "discard" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              舍弃
+            </button>
+          </div>
+        ) : editing ? (
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              disabled={busy || !dirty}
+              onClick={() => void handleSave()}
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-foreground px-4 text-xs font-medium text-background transition hover:opacity-90 disabled:opacity-45"
+            >
+              {busyAction === "save" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+              保存修改
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onSendSingle}
+              className="inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg bg-foreground px-4 text-xs font-medium text-background transition hover:opacity-90"
+            >
+              带着此卡去专题输出
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={onToggleBasket}
+              className={cn(
+                "inline-flex h-9 items-center gap-1.5 rounded-lg border px-3.5 text-xs font-medium transition",
+                inBasket
+                  ? "border-foreground bg-foreground/8 text-foreground"
+                  : "border-border/80 bg-background text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {inBasket ? <Check className="h-3.5 w-3.5" /> : null}
+              {inBasket ? "已挑中" : "加入已选"}
+            </button>
+          </div>
+        )}
+      </div>
     </>
   );
 }
 
-function DetailSection({
-  children,
-  icon,
-  title,
-}: {
-  children: React.ReactNode;
-  icon: React.ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="border-t border-border/80 pt-6 first:border-t-0 first:pt-0">
-      <h2 className="flex items-center gap-2 text-lg font-semibold tracking-normal text-foreground">
-        {icon}
-        {title}
-      </h2>
-      <div className="mt-4">{children}</div>
-    </section>
-  );
-}
-
-function TextList({ empty, items }: { empty: string; items?: string[] }) {
-  const values = (items ?? []).map((item) => item.trim()).filter(Boolean);
-  if (!values.length) return <EmptyInline text={empty} />;
-  return (
-    <ul className="space-y-2">
-      {values.map((item, index) => (
-        <li key={`${index}-${item}`} className="flex gap-2 text-sm leading-7 text-foreground">
-          <CircleDot className="mt-2 h-3 w-3 shrink-0 text-primary/80" />
-          <span>{item}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function CardSourceSection({ card }: { card: KnowledgeCard }) {
-  return (
-    <DetailSection title="来源" icon={<BookMarked className="h-4 w-4 text-primary/80" />}>
-      {card.sources.length ? (
-        <div className="grid gap-3 lg:grid-cols-2">
-          {card.sources.map((source) => (
-            <SourceRow key={`${card.id}-${source.id}`} source={source} />
-          ))}
-        </div>
-      ) : (
-        <EmptyInline text="暂无来源材料。后续生成卡片时需要绑定 captures，方便追溯。" />
-      )}
-    </DetailSection>
-  );
-}
-
-function FallbackCardContent({ card }: { card: KnowledgeCard }) {
-  const claims = normalizedArguments(card.core_arguments);
-  return (
-    <div className="mt-3 space-y-4">
-      {claims.length ? (
-        <div>
-          <h4 className="text-xs font-medium text-muted-foreground">内容要点</h4>
-          <ul className="mt-2 space-y-2">
-            {claims.map((claim, index) => (
-              <li key={`${card.id}-detail-${index}`} className="flex gap-2 text-sm leading-6 text-foreground">
-                <CircleDot className="mt-1.5 h-3 w-3 shrink-0 text-primary/80" />
-                <span>{claim}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : (
-        <EmptyInline text="暂无内容要点。" />
-      )}
-
-      {card.key_materials?.length ? (
-        <div>
-          <h4 className="text-xs font-medium text-muted-foreground">关键词材料</h4>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {card.key_materials.map((item, index) => (
-              <SourceChip key={`${index}-${displayValue(item)}`} title={displayValue(item)} />
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {card.my_view ? (
-        <div>
-          <h4 className="text-xs font-medium text-muted-foreground">适用或启发</h4>
-          <p className="mt-2 text-sm leading-6 text-foreground">{card.my_view}</p>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function MarkdownPreview({ markdown }: { markdown: string }) {
-  const lines = stripTrailingSourceSection(markdown)
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  return (
-    <div className="mt-3 space-y-2">
-      {lines.map((line, index) => {
-        if (line.startsWith("# ")) {
-          return null;
-        }
-        if (line.startsWith("## ")) {
-          return (
-            <h4 key={index} className="pt-2 text-sm font-semibold text-foreground">
-              {line.replace(/^##\s+/, "")}
-            </h4>
-          );
-        }
-        if (line.startsWith("- ")) {
-          return (
-            <div key={index} className="flex gap-2 text-sm leading-6 text-foreground">
-              <CircleDot className="mt-1.5 h-3 w-3 shrink-0 text-primary/80" />
-              <span>{renderInlineWikiLinks(line.replace(/^-\s+/, ""))}</span>
-            </div>
-          );
-        }
-        return (
-          <p key={index} className="text-sm leading-6 text-foreground">
-            {renderInlineWikiLinks(line)}
-          </p>
-        );
-      })}
-    </div>
-  );
-}
-
-function stripTrailingSourceSection(markdown: string): string {
-  const lines = markdown.split("\n");
-  const sourceIndex = lines.findIndex((line) =>
-    /^#{1,3}\s*(来源|参考来源|引用|references?)\s*[:：]?$/i.test(line.trim())
-  );
-  if (sourceIndex === -1) return markdown;
-  const hasLaterSection = lines
-    .slice(sourceIndex + 1)
-    .some((line) => /^#{1,3}\s+\S/.test(line.trim()));
-  return hasLaterSection ? markdown : lines.slice(0, sourceIndex).join("\n").trim();
-}
-
-function renderInlineWikiLinks(text: string): React.ReactNode {
-  const parts: React.ReactNode[] = [];
-  const pattern = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
-    }
-    const label = (match[2] || PathStem(match[1] || "")).trim();
-    parts.push(
-      <span
-        key={`${match.index}-${match[0]}`}
-        className="rounded border border-current/10 bg-background/60 px-1 py-0.5 text-xs text-muted-foreground"
-      >
-        {label}
-      </span>
-    );
-    lastIndex = pattern.lastIndex;
-  }
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
-  }
-  return parts.length ? parts : text;
-}
-
-function SourcePreview({ sources }: { sources: KnowledgeSource[] }) {
-  if (!sources.length) {
-    return <SourceChip title="暂无来源" muted />;
-  }
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <BookMarked className="h-3.5 w-3.5" />
-        {sources.length} 篇来源
-      </div>
-      <div className="flex flex-wrap gap-1.5">
-        {sources.slice(0, 4).map((source) => (
-          <SourceChip key={`${source.id}-${source.file_path}`} title={displaySourceTitle(source)} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function SourceRow({ source }: { source: KnowledgeSource }) {
-  return (
-    <div className="rounded-md border border-border bg-background p-3">
-      <p className="text-sm font-medium leading-5 text-foreground">{displaySourceTitle(source)}</p>
-      {source.summary ? (
-        <p className="mt-1 text-sm leading-6 text-muted-foreground">{source.summary}</p>
-      ) : null}
-      {source.file_path ? (
-        <p className="mt-2 break-words rounded border border-border bg-background px-2 py-1 text-xs leading-5 text-muted-foreground">
-          {knowledgeFileLink(source.file_path, displaySourceTitle(source))}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-function FilterSection({ children, title }: { children: React.ReactNode; title: string }) {
-  return (
-    <section>
-      <h3 className="mb-2 text-xs font-medium tracking-normal text-muted-foreground">
-        {title}
-      </h3>
-      <div className="space-y-1.5">{children}</div>
-    </section>
-  );
-}
-
-function FilterButton({
+function FilterTab({
   active,
-  count,
-  description,
-  icon,
   label,
   onClick,
 }: {
   active: boolean;
-  count: number;
-  description?: string;
-  icon?: React.ReactNode;
   label: string;
   onClick: () => void;
 }) {
@@ -1754,88 +1251,35 @@ function FilterButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20",
+        "rounded-lg px-3 py-1.5 text-xs transition",
         active
-          ? "border-primary/50 bg-primary/10 text-foreground"
-          : "border-transparent text-muted-foreground hover:border-border hover:bg-background/65 hover:text-foreground",
+          ? "bg-foreground font-medium text-background"
+          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
       )}
     >
-      {icon ? <span className="shrink-0">{icon}</span> : null}
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm">{label}</span>
-        {description ? <span className="block truncate text-xs text-muted-foreground">{description}</span> : null}
-      </span>
-      <span className="shrink-0 rounded-md border border-border bg-background/55 px-2 py-0.5 text-xs">
-        {count}
-      </span>
+      {label}
     </button>
   );
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+function EmptyGallery() {
   return (
-    <span className="inline-flex items-center justify-center rounded-md border border-border bg-background/60 px-3 py-2 text-sm text-muted-foreground">
-      {label} <span className="ml-1 font-medium text-foreground">{value}</span>
-    </span>
-  );
-}
-
-function SourceChip({ muted, title }: { muted?: boolean; title: unknown }) {
-  const label = displayValue(title) || "未命名来源";
-  return (
-    <span
-      className={cn(
-        "inline-flex max-w-full items-center rounded-md border px-2 py-0.5 text-[0.72rem] leading-5",
-        muted
-          ? "border-border bg-background/45 text-muted-foreground"
-          : "border-primary/20 bg-primary/10 text-foreground",
-      )}
-      title={label}
-    >
-      <span className="truncate">{label}</span>
-    </span>
-  );
-}
-
-function PathLine({ label, value }: { label: string; value?: string }) {
-  return (
-    <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-2">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="break-words text-foreground">{value || "暂无"}</span>
-    </div>
-  );
-}
-
-function LoadingBlock({ text }: { text: string }) {
-  return (
-    <div className="space-y-3 p-4" aria-busy="true" aria-live="polite">
-      <span className="sr-only">{text}</span>
-      <div className="h-4 w-32 animate-pulse rounded bg-muted" />
-      <div className="space-y-2">
-        <div className="h-20 animate-pulse rounded-md bg-muted/70" />
-        <div className="h-20 animate-pulse rounded-md bg-muted/55" />
-        <div className="h-20 animate-pulse rounded-md bg-muted/45" />
-      </div>
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="flex min-h-[360px] items-center justify-center">
-      <div className="max-w-md rounded-lg border border-dashed border-border bg-background/55 px-6 py-8 text-center">
-        <Layers3 className="mx-auto h-8 w-8 text-muted-foreground" />
-        <h2 className="mt-3 text-base font-semibold text-foreground">还没有沉淀下来的知识卡片</h2>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          在「📄 资料伴读」里划选重点、让 AI 伴读解惑，再一键提炼卡片；被确认过的洞察、方法、新知与避坑经验会沉淀到这里。
+    <div className="flex min-h-[380px] items-center justify-center">
+      <div className="max-w-sm text-center">
+        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl border border-border/70 bg-muted/40 text-muted-foreground">
+          <Layers3 className="h-5 w-5" />
+        </div>
+        <h2 className="mt-4 text-base font-semibold text-foreground">你的卡片库还是空的</h2>
+        <p className="mt-1.5 text-xs leading-6 text-muted-foreground">
+          在「资料伴读」中读完文章后点击顶部「提炼卡片」，提炼出的自然人话卡片会整齐摊开在这里，方便随时翻阅与挑选拼装。
         </p>
-        <div className="mt-4 flex justify-center">
+        <div className="mt-5 flex justify-center">
           <Link
             to="/knowledge-library"
-            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground transition hover:bg-muted"
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-foreground px-4 text-xs font-medium text-background transition hover:opacity-90"
           >
-            <BookOpenText className="h-4 w-4" />
-            去新建或导入材料
+            <BookOpenText className="h-3.5 w-3.5" />
+            去资料伴读提炼第一张卡
           </Link>
         </div>
       </div>
@@ -1843,161 +1287,74 @@ function EmptyState() {
   );
 }
 
-function GraphEmptyState() {
+function normalizeKind(kind?: string): KnowledgeCardKind {
+  return KIND_ORDER.includes(kind as KnowledgeCardKind) ? (kind as KnowledgeCardKind) : "viewpoint";
+}
+
+function cardBodyMarkdown(card: KnowledgeCard): string {
   return (
-    <div className="flex min-h-[360px] items-center justify-center rounded-md border border-dashed border-border bg-background/45 px-6 py-8 text-center">
-      <div className="max-w-md">
-        <Network className="mx-auto h-8 w-8 text-muted-foreground" />
-        <h2 className="mt-3 text-base font-semibold text-foreground">暂无知识图谱</h2>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          空库或还没有足够关系时不会生成图谱。先新建或导入材料，保存后再刷新图谱。
-        </p>
-        <div className="mt-4 flex justify-center">
-          <Link
-            to="/knowledge-library"
-            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground transition hover:bg-muted"
-          >
-            <BookOpenText className="h-4 w-4" />
-            去新建或导入材料
-          </Link>
-        </div>
-      </div>
-    </div>
-  );
+    card.markdown ||
+    card.content_markdown ||
+    card.payload?.content_markdown ||
+    ""
+  ).trim();
 }
 
-function EmptyBlock({ text }: { text: string }) {
+function draftBodyMarkdown(draft: KnowledgeGardenDraftItem): string {
   return (
-    <div className="m-4 rounded-md border border-dashed border-border bg-background/45 px-4 py-8 text-center text-sm leading-6 text-muted-foreground">
-      {text}
-    </div>
-  );
+    draft.markdown ||
+    draft.payload?.content_markdown ||
+    ""
+  ).trim();
 }
 
-function EmptyInline({ text }: { text: string }) {
-  return (
-    <p className="mt-2 rounded-md border border-dashed border-border bg-background/45 px-3 py-4 text-sm leading-6 text-muted-foreground">
-      {text}
-    </p>
-  );
-}
-
-function normalizedArguments(items?: Array<Record<string, unknown> | string>): string[] {
-  return (items ?? [])
-    .map((item) => {
-      if (typeof item === "string") return item.trim();
-      const claim = displayValue(item.claim).trim();
-      const evidence = displayValue(item.evidence).trim();
-      const note = displayValue(item.note).trim();
-      return [claim, evidence, note].filter(Boolean).join("：");
-    })
-    .filter(Boolean);
-}
-
-function cardTopicOutputPath(card: KnowledgeCard): string {
-  const prompt = `请结合我的知识卡片《${card.title}》（专题：${card.source_theme || "核心认知"}）以及资料库中的相关资料，帮我梳理一份结构化的思考与输出框架。`;
-  return `/knowledge-chat?prompt=${encodeURIComponent(prompt)}`;
-}
-
-function cardToPlainText(card: KnowledgeCard): string {
-  if (card.payload) {
-    const payload = card.payload;
-    const judgments = payload.core_judgments ?? [];
-    const lines = [
-      `# ${payload.title || card.title}`,
-      "",
-      payload.claim,
-      "",
-      "## 什么时候用",
-      ...(payload.when_to_use ?? []).map((item) => `- ${item}`),
-      "",
-      "## 核心判断",
-      ...judgments.map((judgment) => `- ${judgment.statement}`),
-      "",
-      "## 为什么成立",
-      ...judgments.flatMap((judgment) => [
-        `- ${judgment.statement}`,
-        judgment.reasoning ? `  - ${judgment.reasoning}` : "",
-        ...(judgment.support ?? []).map((support) => `  - ${support.summary}`),
-      ]),
-      "",
-      "## 边界与反例",
-      ...(payload.boundaries ?? []).map((item) => `- ${item}`),
-      "",
-      "## 行动启发",
-      ...(payload.action_items ?? []).map((item) => `- ${item}`),
-      "",
-      "## 来源",
-      ...card.sources.map((source) => `- ${displaySourceTitle(source)}`),
-    ];
-    return lines.filter(Boolean).join("\n").trim();
+function stripRedundantHeader(markdown: string, title: string, claim: string): string {
+  const lines = markdown.trim().split("\n");
+  let idx = 0;
+  while (idx < lines.length && !lines[idx].trim()) idx += 1;
+  if (idx < lines.length && lines[idx].trim().startsWith("# ")) {
+    const heading = lines[idx].trim().replace(/^#\s+/, "").trim();
+    if (!title || heading === title.trim()) {
+      idx += 1;
+    }
   }
-
-  const lines = [
-    `# ${card.title}`,
-    "",
-    card.summary,
-    "",
-    ...(card.markdown ? [card.markdown] : normalizedArguments(card.core_arguments).map((item) => `- ${item}`)),
-    "",
-    "## 来源",
-    ...card.sources.map((source) => `- ${displaySourceTitle(source)}`),
-  ];
-  return lines.filter((line) => line !== undefined).join("\n").trim();
+  while (idx < lines.length && !lines[idx].trim()) idx += 1;
+  if (idx < lines.length && lines[idx].trim().startsWith("> ")) {
+    const quote = lines[idx].trim().replace(/^>\s+/, "").trim();
+    if (claim && quote === claim.trim()) {
+      idx += 1;
+    }
+  }
+  return lines.slice(idx).join("\n").trim();
 }
 
-function confidenceLabel(confidence?: string): string {
-  if (confidence === "high") return "高";
-  if (confidence === "medium") return "中";
-  if (confidence === "low") return "低";
-  return confidence || "未标注";
-}
-
-function sourceLabel(sources: KnowledgeSource[], sourceId: string): string {
-  const source = sources.find((item) => item.id === sourceId);
-  return source ? displaySourceTitle(source) : sourceId;
-}
-
-function knowledgeFileLink(filePath: string, title: string): string {
-  const stem = filePath.replace(/\.md$/, "");
-  return `[[${stem}|${title}]]`;
-}
-
-function gardenDraftKindLabel(kind: string): string {
-  return KIND_META[kind as KnowledgeCardKind]?.label || kind || "未分类";
+function extractHighlightAnchors(markdown: string): string[] {
+  if (!markdown) return [];
+  const anchors: string[] = [];
+  for (const rawLine of markdown.split("\n")) {
+    const line = rawLine.trim();
+    const match = line.match(/^(?:[-*+]|\d+\.)\s+\*\*([^*]{2,16})\*\*/);
+    if (match?.[1]) {
+      const label = match[1].replace(/[：:]+$/, "").trim();
+      if (label && !anchors.includes(label)) {
+        anchors.push(label);
+      }
+      if (anchors.length >= 3) break;
+    }
+  }
+  return anchors;
 }
 
 function themeTitle(themePath: string): string {
-  return PathStem(themePath).replace(/-/g, " ");
-}
-
-function PathStem(path: string): string {
-  const file = path.split("/").pop() || path;
-  return file.replace(/\.md$/, "");
+  const file = themePath.split("/").pop() || themePath;
+  return file.replace(/\.md$/, "").replace(/-/g, " ");
 }
 
 function displaySourceTitle(source: KnowledgeSource): string {
   const title = (source.title || "").trim();
   if (!title || title === source.id) {
-    return source.file_path ? PathStem(source.file_path) : "未找到来源材料";
+    const file = (source.file_path || "").split("/").pop() || "";
+    return file ? file.replace(/\.md$/, "") : "未命名来源";
   }
   return title;
-}
-
-function displayValue(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (Array.isArray(value)) return value.map(displayValue).filter(Boolean).join("、");
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return String(
-      record.content
-        ?? record.title
-        ?? record.claim
-        ?? record.name
-        ?? JSON.stringify(record),
-    );
-  }
-  return String(value);
 }

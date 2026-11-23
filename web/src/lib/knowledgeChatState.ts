@@ -13,6 +13,7 @@ export interface KnowledgeMessage {
   sourceHints?: KnowledgeSourceHint[];
   sourceRunId?: string;
   searchBackend?: string;
+  reasoning?: string;
 }
 
 export interface KnowledgeSourceHint {
@@ -50,6 +51,9 @@ export interface KnowledgeChatState {
   currentToolName: string | null;
   turnIndex: number;
   toolSearchBackend: string | null;
+  turnStartedAt: number | null;
+  liveThinking: string;
+  liveStatusText: string;
 }
 
 export type KnowledgeChatAction =
@@ -59,12 +63,15 @@ export type KnowledgeChatAction =
   | { type: "interrupt_requested" }
   | { type: "message_start"; id: string; createdAt: number }
   | { type: "message_delta"; text: string }
+  | { type: "thinking_delta"; text: string; replace?: boolean }
+  | { type: "status_update"; text: string }
   | {
       type: "message_complete";
       id: string;
       text: string;
       createdAt: number;
       warning?: string;
+      reasoning?: string;
     }
   | { type: "tool_start"; toolId: string; name: string; context?: string }
   | { type: "tool_progress"; name?: string; toolId?: string; preview: string; stage?: string; status?: string }
@@ -112,6 +119,9 @@ export const initialKnowledgeChatState: KnowledgeChatState = {
   currentToolName: null,
   turnIndex: 0,
   toolSearchBackend: null,
+  turnStartedAt: null,
+  liveThinking: "",
+  liveStatusText: "",
 };
 
 export function knowledgeChatReducer(
@@ -137,6 +147,9 @@ export function knowledgeChatReducer(
         toolAnswerText: "",
         toolAnswerRunId: undefined,
         toolSearchBackend: null,
+        turnStartedAt: action.createdAt,
+        liveThinking: "",
+        liveStatusText: "",
         turnIndex: state.turnIndex + 1,
         messages: [
           ...state.messages,
@@ -185,6 +198,18 @@ export function knowledgeChatReducer(
       };
     }
 
+    case "thinking_delta":
+      return {
+        ...state,
+        liveThinking: action.replace ? action.text : state.liveThinking + action.text,
+      };
+
+    case "status_update":
+      return {
+        ...state,
+        liveStatusText: action.text,
+      };
+
     case "message_complete": {
       const toolSummaries = state.tools
         .filter((tool) => tool.turnIndex === state.turnIndex)
@@ -197,6 +222,7 @@ export function knowledgeChatReducer(
         state.toolSourceHints,
         state.toolCandidateSourceHints,
       );
+      const finalReasoning = (action.reasoning || state.liveThinking || "").trim() || undefined;
       const message: KnowledgeMessage = {
         id: action.id,
         role: "assistant",
@@ -207,7 +233,31 @@ export function knowledgeChatReducer(
         sourceHints: messageSourceHints,
         sourceRunId: state.toolAnswerText ? state.toolAnswerRunId : undefined,
         searchBackend: state.toolSearchBackend || undefined,
+        reasoning: finalReasoning,
       };
+
+      const existingLast = state.messages[state.messages.length - 1];
+      const isDuplicateOfLast =
+        Boolean(existingLast) &&
+        existingLast.role === "assistant" &&
+        Boolean(finalText.trim()) &&
+        existingLast.text.trim() === finalText.trim();
+      const nextMessages = isDuplicateOfLast
+        ? [
+            ...state.messages.slice(0, -1),
+            {
+              ...existingLast,
+              status: "complete" as const,
+              warning: existingLast.warning || message.warning,
+              sourceHints: existingLast.sourceHints?.length
+                ? existingLast.sourceHints
+                : message.sourceHints,
+              sourceRunId: existingLast.sourceRunId || message.sourceRunId,
+              searchBackend: existingLast.searchBackend || message.searchBackend,
+              reasoning: existingLast.reasoning || message.reasoning,
+            },
+          ]
+        : [...state.messages, message];
 
       return {
         ...state,
@@ -215,12 +265,15 @@ export function knowledgeChatReducer(
         interruptRequested: false,
         currentToolName: null,
         draftAssistant: null,
-        messages: [...state.messages, message],
+        messages: nextMessages,
         sourceHints: messageSourceHints,
         toolSourceHints: [],
         toolCandidateSourceHints: [],
         toolAnswerText: "",
         toolAnswerRunId: undefined,
+        turnStartedAt: null,
+        liveThinking: "",
+        liveStatusText: "",
       };
     }
 
@@ -345,6 +398,9 @@ export function knowledgeChatReducer(
         toolAnswerText: "",
         toolAnswerRunId: undefined,
         toolSearchBackend: null,
+        turnStartedAt: null,
+        liveThinking: "",
+        liveStatusText: "",
       };
     }
 
@@ -364,10 +420,22 @@ export function knowledgeChatReducer(
         tools: [],
         currentToolName: null,
         turnIndex: 0,
+        turnStartedAt: null,
+        liveThinking: "",
+        liveStatusText: "",
       };
 
     case "error":
-      return { ...state, error: action.message, running: false, interruptRequested: false, currentToolName: null };
+      return {
+        ...state,
+        error: action.message,
+        running: false,
+        interruptRequested: false,
+        currentToolName: null,
+        turnStartedAt: null,
+        liveThinking: "",
+        liveStatusText: "",
+      };
 
     case "reset_error":
       return { ...state, error: null };

@@ -2042,6 +2042,9 @@ def _on_tool_progress(
     if event_type == "tool.started" and name:
         _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
         return
+    if event_type == "research.answer_delta" and preview:
+        _emit("message.delta", sid, {"text": str(preview)})
+        return
     if event_type == "research.progress":
         payload = {"name": name or "research_with_web", "preview": preview or ""}
         for key in (
@@ -3771,7 +3774,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             approval_token = set_current_session_key(session["session_key"])
             session_tokens = _set_session_context(session["session_key"])
             cols = session.get("cols", 80)
-            streamer = make_stream_renderer(cols)
+            is_web_transport = bool(getattr(session.get("transport"), "is_web", False))
+            streamer = None if is_web_transport else make_stream_renderer(cols)
             prompt = text
 
             if isinstance(prompt, str) and "@" in prompt:
@@ -3941,9 +3945,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 payload["reasoning"] = last_reasoning
             if status_note:
                 payload["warning"] = status_note
-            rendered = render_message(raw, cols)
-            if rendered:
-                payload["rendered"] = rendered
+            if not is_web_transport:
+                rendered = render_message(raw, cols)
+                if rendered:
+                    payload["rendered"] = rendered
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────

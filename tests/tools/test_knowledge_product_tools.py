@@ -50,3 +50,43 @@ def test_dashboard_exposes_capture_review_workbench_route():
     assert '"/capture-review": KnowledgeChatPage' in app_text
     assert 'normalizedPath === "/capture-review"' in app_text
     assert '"/capture-review": "Capture Review"' in title_text
+
+
+def test_start_reading_session_envelope_adapter_instructs_reading_extracted_text():
+    import json
+    from agent.hermes_custom_envelope_adapter import agent_result_envelope_content_for_model
+
+    envelope = {
+        "status": "success",
+        "agent": "reading",
+        "intent": "start_reading_session",
+        "chat_preview": "已进入阅读讨论：《测试文章》。",
+        "durable_artifacts": [],
+        "source_map": [],
+        "next_actions": [],
+        "warnings": [],
+        "errors": [],
+        "meta": {
+            "reading_session_id": "rs_1",
+            "source_title": "测试文章",
+            "extracted_ok": True,
+            "extracted_text": "这是正文内容。",
+        },
+    }
+    adapted = agent_result_envelope_content_for_model(json.dumps(envelope, ensure_ascii=False))
+    assert adapted is not None
+    assert "Do NOT echo USER_VISIBLE_REPLY verbatim" in adapted
+    assert "meta.extracted_text" in adapted
+
+
+def test_weixin_toolset_includes_research_with_web():
+    from hermes_cli.tools_config import _get_platform_tools
+    from toolsets import resolve_toolset
+
+    assert "research_with_web" in resolve_toolset("hermes-weixin")
+    weixin_toolsets = _get_platform_tools({}, "weixin")
+    assert "knowledge_web_research" in weixin_toolsets
+    resolved = set()
+    for ts in weixin_toolsets:
+        resolved.update(resolve_toolset(ts))
+    assert "research_with_web" in resolved

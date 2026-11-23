@@ -45,10 +45,10 @@ export function KnowledgeAnswerView({
         block.supplement ? (
           <div
             key={`supplement-${index}`}
-            className="my-3 rounded-lg border border-amber-300/60 bg-amber-50/60 px-3 py-2 dark:border-amber-500/30 dark:bg-amber-950/20"
+            className="my-3.5 rounded-xl bg-amber-50/55 px-4 py-3 dark:bg-amber-950/20"
           >
-            <div className="mb-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
-              💡 延伸补充（模型通识）
+            <div className="mb-1.5 text-[11.5px] font-medium text-amber-800/85 dark:text-amber-300">
+              延伸补充 · 模型通识
             </div>
             <Markdown content={block.text} sources={citationSources} streaming={streaming} />
           </div>

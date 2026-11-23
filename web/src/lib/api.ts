@@ -42,14 +42,18 @@ function setSessionHeader(headers: Headers, token: string): void {
   }
 }
 
-export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+function fetchWithSession(url: string, init?: RequestInit): Promise<Response> {
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, { ...init, headers });
+  return fetch(`${BASE}${url}`, { ...init, headers });
+}
+
+export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetchWithSession(url, init);
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status}: ${text}`);
@@ -102,6 +106,27 @@ export class KnowledgeSelectionChatStreamError extends Error {
     this.name = "KnowledgeSelectionChatStreamError";
     this.requestAccepted = requestAccepted;
   }
+}
+
+/**
+ * Raised when a saved capture note changed after the editor loaded it. The
+ * service rejects the write instead of overwriting another tab's revision.
+ */
+export class KnowledgeCaptureRevisionConflictError extends Error {
+  readonly code = "capture_revision_conflict";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "KnowledgeCaptureRevisionConflictError";
+  }
+}
+
+function isCaptureRevisionConflictDetail(detail: unknown): detail is { message?: string } {
+  return Boolean(
+    detail
+    && typeof detail === "object"
+    && (detail as Record<string, unknown>).code === "capture_revision_conflict",
+  );
 }
 
 async function getSessionToken(): Promise<string> {
@@ -656,15 +681,32 @@ export const api = {
       `/api/knowledge/capture-drafts/${encodeURIComponent(draftId)}`,
       { method: "DELETE" },
     ),
-  updateKnowledgeCapture: (captureId: string, body: KnowledgeCaptureUpdateRequest) =>
-    fetchJSON<Record<string, unknown>>(
-      `/api/knowledge/captures/${encodeURIComponent(captureId)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    ),
+  updateKnowledgeCapture: async (captureId: string, body: KnowledgeCaptureUpdateRequest) => {
+    const res = await fetchWithSession(`/api/knowledge/captures/${encodeURIComponent(captureId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      if (res.status === 409) {
+        let detail: unknown;
+        try {
+          detail = (JSON.parse(text) as { detail?: unknown }).detail;
+        } catch {
+          detail = null;
+        }
+        if (isCaptureRevisionConflictDetail(detail)) {
+          const message = typeof detail.message === "string" ? detail.message.trim() : "";
+          throw new KnowledgeCaptureRevisionConflictError(
+            message || "文件已在其他位置更新，保存被拒绝。",
+          );
+        }
+      }
+      throw new Error(`${res.status}: ${text}`);
+    }
+    return res.json() as Promise<Record<string, unknown>>;
+  },
   createKnowledgeAnswerDraft: (body: KnowledgeAnswerDraftRequest, options?: AiOperationOptions) =>
     fetchJSON<{
       ok: boolean;
@@ -699,6 +741,34 @@ export const api = {
     fetchJSON<KnowledgeGardenDraftActionResult>(
       `/api/knowledge/garden-drafts/${encodeURIComponent(draftId)}/commit`,
       withAiOperation({ method: "POST" }, options),
+    ),
+  updateKnowledgeGardenDraft: (
+    draftId: string,
+    body: KnowledgeGardenDraftUpdateRequest,
+  ) =>
+    fetchJSON<{ ok: boolean; item: KnowledgeGardenDraftItem }>(
+      `/api/knowledge/garden-drafts/${encodeURIComponent(draftId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  reviseKnowledgeGardenDraft: (
+    draftId: string,
+    instruction: string,
+    options?: AiOperationOptions,
+  ) =>
+    fetchJSON<KnowledgeGardenDraftActionResult & { item?: KnowledgeGardenDraftItem }>(
+      `/api/knowledge/garden-drafts/${encodeURIComponent(draftId)}/revise`,
+      withAiOperation(
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ instruction }),
+        },
+        options,
+      ),
     ),
   discardKnowledgeGardenDraft: (draftId: string) =>
     fetchJSON<KnowledgeGardenDraftActionResult>(
@@ -741,6 +811,18 @@ export const api = {
   getKnowledgeCard: (cardId: string) =>
     fetchJSON<KnowledgeCardResponse>(
       `/api/knowledge/cards/${encodeURIComponent(cardId)}`,
+    ),
+  updateKnowledgeCard: (
+    cardId: string,
+    body: KnowledgeCardUpdateRequest,
+  ) =>
+    fetchJSON<{ ok: boolean; card: KnowledgeCard }>(
+      `/api/knowledge/cards/${encodeURIComponent(cardId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
     ),
   deleteKnowledgeCard: (cardId: string) =>
     fetchJSON<Record<string, unknown>>(
@@ -912,6 +994,8 @@ export interface KnowledgeLibraryItem {
   title_source: string;
   garden_card_count: number;
   committed_capture_id?: string;
+  /** Optimistic-concurrency snapshot for editing a saved capture note. */
+  note_revision?: string;
 }
 
 export interface KnowledgeLibraryItemsResponse {
@@ -1246,6 +1330,8 @@ export interface KnowledgeCaptureUpdateRequest {
   body?: string;
   title?: string;
   folder_path?: string | null;
+  /** Revision of the body the editor opened; the service rejects a stale write. */
+  expected_revision?: string;
 }
 
 export interface KnowledgeCaptureRevisionResponse {
@@ -1326,6 +1412,25 @@ export interface KnowledgeGardenDraftResponse {
   warnings?: string[];
 }
 
+export interface KnowledgeGardenDraftUpdateRequest {
+  title?: string;
+  card_kind?: KnowledgeCardKind;
+  claim?: string;
+  markdown?: string;
+  when_to_use?: string[];
+  core_judgments?: KnowledgeCardJudgment[];
+  boundaries?: string[];
+  action_items?: string[];
+}
+
+export interface KnowledgeCardUpdateRequest {
+  title?: string;
+  card_kind?: KnowledgeCardKind;
+  claim?: string;
+  markdown?: string;
+  source_theme?: string;
+}
+
 export interface KnowledgeGardenDraftItem {
   id: string;
   title: string;
@@ -1333,6 +1438,8 @@ export interface KnowledgeGardenDraftItem {
   card_kind: string;
   status: string;
   markdown: string;
+  payload?: KnowledgeCardPayload;
+  payload_json?: string;
   capture_ids: string[] | string;
   created_at: string;
   updated_at: string;
@@ -1409,6 +1516,7 @@ export interface KnowledgeCard {
   key_materials?: string[];
   my_view?: string;
   markdown?: string;
+  content_markdown?: string;
 }
 
 export interface KnowledgeCardPayload {
@@ -1416,6 +1524,7 @@ export interface KnowledgeCardPayload {
   title: string;
   card_kind: KnowledgeCardKind;
   claim: string;
+  content_markdown?: string;
   confidence?: "low" | "medium" | "high" | string;
   when_to_use: string[];
   core_judgments: KnowledgeCardJudgment[];

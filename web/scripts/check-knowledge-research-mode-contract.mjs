@@ -5,6 +5,7 @@ const apiPath = fileURLToPath(new URL("../src/lib/api.ts", import.meta.url));
 const chatPagePath = fileURLToPath(new URL("../src/pages/KnowledgeChatPage.tsx", import.meta.url));
 const gatewayChatPath = fileURLToPath(new URL("../src/pages/knowledge-chat/GatewayChat.tsx", import.meta.url));
 const libraryPagePath = fileURLToPath(new URL("../src/pages/KnowledgeLibraryPage.tsx", import.meta.url));
+const articleAiPanelPath = fileURLToPath(new URL("../src/pages/knowledge-library/ArticleAIPanel.tsx", import.meta.url));
 
 function assert(condition, message) {
   if (!condition) {
@@ -23,7 +24,8 @@ function blockBetween(source, startMarker, endMarker) {
 const api = readFileSync(apiPath, "utf8");
 const chatPage = readFileSync(chatPagePath, "utf8");
 const gatewayChat = readFileSync(gatewayChatPath, "utf8");
-const libraryPage = readFileSync(libraryPagePath, "utf8");
+const libraryPage = readFileSync(libraryPagePath, "utf8")
+  + "\n" + readFileSync(articleAiPanelPath, "utf8");
 
 // 1. API contract: web_only stays a valid persisted/response mode.
 const apiMode = blockBetween(api, "export type KnowledgeResearchMode =", ";");
@@ -48,7 +50,7 @@ assert(!/\bweb_only\s*:/.test(toolsets), "KNOWLEDGE_TOOLSETS_BY_MODE must not de
 assert(!gatewayChat.includes("web_only"), "GatewayChat must not reference web_only");
 
 // 5. Article companion control: only current_article_only <> local_web.
-const researchModeControl = blockBetween(libraryPage, "function ResearchModeControl(", "\nfunction ");
+const researchModeControl = blockBetween(libraryPage, "function ResearchModeControl(", "\n}\n");
 assert(
   !researchModeControl.includes("web_only"),
   "ResearchModeControl must not expose web_only",

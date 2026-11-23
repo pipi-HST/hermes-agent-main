@@ -205,3 +205,31 @@ def test_personal_assistant_does_not_get_research_tool_by_default():
     discover_builtin_tools()
 
     assert "research_with_web" not in resolve_toolset("personal-assistant")
+
+
+def test_research_with_web_tool_forwards_weixin_channel(monkeypatch):
+    from tools import research_with_web_tool
+
+    called = {}
+
+    async def fake_entry(**kwargs):
+        called.update(kwargs)
+        return {
+            "status": "success",
+            "agent": "research",
+            "intent": "web_assist_answer",
+            "chat_preview": "微信托管极速回答 [W1]",
+            "durable_artifacts": [],
+            "source_map": [],
+            "next_actions": [],
+            "warnings": [],
+            "errors": [],
+            "meta": {"path": "deepseek_hosted_web"},
+        }
+
+    monkeypatch.setenv("HERMES_PLATFORM", "weixin")
+    monkeypatch.setattr(research_with_web_tool, "_async_research_entry", fake_entry)
+
+    payload = json.loads(research_with_web_tool._handler({"query": "2026阿里AI资本开支"}))
+    assert payload["status"] == "success"
+    assert called.get("channel") == "weixin"

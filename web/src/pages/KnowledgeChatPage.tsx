@@ -66,7 +66,7 @@ import {
   type EditableCaptureStatus,
 } from "@/pages/knowledge-chat/EditableCaptureWorkbench";
 import { KnowledgeInspector } from "@/pages/knowledge-chat/Inspector";
-import { GatewayChat } from "@/pages/knowledge-chat/GatewayChat";
+import { GatewayChat, type AttachedTopicCard } from "@/pages/knowledge-chat/GatewayChat";
 import { resolveKnowledgeDraftReference } from "@/pages/knowledge-chat/draftRouting.mjs";
 import {
   HIDDEN_DRAFT_STATUSES,
@@ -90,10 +90,20 @@ interface MessageCompletePayload {
   text?: string;
   status?: string;
   warning?: string;
+  reasoning?: string;
 }
 
 interface MessageDeltaPayload {
   text?: string;
+}
+
+interface StatusUpdatePayload {
+  kind?: string;
+  text?: string;
+}
+
+interface ToolGeneratingPayload {
+  name?: string;
 }
 
 interface ToolStartPayload {
@@ -206,7 +216,8 @@ const CONNECTION_LABEL: Record<ConnectionState, string> = {
 export default function KnowledgeChatPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname } = location;
   const isCaptureReviewRoute = (pathname.replace(/\/$/, "") || "/") === "/capture-review";
   const [version, setVersion] = useState(0);
   const gw = useMemo(() => acquireGatewayClient(), []);
@@ -220,6 +231,7 @@ export default function KnowledgeChatPage() {
   const reconcileInFlightRef = useRef(false);
   const reconcileUntilRef = useRef(0);
   const [input, setInput] = useState("");
+  const [attachedCards, setAttachedCards] = useState<AttachedTopicCard[]>([]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const messageCounter = useRef(0);
@@ -602,16 +614,19 @@ export default function KnowledgeChatPage() {
     void loadDraftDetail(selectedDraftId);
   }, [loadDraftDetail, selectedDraftId]);
 
+  const lastFocusRefreshRef = useRef(0);
   useEffect(() => {
     const refreshWorkbench = () => {
       if (document.visibilityState === "hidden") return;
-      void loadDrafts();
-      void loadAnswerDrafts();
-      void loadLibraryFolders();
-      void loadSessions();
       if (stateRef.current.running || stateRef.current.draftAssistant) {
         scheduleHistoryReconcile("focus");
       }
+      const now = Date.now();
+      if (now - lastFocusRefreshRef.current < 30_000) return;
+      lastFocusRefreshRef.current = now;
+      void loadAnswerDrafts();
+      void loadLibraryFolders();
+      void loadSessions();
       if (selectedDraftId) void loadDraftDetail(selectedDraftId);
     };
     window.addEventListener("focus", refreshWorkbench);
@@ -620,18 +635,65 @@ export default function KnowledgeChatPage() {
       window.removeEventListener("focus", refreshWorkbench);
       document.removeEventListener("visibilitychange", refreshWorkbench);
     };
-  }, [loadAnswerDrafts, loadDraftDetail, loadDrafts, loadLibraryFolders, loadSessions, scheduleHistoryReconcile, selectedDraftId]);
+  }, [loadAnswerDrafts, loadDraftDetail, loadLibraryFolders, loadSessions, scheduleHistoryReconcile, selectedDraftId]);
 
   useEffect(() => {
     if (version > 0) gw.close();
+    let cancelled = false;
+    let pendingDelta = "";
+    let pendingThinking = "";
+    let deltaRafId: number | null = null;
+    let reconnectTimer: number | null = null;
+
+    const flushPendingDelta = () => {
+      if (deltaRafId !== null) {
+        window.cancelAnimationFrame(deltaRafId);
+        deltaRafId = null;
+      }
+      if (pendingThinking) {
+        const thoughtChunk = pendingThinking;
+        pendingThinking = "";
+        dispatch({ type: "thinking_delta", text: thoughtChunk });
+      }
+      if (pendingDelta) {
+        const chunk = pendingDelta;
+        pendingDelta = "";
+        dispatch({ type: "message_delta", text: chunk });
+      }
+    };
+
+    const scheduleFlush = () => {
+      if (deltaRafId === null) {
+        deltaRafId = window.requestAnimationFrame(flushPendingDelta);
+      }
+    };
+
     const offState = gw.onState((connection) => {
       dispatch({ type: "connection", connection });
-      if (connection === "open" && (stateRef.current.running || stateRef.current.draftAssistant)) {
-        scheduleHistoryReconcile("gateway-open");
+      if (connection === "open") {
+        if (reconnectTimer !== null) {
+          window.clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        if (stateRef.current.running || stateRef.current.draftAssistant) {
+          scheduleHistoryReconcile("gateway-open");
+        }
+      } else if (
+        connection === "closed" &&
+        !cancelled &&
+        reconnectTimer === null &&
+        (stateRef.current.running || stateRef.current.draftAssistant)
+      ) {
+        // Recover mid-stream WebSocket drops automatically instead of freezing on a partial draft.
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          if (!cancelled) setVersion((v) => v + 1);
+        }, 800);
       }
     });
 
     const offStart = gw.on("message.start", () => {
+      flushPendingDelta();
       dispatch({
         type: "message_start",
         id: nextId("assistant"),
@@ -642,11 +704,53 @@ export default function KnowledgeChatPage() {
     const offDelta = gw.on<MessageDeltaPayload>("message.delta", (ev) => {
       if (ev.payload?.text) {
         lastDeltaAtRef.current = Date.now();
-        dispatch({ type: "message_delta", text: ev.payload.text });
+        pendingDelta += ev.payload.text;
+        scheduleFlush();
+      }
+    });
+
+    const offThinkingDelta = gw.on<MessageDeltaPayload>("thinking.delta", (ev) => {
+      if (ev.payload?.text) {
+        lastDeltaAtRef.current = Date.now();
+        pendingThinking += ev.payload.text;
+        scheduleFlush();
+      }
+    });
+
+    const offReasoningDelta = gw.on<MessageDeltaPayload>("reasoning.delta", (ev) => {
+      if (ev.payload?.text) {
+        lastDeltaAtRef.current = Date.now();
+        pendingThinking += ev.payload.text;
+        scheduleFlush();
+      }
+    });
+
+    const offReasoningAvailable = gw.on<MessageDeltaPayload>("reasoning.available", (ev) => {
+      if (ev.payload?.text) {
+        lastDeltaAtRef.current = Date.now();
+        flushPendingDelta();
+        dispatch({ type: "thinking_delta", text: ev.payload.text, replace: true });
+      }
+    });
+
+    const offStatusUpdate = gw.on<StatusUpdatePayload>("status.update", (ev) => {
+      const text = (ev.payload?.text ?? "").trim();
+      if (text) {
+        lastDeltaAtRef.current = Date.now();
+        dispatch({ type: "status_update", text });
+      }
+    });
+
+    const offToolGenerating = gw.on<ToolGeneratingPayload>("tool.generating", (ev) => {
+      const name = (ev.payload?.name ?? "").trim();
+      if (name) {
+        lastDeltaAtRef.current = Date.now();
+        dispatch({ type: "status_update", text: `正在准备调用工具：${name}` });
       }
     });
 
     const offComplete = gw.on<MessageCompletePayload>("message.complete", (ev) => {
+      flushPendingDelta();
       const text = ev.payload?.text ?? "";
       dispatch({
         type: "message_complete",
@@ -654,6 +758,7 @@ export default function KnowledgeChatPage() {
         text,
         createdAt: Date.now(),
         warning: ev.payload?.warning,
+        reasoning: ev.payload?.reasoning,
       });
       void loadDrafts();
       void loadAnswerDrafts();
@@ -662,6 +767,7 @@ export default function KnowledgeChatPage() {
     });
 
     const offToolStart = gw.on<ToolStartPayload>("tool.start", (ev) => {
+      flushPendingDelta();
       const toolId = ev.payload?.tool_id;
       if (!toolId) return;
       dispatch({
@@ -675,6 +781,7 @@ export default function KnowledgeChatPage() {
     const offToolProgress = gw.on<ToolProgressPayload>("tool.progress", (ev) => {
       const preview = ev.payload?.preview;
       if (!preview) return;
+      lastDeltaAtRef.current = Date.now();
       dispatch({
         type: "tool_progress",
         toolId: ev.payload?.tool_id,
@@ -718,8 +825,6 @@ export default function KnowledgeChatPage() {
         });
       });
     });
-
-    let cancelled = false;
 
     gw.connect()
       .then(async () => {
@@ -768,9 +873,16 @@ export default function KnowledgeChatPage() {
 
     return () => {
       cancelled = true;
+      if (deltaRafId !== null) window.cancelAnimationFrame(deltaRafId);
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       offState();
       offStart();
       offDelta();
+      offThinkingDelta();
+      offReasoningDelta();
+      offReasoningAvailable();
+      offStatusUpdate();
+      offToolGenerating();
       offComplete();
       offToolStart();
       offToolProgress();
@@ -779,15 +891,26 @@ export default function KnowledgeChatPage() {
     };
   }, [gw, version, loadAnswerDrafts, loadDrafts, loadSessions, nextId, reconcileCurrentSession, scheduleHistoryReconcile]);
 
+  const hasDraftAssistant = Boolean(state.draftAssistant);
+
   useEffect(() => {
-    transcriptRef.current?.scrollTo({
-      top: transcriptRef.current.scrollHeight,
+    const el = transcriptRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (state.draftAssistant?.text) {
+      if (distanceFromBottom <= 200) {
+        el.scrollTop = el.scrollHeight;
+      }
+      return;
+    }
+    el.scrollTo({
+      top: el.scrollHeight,
       behavior: "smooth",
     });
   }, [state.messages, state.draftAssistant?.text]);
 
   useEffect(() => {
-    if (!state.sessionId || (!state.running && !state.draftAssistant)) return;
+    if (!state.sessionId || (!state.running && !hasDraftAssistant)) return;
     if (!reconcileUntilRef.current) {
       reconcileUntilRef.current = Date.now() + HISTORY_RECONCILE_MAX_MS;
     }
@@ -798,7 +921,19 @@ export default function KnowledgeChatPage() {
       void reconcileCurrentSession("idle-stream");
     }, HISTORY_RECONCILE_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [reconcileCurrentSession, state.draftAssistant, state.running, state.sessionId]);
+  }, [hasDraftAssistant, reconcileCurrentSession, state.running, state.sessionId]);
+
+  useEffect(() => {
+    const routeState = location.state as { attachedCards?: AttachedTopicCard[]; prompt?: string } | null;
+    if (Array.isArray(routeState?.attachedCards) && routeState.attachedCards.length > 0) {
+      setAttachedCards(routeState.attachedCards);
+      setMode("chat");
+      if (routeState.prompt && !input.trim()) {
+        setInput(routeState.prompt);
+      }
+      navigate(pathname, { replace: true, state: null });
+    }
+  }, [input, location.state, navigate, pathname, setMode]);
 
   useEffect(() => {
     if (hydratedPromptRef.current) return;
@@ -829,7 +964,7 @@ export default function KnowledgeChatPage() {
     Boolean(state.sessionId) &&
     !state.running &&
     !uploading &&
-    (input.trim().length > 0 || attachments.length > 0);
+    (input.trim().length > 0 || attachments.length > 0 || attachedCards.length > 0);
 
   const startReviewWrite = useCallback((kind: "capture" | "reading", draftId: string) => {
     if (reviewWriteInFlight.current || aiOperation) return false;
@@ -1185,24 +1320,50 @@ export default function KnowledgeChatPage() {
     return true;
   }, [aiOperation, commitDraftById, drafts, gw, loadSessions, nextId, selectedDraftId, state.sessionId]);
 
-  const submit = useCallback(async () => {
-    const text = input.trim();
-    if (!canSend || !state.sessionId) return;
+  const submit = useCallback(async (overrideText?: string, modeOverride?: KnowledgeChatResearchMode) => {
+    const text = (overrideText ?? input).trim();
+    const mode = modeOverride ?? researchMode;
+    const ready =
+      state.connection === "open" &&
+      Boolean(state.sessionId) &&
+      !state.running &&
+      !uploading &&
+      (text.length > 0 || attachments.length > 0 || attachedCards.length > 0);
+    if (!ready) return;
 
-    if (!attachments.length && (await handleDraftCommand(text))) {
+    if (!attachments.length && !attachedCards.length && (await handleDraftCommand(text))) {
       setInput("");
       return;
     }
 
     const selectedAttachments = attachments;
-    const visibleText = buildVisibleUserText(text, selectedAttachments);
-    const basePrompt = buildPromptText(text || "请处理我上传的附件。", selectedAttachments);
-    const finalText = withResearchModeInstruction(basePrompt, researchMode);
+    const selectedCards = attachedCards;
+    const cardContextBlock = selectedCards.length
+      ? [
+          "【参考知识卡片】",
+          ...selectedCards.map(
+            (card, idx) =>
+              `${idx + 1}. 《${card.title}》${card.theme ? `（${card.theme}）` : ""}${card.summary ? `：${card.summary}` : ""}`,
+          ),
+          "",
+        ].join("\n")
+      : "";
+    const effectiveUserText =
+      text ||
+      (selectedCards.length
+        ? "请结合以上知识卡片以及资料库中的相关资料，帮我梳理一份结构化的思考与输出框架。"
+        : "请处理我上传的附件。");
+    const visibleCardLine = selectedCards.length
+      ? `[挂载卡片：${selectedCards.map((c) => `《${c.title}》`).join("、")}]\n`
+      : "";
+    const visibleText = `${visibleCardLine}${buildVisibleUserText(effectiveUserText, selectedAttachments)}`;
+    const basePrompt = buildPromptText(`${cardContextBlock}${effectiveUserText}`, selectedAttachments);
+    const finalText = withResearchModeInstruction(basePrompt, mode);
 
     try {
       await gw.request("session.set_toolsets", {
         session_id: state.sessionId,
-        enabled_toolsets: knowledgeToolsetsForMode(researchMode),
+        enabled_toolsets: knowledgeToolsetsForMode(mode),
       });
       for (const attachment of selectedAttachments) {
         if (attachment.kind === "image") {
@@ -1230,6 +1391,7 @@ export default function KnowledgeChatPage() {
     reconcileUntilRef.current = Date.now() + HISTORY_RECONCILE_MAX_MS;
     setInput("");
     setAttachments([]);
+    setAttachedCards([]);
 
     gw.request(
       "prompt.submit",
@@ -1245,7 +1407,15 @@ export default function KnowledgeChatPage() {
           dispatch({ type: "error", message: error.message });
         }
       });
-  }, [attachments, canSend, gw, handleDraftCommand, input, nextId, reconcileCurrentSession, researchMode, scheduleHistoryReconcile, state.sessionId]);
+  }, [attachedCards, attachments, gw, handleDraftCommand, input, nextId, reconcileCurrentSession, researchMode, scheduleHistoryReconcile, state.connection, state.running, state.sessionId, uploading]);
+
+  const scanTopics = useCallback(
+    (text: string) => {
+      setResearchMode("theme_scan");
+      void submit(text, "theme_scan");
+    },
+    [submit],
+  );
 
   const stopGeneration = useCallback(() => {
     if (!state.sessionId || !state.running || state.interruptRequested) return;
@@ -1697,7 +1867,6 @@ export default function KnowledgeChatPage() {
   }, [answerDrafts, draftFilter, draftQuery]);
 
   const openCount = drafts.filter((draft) => OPEN_STATUSES.has(draft.status) && !isCommittedCaptureDraft(draft)).length;
-  const latestOpenDraft = drafts.find((draft) => OPEN_STATUSES.has(draft.status) && !isCommittedCaptureDraft(draft));
   const inspectorObjectRef = useMemo<InspectorObjectRef>(() => {
     if (mode === "answer_draft_review" && answerDraftDetail?.id) {
       return {
@@ -1895,64 +2064,62 @@ export default function KnowledgeChatPage() {
         : ""
     );
     if (openUrl) {
-      window.location.assign(openUrl);
+      if (openUrl.startsWith("/")) {
+        navigate(openUrl);
+      } else {
+        window.location.assign(openUrl);
+      }
     }
-  }, []);
+  }, [navigate]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 text-foreground">
-      <header className="flex min-h-[52px] shrink-0 items-center justify-between gap-3 rounded-lg border border-border bg-background px-4 py-1.5">
-        <div className="min-w-0">
-          <h1 className="min-w-0 truncate text-base font-semibold tracking-normal text-foreground">
-            专题洞察与输出专区 (Topics & Output Studio)
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 pb-3.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <h1 className="min-w-0 truncate text-xl font-semibold tracking-tight text-foreground">
+            专题输出
           </h1>
-          <p className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">
-            跨篇灵感发现 · RAG 知识合成输出 · 文稿沉淀：把散落的卡片与资料，合成属于你的专题成果。
-          </p>
+          {state.running && (
+            <StatusPill icon={Loader2} label={state.interruptRequested ? "正在停止" : "思考中"} active spin />
+          )}
         </div>
         <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs">
-            <StatusPill
-              icon={state.connection === "open" ? CheckCircle2 : Clock3}
-              label={CONNECTION_LABEL[state.connection]}
-              active={state.connection === "open"}
-            />
-            {state.running && (
-              <StatusPill icon={Loader2} label={state.interruptRequested ? "正在停止" : "思考中"} active spin />
-            )}
-            {latestOpenDraft && (
-              <button
-                type="button"
-                onClick={() => selectDraft(latestOpenDraft.id)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-primary/35 bg-primary/12 px-2.5 py-1 text-primary transition hover:bg-primary/18"
-              >
-                <FileText className="h-3.5 w-3.5" />
-                审阅待审草稿 {openCount}
-              </button>
+            {state.connection !== "open" && (
+              <StatusPill
+                icon={Clock3}
+                label={CONNECTION_LABEL[state.connection]}
+                active={false}
+              />
             )}
             <button
               type="button"
               onClick={() => setShowInspector((value) => !value)}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition",
+                "inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 transition",
                 showInspector
-                  ? "border-primary/35 bg-primary/12 text-primary"
-                  : "border-border bg-background/60 text-muted-foreground hover:text-foreground",
+                  ? "border-foreground/20 bg-muted/60 font-medium text-foreground"
+                  : "border-border/80 bg-white text-muted-foreground hover:border-foreground/25 hover:text-foreground dark:bg-card",
               )}
             >
               <FileText className="h-3.5 w-3.5" />
-              {showInspector ? "隐藏详情" : "详情"}
+              {showInspector ? "收起依据" : "参考依据"}
+              {inspectorSourceHints.length > 0 && (
+                <span className="text-[11px] text-muted-foreground">
+                  {inspectorSourceHints.length}
+                </span>
+              )}
             </button>
         </div>
       </header>
 
       {state.error && (
-        <div className="flex shrink-0 items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div className="flex shrink-0 items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3.5 py-2 text-xs text-destructive">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <span className="min-w-0 flex-1">{state.error}</span>
           <button
             type="button"
             onClick={reconnect}
-            className="inline-flex shrink-0 items-center gap-1 rounded border border-destructive/30 px-2 py-1 text-xs hover:bg-destructive/10"
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-destructive/30 px-2 py-0.5 text-xs hover:bg-destructive/10"
           >
             <RefreshCw className="h-3 w-3" />
             重连
@@ -1963,13 +2130,13 @@ export default function KnowledgeChatPage() {
       {(draftError || draftNotice) && (
         <div
           className={cn(
-            "flex shrink-0 items-start gap-2 rounded-md border px-3 py-2 text-sm",
+            "flex shrink-0 items-center gap-2 rounded-lg border px-3.5 py-2 text-xs",
             draftError
-              ? "border-destructive/40 bg-destructive/10 text-destructive"
-              : "border-primary/30 bg-primary/10 text-primary",
+              ? "border-destructive/30 bg-destructive/8 text-destructive"
+              : "border-border/70 bg-muted/45 text-foreground",
           )}
         >
-          {draftError ? <AlertCircle className="mt-0.5 h-4 w-4" /> : <CheckCircle2 className="mt-0.5 h-4 w-4" />}
+          {draftError ? <AlertCircle className="h-3.5 w-3.5 shrink-0" /> : <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-foreground" />}
           <span>{draftError || draftNotice}</span>
         </div>
       )}
@@ -1989,9 +2156,9 @@ export default function KnowledgeChatPage() {
           currentMode={mode}
           answerDrafts={filteredAnswerDrafts}
           answerDraftsLoading={answerDraftsLoading}
-          drafts={filteredDrafts}
+          drafts={isCaptureReviewRoute ? filteredDrafts : []}
           filter={draftFilter}
-          loading={draftsLoading}
+          loading={isCaptureReviewRoute ? draftsLoading : false}
           query={draftQuery}
           resumingSessionId={resumingSessionId}
           selectedAnswerDraftId={selectedAnswerDraftId}
@@ -2004,7 +2171,7 @@ export default function KnowledgeChatPage() {
           onNewSession={() => void startNewSession()}
           onQueryChange={setDraftQuery}
           onRefresh={() => {
-            void loadDrafts();
+            if (isCaptureReviewRoute) void loadDrafts();
             void loadAnswerDrafts();
           }}
           onSelectAnswerDraft={(draftId) => void openAnswerDraft(draftId)}
@@ -2020,7 +2187,7 @@ export default function KnowledgeChatPage() {
           storageKey={CHAT_SIDEBAR_WIDTH_KEY}
           variableName="--knowledge-chat-sidebar-width"
         />
-        <main className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-background">
+        <main className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-black/[0.07] bg-white/95 dark:border-border dark:bg-card">
           {mode === "answer_draft_review" ? (
             <ReadingDraftReview
               actionLoading={answerDraftActionLoading}
@@ -2102,6 +2269,8 @@ export default function KnowledgeChatPage() {
             />
           ) : (
             <GatewayChat
+              activeTurnTools={state.tools.filter((tool) => tool.turnIndex === state.turnIndex)}
+              attachedCards={attachedCards}
               attachments={attachments}
               canSend={canSend}
               composerPlaceholder={composerPlaceholder}
@@ -2109,14 +2278,21 @@ export default function KnowledgeChatPage() {
               draftAssistant={state.draftAssistant}
               fileInputRef={fileInputRef}
               input={input}
+              liveStatusText={state.liveStatusText}
+              liveThinking={state.liveThinking}
               messages={state.messages}
               researchMode={researchMode}
               interruptRequested={state.interruptRequested}
               running={state.running}
               transcriptRef={transcriptRef}
+              turnStartedAt={state.turnStartedAt}
               uploading={uploading}
               onInputChange={setInput}
               onPickPrompt={setInput}
+              onRemoveAttachedCard={(id) =>
+                setAttachedCards((current) => current.filter((card) => card.id !== id))
+              }
+              onSubmitPrompt={scanTopics}
               onResearchModeChange={setResearchMode}
               onRemoveAttachment={(id) =>
                 setAttachments((current) => current.filter((item) => item.id !== id))

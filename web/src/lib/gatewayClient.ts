@@ -232,9 +232,15 @@ export class GatewayClient {
 
 let sharedClient: GatewayClient | null = null;
 let sharedUsers = 0;
+let idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
+const IDLE_CLOSE_GRACE_MS = 10 * 60 * 1000;
 
-/** Share one WebSocket between ChatSidebar and the knowledge workbench. */
+/** Share one WebSocket across knowledge routes so tab switches stay instant. */
 export function acquireGatewayClient(): GatewayClient {
+  if (idleCloseTimer !== null) {
+    clearTimeout(idleCloseTimer);
+    idleCloseTimer = null;
+  }
   if (!sharedClient) {
     sharedClient = new GatewayClient();
   }
@@ -245,9 +251,14 @@ export function acquireGatewayClient(): GatewayClient {
 export function releaseGatewayClient(client?: GatewayClient): void {
   if (!sharedClient || (client && client !== sharedClient)) return;
   sharedUsers = Math.max(0, sharedUsers - 1);
-  if (sharedUsers === 0) {
-    sharedClient.close();
-    sharedClient = null;
+  if (sharedUsers === 0 && idleCloseTimer === null) {
+    idleCloseTimer = setTimeout(() => {
+      idleCloseTimer = null;
+      if (sharedUsers === 0 && sharedClient) {
+        sharedClient.close();
+        sharedClient = null;
+      }
+    }, IDLE_CLOSE_GRACE_MS);
   }
 }
 
